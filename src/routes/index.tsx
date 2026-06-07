@@ -9,10 +9,10 @@ import { TransactionsTable } from "@/components/dashboard/TransactionsTable";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Lumière — Beauty Retail Admin" },
-      { name: "description", content: "Analytics, finance, and partner equity overview for cosmetics retail & wholesale." },
-      { property: "og:title", content: "Lumière — Beauty Retail Admin" },
-      { property: "og:description", content: "Analytics, finance, and partner equity overview for cosmetics retail & wholesale." },
+      { title: "لوميير — لوحة تحكم التجزئة والجملة" },
+      { name: "description", content: "تحليلات ومالية وحصص شركاء لإدارة أعمال التجزئة والجملة." },
+      { property: "og:title", content: "لوميير — لوحة تحكم التجزئة والجملة" },
+      { property: "og:description", content: "تحليلات ومالية وحصص شركاء لإدارة أعمال التجزئة والجملة." },
     ],
   }),
   component: Index,

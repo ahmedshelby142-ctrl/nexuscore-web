@@ -14,32 +14,32 @@ const spark = (seed: number[]) => seed.map((v) => ({ v }));
 
 const kpis: Kpi[] = [
   {
-    label: "Total Revenue",
-    value: "$248,930",
+    label: "إجمالي الإيرادات",
+    value: "٢٤٨,٩٣٠ ج.م",
     delta: 12.4,
     icon: DollarSign,
     tint: "var(--chart-1)",
     data: spark([12, 18, 14, 22, 19, 28, 26, 34, 31, 38, 42, 48]),
   },
   {
-    label: "Total Expenses",
-    value: "$94,210",
+    label: "إجمالي المصروفات",
+    value: "٩٤,٢١٠ ج.م",
     delta: -4.8,
     icon: Receipt,
     tint: "var(--chart-3)",
     data: spark([22, 24, 21, 26, 23, 25, 21, 23, 20, 22, 19, 18]),
   },
   {
-    label: "Net Profit",
-    value: "$154,720",
+    label: "صافي الربح",
+    value: "١٥٤,٧٢٠ ج.م",
     delta: 18.2,
     icon: TrendingUp,
     tint: "var(--chart-5)",
     data: spark([8, 10, 12, 15, 14, 18, 22, 24, 28, 30, 34, 39]),
   },
   {
-    label: "Online + Retail Orders",
-    value: "3,482",
+    label: "إجمالي الطلبات",
+    value: "٣,٤٨٢",
     delta: 9.1,
     icon: ShoppingBag,
     tint: "var(--chart-2)",
@@ -59,7 +59,7 @@ export function KpiCards() {
           >
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">{k.label}</p>
+                <p className="text-xs tracking-wider text-muted-foreground">{k.label}</p>
                 <p className="font-display text-3xl font-semibold mt-2 tracking-tight">{k.value}</p>
               </div>
               <div

@@ -5,8 +5,8 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-  --font-display: "Cormorant Garamond", serif;
-  --font-sans: "Inter", sans-serif;
+  --font-display: "Cairo", "Tajawal", sans-serif;
+  --font-sans: "Cairo", "Tajawal", sans-serif;
 }
 
 /*

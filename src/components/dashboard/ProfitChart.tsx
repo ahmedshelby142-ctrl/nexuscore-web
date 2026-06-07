@@ -1,4 +1,4 @@
-import { Bar, BarChart, CartesianGrid, Legend, Line, ComposedChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, CartesianGrid, Line, ComposedChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 const data = [
   { month: "Jan", profit: 28400, expenses: 18200 },
@@ -50,7 +50,7 @@ export function ProfitChart() {
                 fontSize: 12,
                 boxShadow: "var(--shadow-soft)",
               }}
-              formatter={(v: number) => `$${v.toLocaleString()}`}
+              formatter={(v) => `$${Number(v).toLocaleString()}`}
             />
             <Bar dataKey="profit" fill="url(#barProfit)" radius={[8, 8, 0, 0]} barSize={28} />
             <Line type="monotone" dataKey="expenses" stroke="var(--chart-3)" strokeWidth={2.5} dot={{ r: 4, fill: "var(--chart-3)" }} activeDot={{ r: 6 }} />

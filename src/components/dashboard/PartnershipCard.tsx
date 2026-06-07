@@ -2,9 +2,9 @@ import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 
 const NET_PROFIT = 154720;
 const partners = [
-  { name: "Aurelia Marchetti", role: "Founder", equity: 60, color: "var(--chart-1)" },
-  { name: "Lior Bensimon", role: "Co-Founder", equity: 30, color: "var(--chart-2)" },
-  { name: "Investor Pool", role: "Series Seed", equity: 10, color: "var(--chart-4)" },
+  { name: "شريك أ — أحمد المنصور", role: "المؤسس", equity: 60, color: "var(--chart-1)" },
+  { name: "شريك ب — منى الشريف", role: "شريك مؤسس", equity: 30, color: "var(--chart-2)" },
+  { name: "مجموعة المستثمرين", role: "تمويل تأسيسي", equity: 10, color: "var(--chart-4)" },
 ];
 
 export function PartnershipCard() {
@@ -13,8 +13,8 @@ export function PartnershipCard() {
     <div className="rounded-2xl border border-border bg-card p-6 h-full">
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Equity & profit split</p>
-          <h3 className="font-display text-2xl font-semibold mt-1">Partnership Distribution</h3>
+          <p className="text-xs tracking-wider text-muted-foreground">حصص الملكية وتوزيع الأرباح</p>
+          <h3 className="font-display text-2xl font-bold mt-1">توزيع أرباح الشركاء</h3>
         </div>
       </div>
 
@@ -30,8 +30,8 @@ export function PartnershipCard() {
             </PieChart>
           </ResponsiveContainer>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Profit</p>
-            <p className="font-display text-lg font-semibold">${(NET_PROFIT / 1000).toFixed(1)}k</p>
+            <p className="text-[10px] tracking-wider text-muted-foreground">صافي الربح</p>
+            <p className="font-display text-base font-bold">{(NET_PROFIT / 1000).toFixed(1)} ألف</p>
           </div>
         </div>
         <div className="flex-1 space-y-3">
@@ -44,9 +44,9 @@ export function PartnershipCard() {
                 </div>
                 <span className="font-semibold">{p.equity}%</span>
               </div>
-              <div className="flex items-center justify-between mt-0.5 pl-4.5 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between mt-0.5 pr-4 text-xs text-muted-foreground">
                 <span>{p.role}</span>
-                <span className="text-foreground/70">${((NET_PROFIT * p.equity) / 100).toLocaleString()}</span>
+                <span className="text-foreground/70">{((NET_PROFIT * p.equity) / 100).toLocaleString()} ج.م</span>
               </div>
               <div className="mt-1.5 h-1.5 bg-muted rounded-full overflow-hidden">
                 <div

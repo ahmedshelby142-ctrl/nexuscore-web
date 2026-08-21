@@ -1,4 +1,4 @@
-import { createServerFn } from "@tanstack/react-start";
+import { createServerFn } from "@/lib/createServerFn";
 import { z } from "zod";
 
 import { getServerConfig } from "../config.server";

@@ -16,6 +16,12 @@ dist-ssr
 .nitro
 *.local
 
+# Tauri (desktop shell — see docs/DESKTOP_BUILD.md)
+src-tauri/target/
+src-tauri/WixTools/
+src-tauri/gen/schemas/
+src-tauri/tauri.conf.local.json
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

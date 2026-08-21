@@ -1,0 +1,879 @@
+{
+  "store_id": "store-scenario",
+  "derived_cost": 700,
+  "events": [
+    {
+      "id": "stock_adjustment-0001",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "stock_adjustment",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "opening",
+      "ref_type": null,
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0002",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": 1000000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "purchase-0003",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "purchase",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "توريد",
+      "ref_type": "supplier_invoice",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0004",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": 10,
+          "amount_delta": 600000,
+          "unit_cost": 60000
+        },
+        {
+          "id": "line-0005",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": -600000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "purchase-0006",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "purchase",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "توريد",
+      "ref_type": "supplier_invoice",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0007",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": 10,
+          "amount_delta": 800000,
+          "unit_cost": 80000
+        },
+        {
+          "id": "line-0008",
+          "account": "payable_supplier",
+          "subject_id": "sup-3",
+          "qty_delta": 0,
+          "amount_delta": 800000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "purchase-0009",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "purchase",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "توريد",
+      "ref_type": "supplier_invoice",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0010",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": 5,
+          "amount_delta": 350000,
+          "unit_cost": 70000
+        },
+        {
+          "id": "line-0011",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": -200000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0012",
+          "account": "payable_supplier",
+          "subject_id": "sup-3",
+          "qty_delta": 0,
+          "amount_delta": 150000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "supplier_payment-0013",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "supplier_payment",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "توريد",
+      "ref_type": "supplier_invoice",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0014",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": -350000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0015",
+          "account": "payable_supplier",
+          "subject_id": "sup-3",
+          "qty_delta": 0,
+          "amount_delta": -350000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "sale-0016",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "sale",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "POS",
+      "ref_type": "pos_sale",
+      "ref_id": "POS-0001",
+      "payload": "{\"channel\":\"pos\",\"itemCount\":1}",
+      "lines": [
+        {
+          "id": "line-0017",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": -2,
+          "amount_delta": -140000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0018",
+          "account": "cogs",
+          "subject_id": "p-shoe",
+          "qty_delta": 0,
+          "amount_delta": 140000,
+          "unit_cost": 70000
+        },
+        {
+          "id": "line-0019",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": 200000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0020",
+          "account": "revenue",
+          "subject_id": "pos",
+          "qty_delta": 0,
+          "amount_delta": 200000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0021",
+          "account": "customer_ltv",
+          "subject_id": "cust-1",
+          "qty_delta": 0,
+          "amount_delta": 200000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "sale-0022",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "sale",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "جملة",
+      "ref_type": "wholesale_invoice",
+      "ref_id": null,
+      "payload": "{\"channel\":\"wholesale\"}",
+      "lines": [
+        {
+          "id": "line-0023",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": -5,
+          "amount_delta": -350000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0024",
+          "account": "cogs",
+          "subject_id": "p-shoe",
+          "qty_delta": 0,
+          "amount_delta": 350000,
+          "unit_cost": 70000
+        },
+        {
+          "id": "line-0025",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": 70000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0026",
+          "account": "receivable_client",
+          "subject_id": "client-7",
+          "qty_delta": 0,
+          "amount_delta": 400000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0027",
+          "account": "revenue",
+          "subject_id": "wholesale",
+          "qty_delta": 0,
+          "amount_delta": 470000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0028",
+          "account": "expense",
+          "subject_id": "shipping",
+          "qty_delta": 0,
+          "amount_delta": 15000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "client_payment-0029",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "client_payment",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "جملة",
+      "ref_type": "wholesale_invoice",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0030",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": 150000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0031",
+          "account": "receivable_client",
+          "subject_id": "client-7",
+          "qty_delta": 0,
+          "amount_delta": -150000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "order_placed-0032",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "order_placed",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "أونلاين",
+      "ref_type": "ecommerce_order",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0033",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": -3,
+          "amount_delta": -210000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "order_delivered-0034",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "order_delivered",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "أونلاين",
+      "ref_type": "ecommerce_order",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0035",
+          "account": "cogs",
+          "subject_id": "p-shoe",
+          "qty_delta": 0,
+          "amount_delta": 210000,
+          "unit_cost": 70000
+        },
+        {
+          "id": "line-0036",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": 36000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0037",
+          "account": "receivable_courier",
+          "subject_id": "courier-1",
+          "qty_delta": 0,
+          "amount_delta": 300000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0038",
+          "account": "revenue",
+          "subject_id": "ecommerce",
+          "qty_delta": 0,
+          "amount_delta": 330000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0039",
+          "account": "payable_courier",
+          "subject_id": "courier-1",
+          "qty_delta": 0,
+          "amount_delta": 6000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0040",
+          "account": "customer_ltv",
+          "subject_id": "cust-online",
+          "qty_delta": 0,
+          "amount_delta": 330000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "courier_settlement-0041",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "courier_settlement",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "أونلاين",
+      "ref_type": "ecommerce_order",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0042",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": 294000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0043",
+          "account": "receivable_courier",
+          "subject_id": "courier-1",
+          "qty_delta": 0,
+          "amount_delta": -300000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0044",
+          "account": "payable_courier",
+          "subject_id": "courier-1",
+          "qty_delta": 0,
+          "amount_delta": -6000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "order_returned_pending-0045",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "order_returned_pending",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "أونلاين",
+      "ref_type": "ecommerce_order",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": []
+    },
+    {
+      "id": "return_confirmed-0046",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "return_confirmed",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "أونلاين",
+      "ref_type": "ecommerce_order",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0047",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": 3,
+          "amount_delta": 210000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0048",
+          "account": "cogs",
+          "subject_id": "p-shoe",
+          "qty_delta": 0,
+          "amount_delta": -210000,
+          "unit_cost": 70000
+        },
+        {
+          "id": "line-0049",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": -330000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0050",
+          "account": "revenue",
+          "subject_id": "ecommerce",
+          "qty_delta": 0,
+          "amount_delta": -330000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0051",
+          "account": "payable_courier",
+          "subject_id": "courier-1",
+          "qty_delta": 0,
+          "amount_delta": 8000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0052",
+          "account": "expense",
+          "subject_id": "shipping_return",
+          "qty_delta": 0,
+          "amount_delta": 8000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0053",
+          "account": "customer_ltv",
+          "subject_id": "cust-online",
+          "qty_delta": 0,
+          "amount_delta": -330000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "order_placed-0054",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "order_placed",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "أونلاين",
+      "ref_type": "ecommerce_order",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0055",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": -4,
+          "amount_delta": -280000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "order_cancelled-0056",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "order_cancelled",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "أونلاين",
+      "ref_type": "ecommerce_order",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0057",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": 4,
+          "amount_delta": 280000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "stock_adjustment-0058",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "stock_adjustment",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "جرد",
+      "ref_type": "stock_audit",
+      "ref_id": null,
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0059",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": -2,
+          "amount_delta": -140000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0060",
+          "account": "expense",
+          "subject_id": "shrinkage",
+          "qty_delta": 0,
+          "amount_delta": 140000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "stock_adjustment-0061",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "stock_adjustment",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "رصيد افتتاحي",
+      "ref_type": "opening_balance",
+      "ref_id": "p-mug",
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0062",
+          "account": "stock",
+          "subject_id": "p-mug",
+          "qty_delta": 40,
+          "amount_delta": 100000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "sale-0063",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "sale",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "POS",
+      "ref_type": "pos_sale",
+      "ref_id": "POS-0002",
+      "payload": "{\"channel\":\"pos\",\"itemCount\":1}",
+      "lines": [
+        {
+          "id": "line-0064",
+          "account": "stock",
+          "subject_id": "p-mug",
+          "qty_delta": -2,
+          "amount_delta": -5000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0065",
+          "account": "cogs",
+          "subject_id": "p-mug",
+          "qty_delta": 0,
+          "amount_delta": 5000,
+          "unit_cost": 2500
+        },
+        {
+          "id": "line-0066",
+          "account": "wallet",
+          "subject_id": "inStoreSafe",
+          "qty_delta": 0,
+          "amount_delta": 12000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0067",
+          "account": "revenue",
+          "subject_id": "pos",
+          "qty_delta": 0,
+          "amount_delta": 12000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "order_placed-0068",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "order_placed",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "أونلاين",
+      "ref_type": "ecommerce_order",
+      "ref_id": "ECO-EDIT",
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0069",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": -2,
+          "amount_delta": -140000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "order_edited-0070",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "order_edited",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "أونلاين",
+      "ref_type": "ecommerce_order",
+      "ref_id": "ECO-EDIT",
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0071",
+          "account": "stock",
+          "subject_id": "p-shoe",
+          "qty_delta": 1,
+          "amount_delta": 70000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0072",
+          "account": "stock",
+          "subject_id": "p-mug",
+          "qty_delta": -6,
+          "amount_delta": -15000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "stock_adjustment-0073",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "stock_adjustment",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "رصيد افتتاحي",
+      "ref_type": "opening_balance",
+      "ref_id": "vodafoneCash",
+      "payload": "{}",
+      "lines": [
+        {
+          "id": "line-0074",
+          "account": "wallet",
+          "subject_id": "vodafoneCash",
+          "qty_delta": 0,
+          "amount_delta": 50000,
+          "unit_cost": null
+        }
+      ]
+    },
+    {
+      "id": "sale-0075",
+      "store_id": "store-scenario",
+      "device_id": "device-scenario",
+      "kind": "sale",
+      "occurred_at": "2026-08-16T09:00:00Z",
+      "created_at": "2026-08-16T09:00:00Z",
+      "actor": "POS",
+      "ref_type": "pos_sale",
+      "ref_id": "POS-0003",
+      "payload": "{\"channel\":\"pos\"}",
+      "lines": [
+        {
+          "id": "line-0076",
+          "account": "stock",
+          "subject_id": "p-mug",
+          "qty_delta": -4,
+          "amount_delta": -10000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0077",
+          "account": "cogs",
+          "subject_id": "p-mug",
+          "qty_delta": 0,
+          "amount_delta": 10000,
+          "unit_cost": 2500
+        },
+        {
+          "id": "line-0078",
+          "account": "wallet",
+          "subject_id": "vodafoneCash",
+          "qty_delta": 0,
+          "amount_delta": 20000,
+          "unit_cost": null
+        },
+        {
+          "id": "line-0079",
+          "account": "revenue",
+          "subject_id": "pos",
+          "qty_delta": 0,
+          "amount_delta": 20000,
+          "unit_cost": null
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "stock": {
+      "account": "stock",
+      "subject": "p-shoe",
+      "qty": 15,
+      "egp": 10500
+    },
+    "wallet": {
+      "account": "wallet",
+      "subject": "inStoreSafe",
+      "qty": 0,
+      "egp": 2820
+    },
+    "payable_supplier": {
+      "account": "payable_supplier",
+      "subject": "sup-3",
+      "qty": 0,
+      "egp": 6000
+    },
+    "receivable_client": {
+      "account": "receivable_client",
+      "subject": "client-7",
+      "qty": 0,
+      "egp": 2500
+    },
+    "revenue_pos": {
+      "account": "revenue",
+      "subject": "pos",
+      "qty": 0,
+      "egp": 2320
+    },
+    "stock_mug": {
+      "account": "stock",
+      "subject": "p-mug",
+      "qty": 28,
+      "egp": 700
+    },
+    "wallet_vodafone": {
+      "account": "wallet",
+      "subject": "vodafoneCash",
+      "qty": 0,
+      "egp": 700
+    },
+    "cogs_mug": {
+      "account": "cogs",
+      "subject": "p-mug",
+      "qty": 0,
+      "egp": 150
+    },
+    "revenue_ecommerce": {
+      "account": "revenue",
+      "subject": "ecommerce",
+      "qty": 0,
+      "egp": 0
+    },
+    "receivable_courier": {
+      "account": "receivable_courier",
+      "subject": "courier-1",
+      "qty": 0,
+      "egp": 0
+    },
+    "payable_courier": {
+      "account": "payable_courier",
+      "subject": "courier-1",
+      "qty": 0,
+      "egp": 80
+    },
+    "customer_ltv_online": {
+      "account": "customer_ltv",
+      "subject": "cust-online",
+      "qty": 0,
+      "egp": 0
+    },
+    "revenue_wholesale": {
+      "account": "revenue",
+      "subject": "wholesale",
+      "qty": 0,
+      "egp": 4700
+    },
+    "cogs": {
+      "account": "cogs",
+      "subject": "p-shoe",
+      "qty": 0,
+      "egp": 4900
+    },
+    "expense_shipping": {
+      "account": "expense",
+      "subject": "shipping",
+      "qty": 0,
+      "egp": 150
+    },
+    "expense_shipping_return": {
+      "account": "expense",
+      "subject": "shipping_return",
+      "qty": 0,
+      "egp": 80
+    },
+    "expense_shrinkage": {
+      "account": "expense",
+      "subject": "shrinkage",
+      "qty": 0,
+      "egp": 1400
+    },
+    "customer_ltv": {
+      "account": "customer_ltv",
+      "subject": "cust-1",
+      "qty": 0,
+      "egp": 2000
+    }
+  }
+}

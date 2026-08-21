@@ -25,7 +25,9 @@ export function Header() {
         <div className="mr-auto flex items-center gap-4">
           {/* Mode toggle */}
           <div className="flex items-center gap-3 px-3 py-1.5 rounded-full bg-muted border border-border">
-            <span className="text-xs font-medium text-muted-foreground hidden sm:inline">وضع العمل</span>
+            <span className="text-xs font-medium text-muted-foreground hidden sm:inline">
+              وضع العمل
+            </span>
             <div className="flex bg-card rounded-full p-0.5 shadow-inner">
               {(["قطاعي", "جملة"] as const).map((m) => (
                 <button
@@ -33,7 +35,7 @@ export function Header() {
                   onClick={() => setMode(m)}
                   className={cn(
                     "px-3 py-1 text-xs font-semibold rounded-full transition-all duration-300",
-                    mode === m ? "text-primary-foreground shadow-sm" : "text-muted-foreground"
+                    mode === m ? "text-primary-foreground shadow-sm" : "text-muted-foreground",
                   )}
                   style={mode === m ? { background: "var(--gradient-primary)" } : undefined}
                 >
@@ -49,7 +51,10 @@ export function Header() {
           </button>
 
           <button className="flex items-center gap-2 pr-2 pl-3 py-1.5 rounded-full hover:bg-muted transition">
-            <div className="size-8 rounded-full flex items-center justify-center text-primary-foreground font-semibold text-sm" style={{ background: "var(--gradient-primary)" }}>
+            <div
+              className="size-8 rounded-full flex items-center justify-center text-primary-foreground font-semibold text-sm"
+              style={{ background: "var(--gradient-primary)" }}
+            >
               س.م
             </div>
             <div className="text-right hidden md:block">

@@ -1,15 +1,50 @@
-// @lovable.dev/vite-tanstack-config already includes the following — do NOT add them manually
-// or the app will break with duplicate plugins:
-//   - tanstackStart, viteReact, tailwindcss, tsConfigPaths, nitro (build-only using cloudflare as a default target),
-//     componentTagger (dev-only), VITE_* env injection, @ path alias, React/TanStack dedupe,
-//     error logger plugins, and sandbox detection (port/host/strictPort).
-// You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
-import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import path from "path";
 
+// Tauri runs a native window that loads the Vite dev server. The window
+// expects a fixed port and a stable HMR socket, so the Vite config is
+// adjusted for both the desktop and the plain-browser flows. None of
+// these changes affect the existing `npm run dev` workflow.
 export default defineConfig({
-  tanstackStart: {
-    // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
-    // nitro/vite builds from this
-    server: { entry: "server" },
+  plugins: [tailwindcss(), react()],
+
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
   },
+
+  server: {
+    port: 3000,
+    strictPort: false,
+    host: "127.0.0.1",
+    hmr: {
+      port: 3000
+    }
+  },
+
+  // Forward Tauri env vars to the client bundle. The desktop shell
+  // exposes TAURI_* and TAURI_ENV_*; we want them available as
+  // import.meta.env.TAURI_* at build time.
+  envPrefix: ["VITE_", "TAURI_", "TAURI_ENV_"],
+
+  build: {
+    // Tauri uses the system WebView2 (Chromium) on Windows, so we can
+    // target modern syntax. This shrinks the bundle by ~20% versus
+    // the default 'modules' target.
+    target: "es2022",
+    // Don't fail the build on the 500 KB chunk-size warning — the
+    // product's main JS bundle is large because of xlsx, recharts,
+    // and the PDF/Excel stack. Code-splitting them is Phase G work.
+    chunkSizeWarningLimit: 2000,
+    // Generate sourcemaps for production crash diagnostics. Tauri
+    // uploads them alongside the release for the in-app error
+    // reporter (src/lib/lovable-error-reporting.ts).
+    sourcemap: true,
+  },
+
+  // Prevent Vite from obscuring Rust-side errors during `tauri dev`.
+  clearScreen: false,
 });

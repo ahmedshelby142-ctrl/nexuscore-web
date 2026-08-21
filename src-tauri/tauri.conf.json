@@ -1,0 +1,71 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NexusCore",
+  "version": "1.0.0",
+  "identifier": "com.nexuscore.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:8080",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "NexusCore — منظومة إدارة المؤسسات",
+        "width": 1366,
+        "height": 850,
+        "minWidth": 1100,
+        "minHeight": 720,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "visible": true,
+        "focus": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "freezePrototype": false
+    },
+    "withGlobalTauri": false
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Business",
+    "shortDescription": "Omnichannel Retail & E-commerce ERP",
+    "longDescription": "NexusCore is a complete omnichannel retail, wholesale, and e-commerce ERP designed for the Egyptian and Arab market. Includes POS, inventory, 3-wallet accounting, courier reconciliation, shareholders, branches, and full RBAC.",
+    "publisher": "NexusCore",
+    "copyright": "© 2026 NexusCore. All rights reserved.",
+    "homepage": "https://nexuscore.example.com",
+    "windows": {
+      "wix": {
+        "language": ["ar-SA", "en-US"],
+        "enableElevatedUpdateTask": false
+      },
+      "nsis": {
+        "languages": ["Arabic", "English"],
+        "displayLanguageSelector": true,
+        "installerIcon": "icons/icon.ico",
+        "installMode": "perMachine"
+      },
+      "allowDowngrades": true,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  },
+  "plugins": {}
+}

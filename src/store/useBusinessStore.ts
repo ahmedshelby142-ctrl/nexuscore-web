@@ -1,0 +1,596 @@
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import type {
+  Partner,
+  BusinessMode,
+  Product,
+  Transaction,
+  WholesaleClient,
+  WholesaleInvoice,
+  Supplier,
+  PurchaseInvoice,
+  ReturnRecord,
+  PromoDiscount,
+  SyncAction,
+} from "../types";
+import type { ProfitDistribution } from "../services/financeService";
+import { writeThrough, deleteThrough } from "../services/cloudData";
+import { applyMovesToProducts, expandBundleMoves, type StockMove } from "../lib/stockMirror";
+
+/**
+ * Write one reference record to Supabase, then commit WHAT SUPABASE STORED.
+ *
+ * The order is the whole point. The previous helper updated local state first
+ * and pushed in the background; when the push failed it re-read the table to
+ * undo itself, which is how a product could appear, survive a click or two, and
+ * then silently vanish. Nothing is committed here until the database has
+ * confirmed the row, so a failed write leaves the screen exactly as it was and
+ * the user sees an error instead of a disappearing act.
+ *
+ * Throws on failure. Callers await it and let the error reach the form.
+ */
+async function commitRow<T extends { id: string }>(
+  set: (fn: (state: any) => any) => void,
+  table: string,
+  field: string,
+  row: T,
+  place: "append" | "prepend" = "append",
+): Promise<T> {
+  const saved = (await writeThrough(table, row)) as T;
+  set((state: any) => {
+    const list: T[] = state[field] ?? [];
+    const at = list.findIndex((r) => r.id === saved.id);
+    if (at >= 0) {
+      const next = list.slice();
+      next[at] = { ...list[at], ...saved };
+      return { [field]: next };
+    }
+    return { [field]: place === "prepend" ? [saved, ...list] : [...list, saved] };
+  });
+  return saved;
+}
+
+/** Delete one row, then drop it locally. Throws on failure, dropping nothing. */
+async function removeRow(
+  set: (fn: (state: any) => any) => void,
+  table: string,
+  field: string,
+  id: string,
+): Promise<void> {
+  await deleteThrough(table, id);
+  set((state: any) => ({ [field]: (state[field] ?? []).filter((r: any) => r.id !== id) }));
+}
+
+/**
+ * Fire-and-forget push for the legacy `quantity` mirror on the product record.
+ *
+ * ponytail: deliberately NOT awaited, and deliberately not rolled back. This
+ * column is documented as never read for stock — every screen reads
+ * `qtyOf(product.id)` from the ledger, which is the awaited authority. Losing a
+ * mirror write costs nothing a reload does not fix. If the column ever becomes
+ * load-bearing, route it through `commitRow` like everything else.
+ */
+function mirrorRow(table: string, row: any): void {
+  void writeThrough(table, row).catch(() => {
+    /* announced by writeThrough; the ledger already holds the real number */
+  });
+}
+
+/**
+ * Global State Manager for the Intelligent Core
+ * This store serves as the central hub for business operations and settings
+ */
+interface BusinessState {
+  // Sync
+  syncQueue: SyncAction[];
+  flushSyncQueue: () => Promise<void>;
+
+  // Business configuration
+  businessMode: BusinessMode;
+  partnershipEnabled: boolean;
+
+  // Partner management
+  partners: Partner[];
+
+  // Product management
+  products: Product[];
+
+  // Transaction management
+  transactions: Transaction[];
+
+  // Partner ledger for profit distribution tracking
+  partnerLedger: ProfitDistribution[];
+
+  // Wholesale management
+  wholesaleClients: WholesaleClient[];
+  wholesaleInvoices: WholesaleInvoice[];
+
+  // Purchasing & Suppliers management
+  suppliers: Supplier[];
+  purchaseInvoices: PurchaseInvoice[];
+
+  // Returns & Exchanges
+  returnRecords: ReturnRecord[];
+
+  // Discounts
+  promoDiscounts: PromoDiscount[];
+
+  // Actions
+  setBusinessMode: (mode: BusinessMode) => void;
+  togglePartnership: (enabled: boolean) => void;
+  addPartner: (partner: Omit<Partner, "id">) => void;
+  updatePartner: (id: string, updates: Partial<Partner>) => void;
+  /** Hard delete. Only legal for a part-owner with NO ledger history. */
+  removePartner: (id: string) => void;
+  /** Soft-hide (tombstone). What a part-owner WITH history gets. */
+  archivePartner: (id: string) => void;
+  /** Clears the tombstone — they hold a claim again. */
+  restorePartner: (id: string) => void;
+  updatePartnerEquity: (id: string, equityPercentage: number) => void;
+  addCapitalContribution: (partnerId: string, amount: number) => void;
+  // Returns the created product so the caller can append an opening-balance
+  // event against its id. The id is generated here, so without this a caller
+  // could not name the product it just created.
+  // `quantity` is NOT accepted: stock is the ledger's SUM (§1.1), and the field
+  // still on the record is dead weight read by nothing that shows stock. The
+  // importer passing it there is exactly how imported shops opened at zero —
+  // the signature now makes that unsayable. Opening stock goes through
+  // `appendOpeningBalance`.
+  addProduct: (product: Omit<Product, "id" | "quantity">) => Promise<Product>;
+  updateProduct: (id: string, updates: Partial<Product>) => Promise<void>;
+  /**
+   * The ONE way stock moves on the product record.
+   *
+   * Every transaction — a POS sale, a توريد, a مرتجع, an online order and
+   * every state it passes through — routes its lines through here. See
+   * `applyStockMoves` below for why a per-screen loop is not allowed to do
+   * this itself.
+   */
+  applyStockMoves: (moves: StockMove[]) => void;
+  /** Hard delete. Only legal for a product with NO ledger history. */
+  removeProduct: (id: string) => Promise<void>;
+  /** Soft-hide (tombstone). What a product WITH ledger history gets. */
+  archiveProduct: (id: string) => Promise<void>;
+  /** Clears the tombstone — the product comes back to the active lists. */
+  restoreProduct: (id: string) => Promise<void>;
+  addTransaction: (transaction: Transaction) => void;
+  addProfitDistribution: (distribution: ProfitDistribution) => void;
+  getPartnerLedger: () => ProfitDistribution[];
+  addWholesaleClient: (client: Omit<WholesaleClient, "id" | "createdAt" | "updatedAt">) => void;
+  updateWholesaleClient: (id: string, updates: Partial<WholesaleClient>) => void;
+  addWholesaleInvoice: (invoice: Omit<WholesaleInvoice, "id" | "createdAt" | "updatedAt">) => void;
+  recordWholesalePayment: (invoiceId: string, amount: number) => void;
+  // Returns the created supplier so a caller that registered one inline (the
+  // quick توريد dialog) can attach the receipt to it straight away.
+  addSupplier: (supplier: Omit<Supplier, "id" | "createdAt" | "updatedAt">) => Promise<Supplier>;
+  updateSupplier: (id: string, updates: Partial<Supplier>) => Promise<void>;
+  addPurchaseInvoice: (invoice: Omit<PurchaseInvoice, "id" | "createdAt" | "updatedAt">) => void;
+  recordSupplierPayment: (invoiceId: string, amount: number) => void;
+
+  // Returns & Exchanges actions
+  // The field is `created_at`, not `createdAt` — the old signature omitted a
+  // key that does not exist, so callers were asked for one the store fills in.
+  addReturnRecord: (record: Omit<ReturnRecord, "id" | "created_at">) => Promise<void>;
+
+  // Discounts
+  addPromoDiscount: (discount: Omit<PromoDiscount, "id" | "createdAt">) => Promise<void>;
+  updatePromoDiscount: (id: string, updates: Partial<PromoDiscount>) => Promise<void>;
+  removePromoDiscount: (id: string) => Promise<void>;
+
+  // TODO: Analytics Engine integration point
+}
+
+export const useBusinessStore = create<BusinessState>()(
+  persist(
+    (set, get) => ({
+      // Initial state
+      syncQueue: [],
+      // Kept as a no-op so the field's few remaining readers do not have to be
+      // special-cased. Nothing can be queued: every write is awaited.
+      flushSyncQueue: async () => {},
+      businessMode: "retail",
+      partnershipEnabled: false,
+      partners: [],
+      products: [],
+      transactions: [],
+      partnerLedger: [],
+      wholesaleClients: [],
+      wholesaleInvoices: [],
+      suppliers: [],
+      purchaseInvoices: [],
+      returnRecords: [],
+      promoDiscounts: [],
+
+      // Business mode actions
+      setBusinessMode: (mode: BusinessMode) => {
+        set({ businessMode: mode });
+        // TODO: Analytics Engine - trigger mode change analytics
+      },
+
+      // Partnership toggle action
+      togglePartnership: (enabled: boolean) => {
+        set({ partnershipEnabled: enabled });
+        // TODO: Analytics Engine - track partnership toggle events
+      },
+
+      // Partner management actions
+      addCapitalContribution: (partnerId: string, amount: number) => {
+        set((state) => ({
+          partners: state.partners.map((p) =>
+            p.id === partnerId
+              ? { ...p, capitalContribution: (p.capitalContribution || 0) + amount }
+              : p,
+          ),
+        }));
+      },
+      addPartner: (partnerData) => {
+        const newPartner: Partner = {
+          ...partnerData,
+          id: crypto.randomUUID(),
+        };
+        set((state) => ({
+          partners: [...state.partners, newPartner],
+        }));
+        // TODO: Analytics Engine - log partner addition
+      },
+
+      updatePartner: (id: string, updates: Partial<Partner>) => {
+        set((state) => ({
+          partners: state.partners.map((partner) =>
+            partner.id === id ? { ...partner, ...updates } : partner,
+          ),
+        }));
+        // TODO: Analytics Engine - log partner updates
+      },
+
+      removePartner: (id: string) => {
+        set((state) => ({
+          partners: state.partners.filter((partner) => partner.id !== id),
+        }));
+        // TODO: Analytics Engine - log partner removal
+      },
+
+      // A part-owner the ledger already knows about keeps their record — past
+      // reports must still resolve their name — but stops being an active
+      // claim: out of the 100% cap, out of رأس المال, out of every future
+      // distribution. `updatePartner` stamps the change for LWW.
+      archivePartner: (id: string) => {
+        get().updatePartner(id, { deleted_at: Date.now(), status: "inactive" });
+      },
+
+      // `null`, never `undefined` — an undefined key drops out of a sync
+      // payload and the next pull would re-archive them.
+      restorePartner: (id: string) => {
+        get().updatePartner(id, { deleted_at: null, status: "active" });
+      },
+
+      updatePartnerEquity: (id: string, equityPercentage: number) => {
+        // Validate equity percentage (0-100)
+        if (equityPercentage < 0 || equityPercentage > 100) {
+          throw new Error("Equity percentage must be between 0 and 100");
+        }
+
+        set((state) => ({
+          partners: state.partners.map((partner) =>
+            partner.id === id ? { ...partner, equityPercentage } : partner,
+          ),
+        }));
+        // TODO: Analytics Engine - log equity changes and recalculate profit distributions
+      },
+
+      // Product management actions
+      addProduct: async (productData) => {
+        const draft: Product = {
+          ...productData,
+          id: crypto.randomUUID(),
+          // Placeholder for the legacy column only. Never read for stock —
+          // every screen reads `qtyOf(product.id)` from the ledger.
+          quantity: 0,
+          updated_at: Date.now(),
+        };
+        // Nothing is added to `products` until Supabase has the row. If this
+        // throws, the caller's form stays open with the values still in it.
+        return commitRow(set, 'products', 'products', draft);
+      },
+
+      updateProduct: async (id: string, updates: Partial<Product>) => {
+        const current = get().products.find((p) => p.id === id);
+        if (!current) return;
+        // The FULL row, not the patch: an upsert of `{id, status}` alone would
+        // blank every other column.
+        await commitRow(set, 'products', 'products', {
+          ...current,
+          ...updates,
+          updated_at: Date.now(),
+        });
+      },
+
+      /**
+       * The ONE way stock moves on the product record.
+       *
+       * The arithmetic — the variant branch, the plain branch, the floor at
+       * zero and why they must share a function — lives in `lib/stockMirror`,
+       * which is pure and has a self-check beside it. This is the store half:
+       * one `set` and one sync push per affected product, no matter how many
+       * lines the transaction had.
+       *
+       * Bundles are expanded HERE rather than in each selling screen. A بوكس
+       * has no shelf of its own, so a move naming one has to become its
+       * components before the mirror sees it — and doing that at the single
+       * choke point is what stops the next screen from forgetting, the way POS
+       * did while الطلبات remembered.
+       */
+      applyStockMoves: (rawMoves: StockMove[]) => {
+        if (rawMoves.length === 0) return;
+
+        let touched: string[] = [];
+        set((state) => {
+          const moves = expandBundleMoves(rawMoves, state.products);
+          const result = applyMovesToProducts(state.products, moves);
+          touched = result.touched;
+          if (touched.length === 0) return state;
+          return { products: result.products };
+        });
+
+        // Sync AFTER the write, reading the stored row, so what goes out is
+        // what the shop now believes rather than what the caller asked for.
+        const products = get().products;
+        for (const id of touched) {
+          const product = products.find((p) => p.id === id);
+          if (!product) continue;
+          mirrorRow('products', product);
+        }
+      },
+
+      // A real delete, allowed ONLY for a product the ledger has never
+      // mentioned — see `removalMode` in `@/lib/product`. It now tells sync,
+      // which it never did: the row used to vanish locally and come straight
+      // back on the next pull from another device.
+      removeProduct: async (id: string) => {
+        // Deleted in the cloud FIRST. Removing it locally and discovering the
+        // delete was refused would show the product coming back on the next
+        // reload, which reads as data loss in the other direction.
+        await removeRow(set, 'products', 'products', id);
+      },
+
+      // What a product WITH ledger history gets instead. The record stays so
+      // its events keep resolving; `deleted_at` is the tombstone that takes it
+      // out of the active lists and syncs that fact to every device.
+      archiveProduct: async (id: string) => {
+        await get().updateProduct(id, { deleted_at: Date.now() });
+      },
+
+      // Undo. `null`, never `undefined` — see the field's note in `types`.
+      restoreProduct: async (id: string) => {
+        await get().updateProduct(id, { deleted_at: null });
+      },
+
+      // Transaction management actions
+      addTransaction: (transaction) => {
+        const newTransaction = { ...transaction, updated_at: Date.now() };
+        set((state) => ({
+          transactions: [...state.transactions, newTransaction],
+        }));
+        mirrorRow('transactions', newTransaction);
+        // TODO: Analytics Engine - log transaction for sales analytics
+      },
+
+
+      // Partner ledger actions
+      addProfitDistribution: (distribution) => {
+        set((state) => ({
+          partnerLedger: [...state.partnerLedger, distribution],
+        }));
+        // TODO: Analytics Engine - log profit distribution for financial analytics
+      },
+
+      getPartnerLedger: () => {
+        return get().partnerLedger;
+      },
+
+      // Wholesale management actions
+      addWholesaleClient: (clientData) => {
+        const newClient: WholesaleClient = {
+          ...clientData,
+          id: crypto.randomUUID(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        set((state) => ({
+          wholesaleClients: [...state.wholesaleClients, newClient],
+        }));
+      },
+
+      updateWholesaleClient: (id, updates) => {
+        set((state) => ({
+          wholesaleClients: state.wholesaleClients.map((c) =>
+            c.id === id ? { ...c, ...updates, updatedAt: new Date() } : c,
+          ),
+        }));
+      },
+
+      // Records the invoice document only. Stock is NOT touched here — the
+      // `sale` event the caller appends moves it — and neither are the client
+      // totals: debt is SUM(receivable_client) over the ledger, invoiced and
+      // paid are summed from these invoice documents on render.
+      addWholesaleInvoice: (invoiceData) => {
+        const invoice: WholesaleInvoice = {
+          ...invoiceData,
+          id: crypto.randomUUID(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        set((state) => ({
+          wholesaleInvoices: [...state.wholesaleInvoices, invoice],
+        }));
+      },
+
+      // Updates the invoice document only — how much of THIS invoice is still
+      // open. The money moved by the `client_payment` event the caller
+      // appends: wallet up, receivable_client down.
+      recordWholesalePayment: (invoiceId, amount) => {
+        set((state) => {
+          const invoice = state.wholesaleInvoices.find((i) => i.id === invoiceId);
+          if (!invoice) return state;
+          const newPaid = invoice.paidAmount + amount;
+          const newRemaining = Math.max(0, invoice.remainingAmount - amount);
+          const newStatus: "paid" | "partial" | "unpaid" | "overdue" =
+            newRemaining <= 0 ? "paid" : "partial";
+          return {
+            wholesaleInvoices: state.wholesaleInvoices.map((i) =>
+              i.id === invoiceId
+                ? {
+                    ...i,
+                    paidAmount: newPaid,
+                    remainingAmount: newRemaining,
+                    status: newStatus,
+                    updatedAt: new Date(),
+                  }
+                : i,
+            ),
+          };
+        });
+      },
+
+      // Purchasing & Suppliers actions
+      addSupplier: async (supplierData) => {
+        const newSupplier: Supplier = {
+          ...supplierData,
+          id: crypto.randomUUID(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          // Epoch-ms sync clock. Separate from `updatedAt` above on purpose:
+          // that one is a Date for humans, this one is what the inbound pull
+          // filters and compares on.
+          updated_at: Date.now(),
+        };
+        return commitRow(set, 'suppliers', 'suppliers', newSupplier);
+      },
+
+      updateSupplier: async (id, updates) => {
+        const current = get().suppliers.find((s: any) => s.id === id);
+        if (!current) return;
+        await commitRow(set, 'suppliers', 'suppliers', {
+          ...current,
+          ...updates,
+          updatedAt: new Date(),
+          updated_at: Date.now(),
+        });
+      },
+
+      // Records the invoice document only. Stock is NOT touched here: the
+      // `purchase` ledger event the caller appends is what moves it, and a
+      // second `p.quantity + item.quantity` here would double-count the
+      // receipt against a number that is already a SUM over the ledger.
+      //
+      // Supplier totals are not touched either. Debt is SUM(payable_supplier)
+      // over the ledger; "purchased" and "paid" are summed from these invoice
+      // documents on render. A supplier row carries no running total to drift.
+      addPurchaseInvoice: (invoiceData) => {
+        const invoice: PurchaseInvoice = {
+          ...invoiceData,
+          id: crypto.randomUUID(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        set((state) => ({
+          purchaseInvoices: [...state.purchaseInvoices, invoice],
+        }));
+      },
+
+      // Updates the invoice document only — how much of THIS invoice is still
+      // open. The money moved by the `supplier_payment` event the caller
+      // appends: wallet down, payable_supplier down.
+      recordSupplierPayment: (invoiceId, amount) => {
+        set((state) => {
+          const invoice = state.purchaseInvoices.find((i) => i.id === invoiceId);
+          if (!invoice) return state;
+          const newPaid = invoice.paidAmount + amount;
+          const newRemaining = Math.max(0, invoice.remainingAmount - amount);
+          const newStatus: "paid" | "partial" | "unpaid" | "overdue" =
+            newRemaining <= 0 ? "paid" : "partial";
+          return {
+            purchaseInvoices: state.purchaseInvoices.map((i) =>
+              i.id === invoiceId
+                ? {
+                    ...i,
+                    paidAmount: newPaid,
+                    remainingAmount: newRemaining,
+                    status: newStatus,
+                    updatedAt: new Date(),
+                  }
+                : i,
+            ),
+          };
+        });
+      },
+
+      // ── E-commerce Manual Orders ───────────────────────────
+
+
+
+
+      // ── Returns & Exchanges ─────────────────────────────────
+
+      addReturnRecord: async (recordData) => {
+        const newRecord: ReturnRecord = {
+          ...recordData,
+          id: crypto.randomUUID(),
+          created_at: new Date(),
+          updated_at: Date.now(),
+        };
+        await commitRow(set, 'return_records', 'returnRecords', newRecord, "prepend");
+      },
+
+      addPromoDiscount: async (discount) => {
+        const newDiscount: PromoDiscount = {
+          ...discount,
+          id: crypto.randomUUID(),
+          createdAt: new Date(),
+          updated_at: Date.now(),
+        };
+        await commitRow(set, 'discount_codes', 'promoDiscounts', newDiscount, "prepend");
+      },
+      updatePromoDiscount: async (id, updates) => {
+        const current = get().promoDiscounts.find((d: any) => d.id === id);
+        if (!current) return;
+        await commitRow(set, 'discount_codes', 'promoDiscounts', {
+          ...current,
+          ...updates,
+          updated_at: Date.now(),
+        });
+      },
+      removePromoDiscount: async (id) => {
+        // DELETE, not a soft-hide: nothing in the ledger references a promo
+        // code by id, so removing it cannot orphan history.
+        await removeRow(set, 'discount_codes', 'promoDiscounts', id);
+      },
+    }),
+    {
+      name: "business-storage",
+      /**
+       * ONLINE-ONLY for reference data.
+       *
+       * `products`, `suppliers`, `promoDiscounts` and `returnRecords` are owned
+       * by Supabase now and hydrated from it on boot, so persisting them would
+       * only recreate the stale-cache problem this rewrite removes: a device
+       * showing 131 products that no longer exist.
+       *
+       * What IS still persisted is the data with NO cloud table — partners,
+       * wholesale, purchase invoices, capital. Dropping those would delete
+       * them outright, since there is nowhere to re-read them from.
+       */
+      partialize: (state: any) => ({
+        businessMode: state.businessMode,
+        partnershipEnabled: state.partnershipEnabled,
+        partners: state.partners,
+        partnerLedger: state.partnerLedger,
+        transactions: state.transactions,
+        wholesaleClients: state.wholesaleClients,
+        wholesaleInvoices: state.wholesaleInvoices,
+        purchaseInvoices: state.purchaseInvoices,
+        capitalContributions: state.capitalContributions,
+      }),
+    },
+  ),
+);

@@ -228,11 +228,43 @@ export function Login() {
         // A missing membership row means the account is not attached to this
         // shop yet; `toAppRole(null)` lands on the least privileged role rather
         // than assuming the best case.
-        const { data: membership } = await sb
+        let { data: membership } = await sb
           .from("store_members")
           .select("role")
           .eq("user_id", userId)
           .maybeSingle();
+
+        // No membership means this account belongs to no shop yet — which is
+        // where EVERY new signup landed: authenticated, but with no store, no
+        // licence and every write refused. It could not fix itself from the
+        // client either: `stores` has no INSERT policy, and `store_members`
+        // writes require has_role(store_id,'ADMIN') — the very row being
+        // created. `claim_store` is the SECURITY DEFINER routine that exists to
+        // break that deadlock; nothing had called it since the desktop build
+        // was removed, and it inserted role 'owner', which its own CHECK
+        // constraint rejects. Both are fixed (migration 014).
+        //
+        // Idempotent: an existing member gets their current store back, so a
+        // retry or a second tab can never mint a second shop.
+        if (!membership) {
+          const { data: claimed, error: claimError } = await sb.rpc("claim_store", {
+            local_store_id: crypto.randomUUID(),
+          });
+          if (claimError) {
+            setLocalError(
+              `تم تسجيل الدخول، لكن تعذّر ربط الحساب بمتجر. ${claimError.message}`,
+            );
+            return;
+          }
+          if (claimed) {
+            const re = await sb
+              .from("store_members")
+              .select("role")
+              .eq("user_id", userId)
+              .maybeSingle();
+            membership = re.data;
+          }
+        }
 
         setSession({
           token: userSession.access_token,

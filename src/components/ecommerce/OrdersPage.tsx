@@ -427,7 +427,7 @@ export function OrdersPage() {
 
       // The document follows the ledger, not the other way round. Deposit is
       // already paid, so the COD absorbs the change in total.
-      updateOrder(order.id, {
+      await updateOrder(order.id, {
         items: draft,
         stockItems: draft,
         discountAmount: draftDiscount || undefined,
@@ -502,7 +502,7 @@ export function OrdersPage() {
         })),
       );
       
-      updateOrderStatus(orderId, "cancelled");
+      await updateOrderStatus(orderId, "cancelled");
     } catch (e) {
       setActionError(
         `لم يُلغَ الطلب ولم يرجع المخزون. ${e instanceof Error ? e.message : String(e)}`,
@@ -648,8 +648,8 @@ export function OrdersPage() {
               variantName: line.variantName,
             })),
           );
-          useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date() });
-          updateOrderStatus(order.id, "returned");
+          await useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date() });
+          await updateOrderStatus(order.id, "returned");
           refreshStock();
           refreshDebt();
           setReturnSettleInput("");
@@ -709,7 +709,7 @@ export function OrdersPage() {
       // the next reload and the goods go back on the shelf a second time —
       // which is what the three `return_confirmed` events on ECO-1786978185609
       // are. `claimOrder` only covers the same session; this survives a restart.
-      updateOrder(order.id, { returnConfirmedAt: new Date() });
+      await updateOrder(order.id, { returnConfirmedAt: new Date() });
       setConfirmDialog({ orderId: "", open: false });
       setConfirmName("");
     } catch (e) {
@@ -765,7 +765,7 @@ export function OrdersPage() {
         // Deliberately empty. See buildReturnPendingLines.
         lines: buildReturnPendingLines(),
       });
-      updateOrder(orderId, { status: "returned", returnType: type });
+      await updateOrder(orderId, { status: "returned", returnType: type });
     } catch (e) {
       setActionError(`لم تُسجَّل حالة المرتجع. ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -865,7 +865,7 @@ export function OrdersPage() {
         lines: buildOrderPaymentLines({ wallet: payWallet, amount: payValue }),
       });
 
-      useOrderStore.getState().updateOrder(order.id, {
+      await useOrderStore.getState().updateOrder(order.id, {
         depositAmount: round((order.depositAmount ?? 0) + payValue),
         expectedCod: round(Math.max(0, (order.expectedCod ?? 0) - payValue)),
         // Remember the till of the FIRST money in, so an order that was never
@@ -1050,24 +1050,24 @@ export function OrdersPage() {
         // The COD is in our hands, so this order is no longer part of any
         // batch the courier owes us (§3.9). Stamped with the same field the
         // batch settlement uses, so "settled" has ONE meaning.
-        updateOrder(order.id, { codSettledAt: new Date() });
+        await updateOrder(order.id, { codSettledAt: new Date() });
       }
 
       // Remember that this went out as a wholesale sale. Without it the return
       // path has no way to know the goods are on a trader's account rather
       // than a retail customer's card, and would refund cash against a debt.
       if (saleMode === "wholesale" && wholesaleClient) {
-        updateOrder(order.id, { wholesaleClientId: wholesaleClient });
+        await updateOrder(order.id, { wholesaleClientId: wholesaleClient });
       }
 
       // The order that carried the doubled fee has landed and been paid for, so
       // ONE wasted trip is recovered. A customer who returned three orders owes
       // three, and settles them one delivery at a time.
       if (clearsShippingDebt(order) && customerId) {
-        useCustomerStore.getState().settleWastedTrip(customerId);
+        await useCustomerStore.getState().settleWastedTrip(customerId);
       }
 
-      updateOrderStatus(reconcileDialog.orderId, "delivered");
+      await updateOrderStatus(reconcileDialog.orderId, "delivered");
       setReconcileDialog({ orderId: "", open: false });
     } catch (e) {
       setActionError(

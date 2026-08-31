@@ -106,8 +106,10 @@ export function BundlesPage() {
     }
   };
 
-  const toggleBundle = (id: string, currentActive: boolean) => {
-    updateProduct(id, { isActive: !currentActive });
+  const toggleBundle = async (id: string, currentActive: boolean) => {
+    // Awaited so a refused toggle surfaces instead of becoming an unhandled
+    // rejection with the switch showing a state the database never accepted.
+    await updateProduct(id, { isActive: !currentActive }).catch(() => {});
   };
 
   const setQuantity = (key: string, quantity: number) => {

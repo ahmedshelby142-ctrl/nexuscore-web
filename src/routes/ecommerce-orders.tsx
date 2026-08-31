@@ -584,9 +584,11 @@ function EcommerceOrdersInner() {
     }
 
     if (customerId) {
-      updateCustomer(customerId, {
+      // Awaited: the success message below says the customer was updated, so
+      // it must not be shown while that write is still in flight (or refused).
+      await updateCustomer(customerId, {
         address: [governorate, city, detailedAddress].filter(Boolean).join(" - ")
-      });
+      }).catch(() => {});
     }
 
     refreshStock();

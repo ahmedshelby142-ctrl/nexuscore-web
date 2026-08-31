@@ -14,7 +14,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 const exists = (p) => existsSync(new URL(p, import.meta.url));
@@ -258,6 +259,58 @@ test("every hydrated table is described in the cloud schema", () => {
       assert.ok(schema.includes(hit[1] + ": {"), hit[1] + " has a sink but no CLOUD_SCHEMA entry");
     }
   }
+});
+
+test("no component fires a cloud mutation without awaiting it", () => {
+  // THE most recurring defect in this codebase. Every store mutation that
+  // reaches Supabase is async and commits only on success. Called bare, it
+  // becomes an unhandled rejection while the surrounding code carries on to
+  // clear the form and print "تم الحفظ" — the user is told a write succeeded
+  // that the database refused.
+  //
+  // `void x().catch(...)` is accepted: that is a deliberate, handled decision.
+  const CLOUD_MUTATIONS = [
+    "addProduct", "updateProduct", "removeProduct", "archiveProduct", "restoreProduct",
+    "addCustomer", "updateCustomer", "archiveCustomer", "restoreCustomer",
+    "recordReturn", "settleWastedTrip",
+    "addOrder", "updateOrder", "updateOrderStatus",
+    "addSupplier", "addPurchaseInvoice", "recordSupplierPayment",
+    "addBranch", "updateBranch", "removeBranch",
+    "addPromoDiscount", "updatePromoDiscount", "removePromoDiscount",
+    "addReturnRecord",
+  ];
+  const PREFIXES = [
+    "useOrderStore.getState().", "useCustomerStore.getState().",
+    "useBusinessStore.getState().", "useBranchStore.getState().",
+  ];
+  // Plain string matching, deliberately: a regex here needs escaping that has
+  // silently collapsed twice, producing a check that matched nothing and a
+  // green test that guarded nothing.
+  const isBareCall = (line) => {
+    let t = line.trim();
+    for (const p of PREFIXES) if (t.startsWith(p)) t = t.slice(p.length);
+    return CLOUD_MUTATIONS.some((m) => t.startsWith(m + "("));
+  };
+
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = dir + "/" + entry.name;
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!entry.name.endsWith(".tsx") && !entry.name.endsWith(".ts")) continue;
+      readFileSync(full, "utf8").split(NL).forEach((line, i) => {
+        if (!isBareCall(line)) return;
+        if (line.includes("await") || line.includes("void ") || line.includes(".catch")) return;
+        const rel = "src" + full.split("src").pop().split(String.fromCharCode(92)).join("/");
+        offenders.push(rel + ":" + (i + 1) + "  " + line.trim().slice(0, 50));
+      });
+    }
+  };
+  for (const d of ["components", "routes", "pages"]) {
+    walk(fileURLToPath(new URL("../src/" + d, import.meta.url)));
+  }
+
+  assert.deepEqual(offenders, [], "these fire a cloud write and do not wait for it:" + NL + offenders.join(NL));
 });
 
 test("realtime is kept — it is a push, not a poll", () => {

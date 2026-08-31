@@ -182,7 +182,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
         const existing = findImportedProduct(products, row);
         if (existing) {
           // UPDATE MODE: Update fields and adjust stock
-          updateProduct(existing.id, {
+          await updateProduct(existing.id, {
             ...fields,
             sku: existing.sku,
             barcode: existing.barcode,

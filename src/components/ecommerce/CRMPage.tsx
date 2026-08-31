@@ -343,7 +343,9 @@ export function CRMPage() {
                           variant="outline"
                           onClick={(e) => {
                             e.stopPropagation();
-                            restoreCustomer(customer.id);
+                            // The store announces its own failure; this only
+                            // stops the rejection going unhandled.
+                            void restoreCustomer(customer.id).catch(() => {});
                           }}
                         >
                           <Undo2 className="size-3.5 ml-1.5" />

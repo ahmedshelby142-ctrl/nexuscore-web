@@ -275,7 +275,7 @@ export function CourierLedgerPage() {
       // The documents follow the ledger. Only the orders in THIS batch are
       // stamped — everything left unticked stays open for the next transfer.
       for (const order of live) {
-        updateOrder(order.id, { codSettledAt: new Date(), codSettlementId: settlementId });
+        await updateOrder(order.id, { codSettledAt: new Date(), codSettlementId: settlementId });
       }
 
       owedToUs.refresh();

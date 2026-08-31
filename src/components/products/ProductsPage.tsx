@@ -252,7 +252,7 @@ export function ProductsPage() {
         // `sellableStock` prefers the variants, but totalQuantity is what a
         // plain product is read by and what sync carries — so on a variant
         // product it is kept equal to their sum rather than left stale.
-        updateProduct(editingProduct.id, {
+        await updateProduct(editingProduct.id, {
           ...data,
           ...(hasVariants ? { totalQuantity: totalVariantStock } : {}),
         });

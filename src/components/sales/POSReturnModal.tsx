@@ -89,7 +89,13 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
             if (match && match.variantName) variantName = match.variantName;
             if (match && match.name && !product) name = match.name;
           }
-        } catch {}
+        } catch {
+          // Deliberately swallowed, and narrowly so: everything in this block
+          // only resolves a nicer DISPLAY name/variant for the returned line.
+          // The refund amount and quantity above do not depend on it, so a
+          // malformed payload must degrade to the raw name rather than take
+          // the whole return modal down.
+        }
 
         return {
           productId: rl.subject_id,

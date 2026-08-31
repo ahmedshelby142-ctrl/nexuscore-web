@@ -208,7 +208,7 @@ export function Returns() {
       // Their next order is quoted at double shipping — see `shippingFeeFor`.
       if (customerId) useCustomerStore.getState().recordReturn(customerId);
 
-      useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date().toISOString() as unknown as Date });
+      await useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date().toISOString() as unknown as Date });
       
       // Back on the shelf — every line, variant or plain. `variantName` now
       // rides on `stockItems`; the name split is the fallback for orders

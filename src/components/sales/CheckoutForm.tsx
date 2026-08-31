@@ -657,7 +657,11 @@ export default function CheckoutForm() {
         const isExchange = positiveItems.length > 0;
         const exchangeProduct = isExchange ? positiveItems[0] : null;
         
-        useBusinessStore.getState().addReturnRecord({
+        // Awaited: the POS sale/refund is already in the ledger by this point,
+        // so a lost return RECORD would leave money moved with no document
+        // explaining it. `.catch` keeps a failed document from rolling back a
+        // completed till operation — the store has already told the user.
+        await useBusinessStore.getState().addReturnRecord({
           original_order_id: `pos_${Date.now()}`,
           type: isExchange ? "exchange" : "return",
           customer_name: (saleMode === "retail" ? customerName.trim() : wholesaleClients.find((c) => c.id === selectedCustomerId)?.companyName) || "عميل غير مسجل (نقاط البيع)",

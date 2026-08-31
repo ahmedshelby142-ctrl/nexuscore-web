@@ -2,7 +2,9 @@ import { Component, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Layout } from "@/components/layout/Layout";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
-import { RoleGuard } from "@/components/auth/RoleGuard";
+import { RequireAccess } from "@/components/auth/RequireAccess";
+import { LicenseGate } from "@/components/auth/LicenseGate";
+import { SystemOwnerGate } from "@/components/auth/SystemOwnerGate";
 
 class RouteBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   constructor(props: { children: ReactNode }) {
@@ -35,6 +37,8 @@ class RouteBoundary extends Component<{ children: ReactNode }, { hasError: boole
   }
 }
 import { Login } from "@/pages/Login";
+import { LicenseExpired } from "@/pages/LicenseExpired";
+import { SystemAdminLicenses } from "@/routes/system-admin-licenses";
 import { Dashboard } from "@/routes/dashboard";
 import { Products } from "@/routes/products";
 import { POS } from "@/routes/pos";
@@ -45,6 +49,7 @@ import { Wholesale } from "@/routes/wholesale";
 import { Partners } from "@/routes/partners";
 import { Integrations } from "@/routes/integrations";
 import { Settings } from "@/routes/settings";
+import { Preferences } from "@/routes/preferences";
 import { EcommerceOrders } from "@/routes/ecommerce-orders";
 import { EcommerceOrdersHub } from "@/routes/ecommerce-orders-hub";
 import { CourierLedger } from "@/routes/courier-ledger";
@@ -67,21 +72,31 @@ export function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route element={<ProtectedRoute />}>
+          {/* Outside <LicenseGate> on purpose: the gate redirects here, so a
+              locked shop that could not reach this route would bounce forever. */}
+          <Route path="/license-expired" element={<LicenseExpired />} />
+
+          {/* Also outside <LicenseGate>, and for a sharper reason: if the
+              system owner's OWN store licence lapsed, gating this route would
+              lock them out of the one screen that can issue a new one. The
+              server-side owner check is the real boundary either way. */}
+          <Route element={<SystemOwnerGate />}>
+            <Route path="/system-admin/licenses" element={<SystemAdminLicenses />} />
+          </Route>
+          <Route element={<LicenseGate />}>
           <Route path="/" element={<Layout />}>
+            {/* Every screen below is gated by ONE map — see lib/roles.ts. The
+                per-route RoleGuards this replaced covered some paths and not
+                others, so /branches, /users and /backups stayed open by URL. */}
+            <Route element={<RequireAccess />}>
             <Route index element={<Dashboard />} />
+            <Route path="preferences" element={<Preferences />} />
             <Route path="products" element={<Products />} />
             <Route
               path="pos"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner", "cashier", "cashier_data_entry"]}
-                    message="هذه الشاشة مخصصة لكاشير البيع المباشر فقط."
-                    redirectPath="/ecommerce-orders"
-                    redirectLabel="العودة إلى الطلبات الإلكترونية"
-                  >
-                    <POS />
-                  </RoleGuard>
+                  <POS />
                 </RouteBoundary>
               }
             />
@@ -96,12 +111,7 @@ export function App() {
               path="ecommerce-orders"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner", "data_entry", "cashier_data_entry"]}
-                    message="عذراً، هذه اللوحة مخصصة للإدارة أو موظفي الداتا إنتري فقط."
-                  >
-                    <EcommerceOrders />
-                  </RoleGuard>
+                  <EcommerceOrders />
                 </RouteBoundary>
               }
             />
@@ -109,12 +119,7 @@ export function App() {
               path="orders"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner", "data_entry", "cashier_data_entry"]}
-                    message="عذراً، هذه اللوحة مخصصة للإدارة أو موظفي الداتا إنتري فقط."
-                  >
-                    <EcommerceOrdersHub />
-                  </RoleGuard>
+                  <EcommerceOrdersHub />
                 </RouteBoundary>
               }
             />
@@ -122,12 +127,7 @@ export function App() {
               path="courier-ledger"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner"]}
-                    message="عذراً، هذه اللوحة مخصصة لمدير المشروع فقط."
-                  >
-                    <CourierLedger />
-                  </RoleGuard>
+                  <CourierLedger />
                 </RouteBoundary>
               }
             />
@@ -135,12 +135,7 @@ export function App() {
               path="bundles"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner", "data_entry"]}
-                    message="عذراً، هذه اللوحة مخصصة للإدارة أو الداتا إنتري فقط."
-                  >
-                    <Bundles />
-                  </RoleGuard>
+                  <Bundles />
                 </RouteBoundary>
               }
             />
@@ -148,12 +143,7 @@ export function App() {
               path="discounts"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner", "data_entry"]}
-                    message="عذراً، هذه اللوحة مخصصة للإدارة أو الداتا إنتري فقط."
-                  >
-                    <Discounts />
-                  </RoleGuard>
+                  <Discounts />
                 </RouteBoundary>
               }
             />
@@ -161,12 +151,7 @@ export function App() {
               path="crm"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner", "data_entry"]}
-                    message="عذراً، هذه اللوحة مخصصة للإدارة أو الداتا إنتري فقط."
-                  >
-                    <CRM />
-                  </RoleGuard>
+                  <CRM />
                 </RouteBoundary>
               }
             />
@@ -175,12 +160,7 @@ export function App() {
               path="branches"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner"]}
-                    message="إدارة الفروع متاحة لمدير المشروع فقط."
-                  >
-                    <BranchesPage />
-                  </RoleGuard>
+                  <BranchesPage />
                 </RouteBoundary>
               }
             />
@@ -188,12 +168,7 @@ export function App() {
               path="users"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner"]}
-                    message="إدارة المستخدمين متاحة لمدير المشروع فقط."
-                  >
-                    <UsersPage />
-                  </RoleGuard>
+                  <UsersPage />
                 </RouteBoundary>
               }
             />
@@ -201,12 +176,7 @@ export function App() {
               path="backups"
               element={
                 <RouteBoundary>
-                  <RoleGuard
-                    allowedRoles={["owner"]}
-                    message="النسخ الاحتياطي متاح لمدير المشروع فقط."
-                  >
-                    <BackupsPage />
-                  </RoleGuard>
+                  <BackupsPage />
                 </RouteBoundary>
               }
             />
@@ -283,6 +253,8 @@ export function App() {
                 />
               }
             />
+            </Route>
+          </Route>
           </Route>
         </Route>
       </Routes>

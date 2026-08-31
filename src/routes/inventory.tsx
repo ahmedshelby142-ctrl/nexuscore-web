@@ -1,4 +1,5 @@
 import { InventoryTable } from "@/components/inventory/InventoryTable";
+import { ShortagesReport } from "@/components/inventory/ShortagesReport";
 
 export function Inventory() {
   return (
@@ -9,6 +10,9 @@ export function Inventory() {
       </div>
 
       <InventoryTable />
+
+      {/* What the open orders need that the shelf cannot cover. */}
+      <ShortagesReport />
     </div>
   );
 }

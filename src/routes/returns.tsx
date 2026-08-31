@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { format } from "date-fns";
 import {
   RotateCcw,
@@ -28,16 +28,31 @@ import { printTableAsPdf } from "@/lib/pdfGenerator";
 import { appendEvent } from "@/lib/ledger";
 import { searchOrders } from "@/lib/orderSearch";
 import { ProductSearch } from "@/components/products/ProductSearch";
-import { productPrice } from "@/lib/product";
-import { formatMoney } from "@/lib/math";
+import { productPrice, getActualStock } from "@/lib/product";
+import { formatMoney, round } from "@/lib/math";
 import { claimOrder, releaseOrder } from "@/lib/orderLifecycle";
 import { customerIdOf } from "@/lib/customers";
 import { OrderSearch } from "@/components/ecommerce/OrderSearch";
 import { buildReturnConfirmedLines, buildOrderRTOLines, buildOrderDeliveredLines } from "@/lib/ledger/orders";
+import { rateFor } from "@/lib/shippingRates";
+import { useShippingRatesStore } from "@/store/useShippingRatesStore";
+import { courierIdOf } from "@/lib/courierBatch";
 import { buildSaleLines } from "@/lib/ledger/sales";
 import { useStock } from "@/lib/ledger/useStock";
 import type { EcommerceOrder, ReturnRecord, WalletType } from "@/types";
 import { WALLET_LABELS } from "@/types";
+
+/**
+ * The درجة/لون out of a display name like "قميص - أزرق".
+ *
+ * Orders recorded before `stockItems` carried `variantName` only have the
+ * joined name to go on. A guess that matches no variant is harmless —
+ * `applyStockMoves` moves nothing rather than charging the wrong درجة.
+ */
+function variantFromName(productName: string | undefined): string | undefined {
+  if (!productName?.includes(" - ")) return undefined;
+  return productName.split(" - ").pop();
+}
 
 interface ReturnEntry {
   product_id: string;
@@ -64,13 +79,15 @@ export function Returns() {
   const orders = useOrderStore((s) => s.orders);
   const deliveredOrders = orders.filter((o) => o.status === "delivered");
 
-  const { qtyOf, costOf, refresh: refreshStock } = useStock();
+  const { costOf, refresh: refreshStock } = useStock();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedOrder, setSelectedOrder] = useState<EcommerceOrder | null>(null);
   const [wallet, setWallet] = useState<WalletType>("inStoreSafe");
   const [isWorking, setIsWorking] = useState(false);
   const [returnEntries, setReturnEntries] = useState<ReturnEntry[]>([]);
+  // The return fee for this governorate, from the Settings matrix.
+  const shippingRates = useShippingRatesStore((s) => s.rows);
   const [exchangeMode, setExchangeMode] = useState(false);
   const [exchange_product_id, setExchangeProductId] = useState("");
   const [exchangeQty, setExchangeQty] = useState(1);
@@ -127,8 +144,13 @@ export function Returns() {
               unitPrice: i.unitPrice,
               unitCost: i.unitCost ?? 0,
             })),
-            returnFee: 0,
-            courierId: order.courierId,
+            // The courier bills us for the failed trip. Passing 0 here meant
+            // this screen booked no shipping cost at all, so the same return
+            // cost the shop money through الطلبات and nothing through here.
+            returnFee: rateFor(shippingRates, order.governorate, "return"),
+            courierId: courierIdOf(order),
+            // The deposit is never refunded — store policy.
+            forfeitedDeposit: Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0),
           }),
         });
       } else {
@@ -169,15 +191,36 @@ export function Returns() {
             refundAmount: order.totalAmount,
             wallet: "inStoreSafe",
             revenueAmount: order.totalAmount,
-            returnFee: 0,
+            returnFee: rateFor(shippingRates, order.governorate, "return"),
+            movement: "return",
+            // `courierIdOf`, not `order.courierId`: the canonical resolver falls
+            // back to "default", which is the subject every other screen books
+            // this courier under. The raw field is often undefined.
+            courierId: courierIdOf(order),
+            // The deposit stays with the shop — store policy.
+            forfeitedDeposit: Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0),
             customerId: customerId || undefined,
             channel: "ecommerce",
-            courierId: order.courierId,
           }),
         });
       }
 
+      // Their next order is quoted at double shipping — see `shippingFeeFor`.
+      if (customerId) useCustomerStore.getState().recordReturn(customerId);
+
       useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date().toISOString() as unknown as Date });
+      
+      // Back on the shelf — every line, variant or plain. `variantName` now
+      // rides on `stockItems`; the name split is the fallback for orders
+      // recorded before it did.
+      useBusinessStore.getState().applyStockMoves(
+        (order.stockItems || []).map((item: any) => ({
+          productId: item.productId,
+          delta: item.quantity,
+          variantName: item.variantName ?? variantFromName(item.productName),
+        })),
+      );
+
       refreshStock();
       setConfirmDialog({ open: false, orderId: "" });
       setConfirmName("");
@@ -223,7 +266,32 @@ export function Returns() {
   };
 
   const exchangeProduct = products.find((p) => p.id === exchange_product_id);
-  const totalReturnValue = returnEntries.reduce((s, e) => s + e.quantity * e.unit_price, 0);
+
+  /**
+   * What the customer actually PAID for the lines being returned.
+   *
+   * `unit_price` on a line is the list price; a discount lives at the ORDER
+   * level (`totalAmount` is the goods already net of it). Refunding
+   * `quantity × unit_price` therefore hands back more than was ever taken:
+   * two items at 500 bought with 10% off cost 900, so returning one is worth
+   * 450 — not 500. The shop paid the promo twice.
+   *
+   * Scaling by the order's own ratio keeps a partial return proportional and
+   * makes a full return add back up to exactly `totalAmount`.
+   */
+  const discountFactor = useMemo(() => {
+    const listTotal = (selectedOrder?.stockItems ?? []).reduce(
+      (sum: number, i: any) => sum + i.unitPrice * i.quantity,
+      0,
+    );
+    const paidTotal = selectedOrder?.totalAmount;
+    if (!listTotal || !Number.isFinite(paidTotal) || paidTotal >= listTotal) return 1;
+    return paidTotal / listTotal;
+  }, [selectedOrder]);
+
+  const totalReturnValue = round(
+    returnEntries.reduce((s, e) => s + e.quantity * e.unit_price * discountFactor, 0),
+  );
   const exchangeTotal = exchangeProduct ? productPrice(exchangeProduct) * exchangeQty : 0;
   const priceDiff = exchangeTotal - totalReturnValue;
 
@@ -239,7 +307,7 @@ export function Returns() {
       product_id: e.product_id,
       product_name: e.product_name,
       quantity: e.quantity,
-      refund_amount: e.quantity * e.unit_price,
+      refund_amount: round(e.quantity * e.unit_price * discountFactor),
     }));
 
     const returnLineItems = itemsToReturn.map((e) => ({
@@ -260,9 +328,10 @@ export function Returns() {
       toast.error("اختر المنتج البديل وحدد الكمية");
       return;
     }
-    if (exchangeMode && exchangeQty > qtyOf(exchange_product_id)) {
+    const exchangeVariantName = undefined; // exchange picker has no variant step yet
+    if (exchangeMode && exchangeQty > getActualStock(exchangeProduct)) {
       toast.error(
-        `الكمية المطلوبة من "${exchangeProduct?.name ?? ""}" أكبر من المخزون (${qtyOf(exchange_product_id)})`
+        `الكمية المطلوبة من "${exchangeProduct?.name ?? ""}" أكبر من المخزون (${getActualStock(exchangeProduct)})`
       );
       return;
     }
@@ -286,9 +355,22 @@ export function Returns() {
         },
         lines: buildReturnConfirmedLines({
           items: returnLineItems,
-          refundAmount: exchangeMode ? 0 : totalReturnValue,
+          // BOTH legs are recorded, exchange or not. The replacement below is
+          // booked as a full-price `sale` (wallet +new), so suppressing the
+          // refund here left the till richer by the whole returned value: a
+          // 500 swapped for a 600 booked +600 when the customer handed over
+          // 100. Recording the refund makes the two legs net to the real
+          // difference — and to a NEGATIVE one when the swap is cheaper.
+          refundAmount: totalReturnValue,
           wallet,
           revenueAmount: totalReturnValue,
+          // 0 on purpose, unlike the two courier paths above: this is a
+          // walk-in at the counter. No delivery was attempted, so no courier
+          // is owed a trip and the shop bears no shipping cost.
+          //
+          // No `forfeitedDeposit` either — this returns individual LINES of an
+          // order, not the order. Withholding a whole-order deposit against a
+          // single item would charge the customer for goods they kept.
           returnFee: 0,
           customerId: customer?.id,
           channel: "ecommerce",
@@ -301,6 +383,17 @@ export function Returns() {
       setIsWorking(false);
       return;
     }
+
+    // The goods are back the moment that event lands — before the exchange
+    // leg, which has its own failure path that returns early. Restocking
+    // after it would lose the return on exactly the run that needs it kept.
+    useBusinessStore.getState().applyStockMoves(
+      returned_items.map((item: any) => ({
+        productId: item.product_id,
+        delta: item.quantity,
+        variantName: item.variantName ?? variantFromName(item.product_name),
+      })),
+    );
 
     if (exchangeMode) {
       // The replacement going out is genuinely a second business event — goods
@@ -359,6 +452,12 @@ export function Returns() {
         setReturnEntries([]);
         return;
       }
+
+      // The replacement left the shelf. The ledger recorded it as a sale
+      // above; this is the record catching up.
+      useBusinessStore.getState().applyStockMoves([
+        { productId: exchange_product_id, delta: -exchangeQty, variantName: exchangeVariantName },
+      ]);
     }
 
     addReturnRecord({
@@ -639,7 +738,6 @@ export function Returns() {
                   ) : (
                     <ProductSearch
                       products={products}
-                      qtyOf={qtyOf}
                       onSelect={(p) => setExchangeProductId(p.id)}
                       placeholder="ابحث عن المنتج البديل..."
                     />

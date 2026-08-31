@@ -71,7 +71,7 @@ export function IntegrationsSettingsPanel() {
   return (
     <div className="space-y-6">
       {/* Placeholder / product-mode notice */}
-      <PlaceholderNotice operationMode={operationMode} />
+      <PlaceholderNotice operationMode={operationMode as "offline_local" | "cloud_sync"} />
 
       {/* Manual fallback card — guarantees the product works without any integration */}
       <ManualFallbackCard

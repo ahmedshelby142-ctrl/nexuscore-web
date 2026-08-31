@@ -343,3 +343,81 @@ test("a زيادة commits the same way, in one event, and lifts the count", () 
   assert.equal(stockQty([...ledger, ...audit], CHARGER), 6, "4 recorded, 6 on the shelf");
   assert.equal(amountOn(audit, "expense"), -240, "a surplus cancels cost, it is not revenue");
 });
+
+
+// ── the جرد must reconcile against the LEDGER, not the shelf record ─────────
+//
+// The screen used to show `getActualStock` (the mirror) as "system quantity"
+// and then write a ledger adjustment relative to it. When the two had drifted —
+// which is the whole reason a جرد is run — it corrected the mirror and left the
+// ledger off by exactly the drift. The one screen whose job is making the books
+// match the shelf was creating the mismatch.
+
+/** What the screen now does: ledger delta off the ledger, mirror off the mirror. */
+const auditOnce = ({ ledgerQty, mirrorQty, counted, unitCost = 10 }) => ({
+  ledgerLines: buildStockAdjustmentLines({
+    items: [{ productId: "p1", systemQty: ledgerQty, countedQty: counted, unitCost }],
+  }),
+  mirrorDelta: counted - mirrorQty,
+});
+
+test("when the books agree, both move by the same amount", () => {
+  const { ledgerLines, mirrorDelta } = auditOnce({ ledgerQty: 10, mirrorQty: 10, counted: 8 });
+  assert.equal(qtyOn(ledgerLines, "stock"), -2);
+  assert.equal(mirrorDelta, -2);
+});
+
+test("when they have DRIFTED, each is corrected to the same count", () => {
+  // Ledger says 12, shelf record says 10, the auditor physically counts 8.
+  const { ledgerLines, mirrorDelta } = auditOnce({ ledgerQty: 12, mirrorQty: 10, counted: 8 });
+
+  assert.equal(qtyOn(ledgerLines, "stock"), -4, "12 → 8");
+  assert.equal(12 + qtyOn(ledgerLines, "stock"), 8, "the ledger lands on the count");
+
+  assert.equal(mirrorDelta, -2, "10 → 8");
+  assert.equal(10 + mirrorDelta, 8, "and so does the shelf record");
+});
+
+test("the old behaviour would have left the ledger wrong", () => {
+  // Both deltas taken from the mirror — what the screen used to do.
+  const wrong = buildStockAdjustmentLines({
+    items: [{ productId: "p1", systemQty: 10, countedQty: 8, unitCost: 10 }],
+  });
+  assert.equal(12 + qtyOn(wrong, "stock"), 10, "ledger ends at 10, not the counted 8");
+  assert.notEqual(12 + qtyOn(wrong, "stock"), 8, "which is the bug this pins");
+});
+
+test("a surplus corrects upward from whichever baseline each book holds", () => {
+  const { ledgerLines, mirrorDelta } = auditOnce({ ledgerQty: 3, mirrorQty: 5, counted: 9 });
+  assert.equal(3 + qtyOn(ledgerLines, "stock"), 9);
+  assert.equal(5 + mirrorDelta, 9);
+});
+
+test("an already-correct count writes nothing at all", () => {
+  const { ledgerLines, mirrorDelta } = auditOnce({ ledgerQty: 7, mirrorQty: 7, counted: 7 });
+  assert.equal(ledgerLines.length, 0, "no event, no shrinkage line");
+  assert.equal(mirrorDelta, 0);
+});
+
+test("a variant product reconciles its TOTAL against the ledger", () => {
+  // The ledger holds one number per product; only the mirror knows the درجات.
+  // Counting أحمر=4 and أزرق=3 with the ledger at 10 must move the ledger by
+  // −3, not by two separate per-variant deltas against a product-level figure.
+  const newTotal = 4 + 3;
+  const lines = buildStockAdjustmentLines({
+    items: [{ productId: "box", systemQty: 10, countedQty: newTotal, unitCost: 20 }],
+  });
+  assert.equal(qtyOn(lines, "stock"), -3);
+  assert.equal(10 + qtyOn(lines, "stock"), newTotal);
+});
+
+test("an uncounted درجة keeps its stock inside the product total", () => {
+  // أحمر counted at 4; أزرق never counted and still holding 3. The product
+  // total is 7 — booking 4 would write off a درجة nobody looked at.
+  const counted = 4;
+  const untouched = 3;
+  const lines = buildStockAdjustmentLines({
+    items: [{ productId: "box", systemQty: 10, countedQty: counted + untouched, unitCost: 20 }],
+  });
+  assert.equal(10 + qtyOn(lines, "stock"), 7, "not 4");
+});

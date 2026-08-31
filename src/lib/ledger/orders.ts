@@ -17,6 +17,7 @@
  */
 
 import type { NewLine } from "./types";
+import { toPiastres } from "./money.ts";
 
 export interface OrderLineItem {
   productId: string;
@@ -64,8 +65,12 @@ export function buildOrderPlacedLines(order: OrderPlacedInput): NewLine[] {
 
   const lines: NewLine[] = [];
   for (const item of order.items) {
-    if (item.quantity === 0) {
-      throw new Error(`order: quantity for ${item.productId} must not be zero`);
+    // `<= 0`, not `=== 0`. A NEGATIVE quantity flipped the sign on the stock
+    // line and made placing an order CREATE inventory: `qty: -(-2)` is +2,
+    // goods appearing on the shelf from nothing. Zero was caught; the direction
+    // that actually invents stock was not.
+    if (item.quantity <= 0) {
+      throw new Error(`order: quantity for ${item.productId} must be positive`);
     }
     
     if (item.isBundle && item.bundleItems) {
@@ -95,6 +100,47 @@ export function buildOrderPlacedLines(order: OrderPlacedInput): NewLine[] {
   }
 
   return lines;
+}
+
+export interface OrderPaymentInput {
+  /** The till this specific payment lands in — فودافون كاش, انستا باي, … */
+  wallet: string;
+  /** How much the customer just sent, EGP. */
+  amount: number;
+}
+
+/**
+ * A customer paying down an online order BEFORE it ships.
+ *
+ * ## The situation
+ *
+ * A retail order is placed with a deposit and the rest left as COD. Then the
+ * customer transfers the balance by Vodafone Cash. Until now there was nowhere
+ * to record that: the order kept its original `expectedCod`, the courier turned
+ * up demanding money the customer had already sent, and the cash sat in a
+ * wallet the books knew nothing about.
+ *
+ * ## Why this is only a wallet line
+ *
+ * Revenue is booked at DELIVERY, not when money arrives — the goods have not
+ * changed hands yet and the order can still be cancelled. So this writes the
+ * one thing that is unambiguously true right now: cash is in a specific till.
+ * The caller raises `depositAmount` and lowers `expectedCod` by the same
+ * amount, which keeps `deposit + cod === net goods + shipping` intact, so
+ * `buildOrderDeliveredLines` still balances when the order finally lands.
+ *
+ * This mirrors the deposit line `buildOrderPlacedLines` already writes — same
+ * shape, same account, just later.
+ */
+export function buildOrderPaymentLines(payment: OrderPaymentInput): NewLine[] {
+  if (!Number.isFinite(payment.amount) || payment.amount <= 0) {
+    throw new Error("order payment: amount must be positive");
+  }
+  if (!payment.wallet) {
+    throw new Error("order payment: needs a wallet to receive the money");
+  }
+
+  return [{ account: "wallet", subjectId: payment.wallet, amount: payment.amount }];
 }
 
 export interface OrderDeliveredInput {
@@ -183,8 +229,17 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
   // The customer pays for the goods AND the delivery, so the money collected
   // has to cover both. A silent mismatch would mean the books and the cash
   // disagreeing forever.
+  //
+  // Compared in PIASTRES, not floats. `expectedCod` is stored at placement as
+  // `total + shipping − deposit`, and adding the deposit back at delivery does
+  // not always land on the same float: `1.1 + (0.1 + 7.7 − 1.1)` is
+  // 7.799999999999999 while `0.1 + 7.7` is 7.8. Exact `!==` therefore refused
+  // roughly one in sixty part-paid orders — the cashier could not mark a real
+  // delivery done, for a difference the ledger cannot even store. Piastres are
+  // the resolution the books actually keep, so that is the resolution to
+  // compare at; anything genuinely off by a piastre still throws.
   const collected = netGoodsTotal + shippingFee;
-  if (deposit + cod !== collected) {
+  if (toPiastres(deposit + cod) !== toPiastres(collected)) {
     throw new Error(
       `order: deposit (${deposit}) + COD (${cod}) must equal net goods (${netGoodsTotal}) + shipping (${shippingFee}) = ${collected}`,
     );
@@ -257,8 +312,10 @@ export function buildOrderCancelledLines(order: OrderPlacedInput): NewLine[] {
 
   const lines: NewLine[] = [];
   for (const item of order.items) {
-    if (item.quantity === 0) {
-      throw new Error(`order: quantity for ${item.productId} must not be zero`);
+    // Same guard, mirrored: a negative here DESTROYED stock on cancellation
+    // instead of returning it.
+    if (item.quantity <= 0) {
+      throw new Error(`order: quantity for ${item.productId} must be positive`);
     }
 
     if (item.isBundle && item.bundleItems) {
@@ -325,8 +382,11 @@ export function buildOrderEditLines(edit: OrderEditInput): NewLine[] {
   const after = new Map(edit.after.map((i) => [i.productId, i]));
 
   for (const item of edit.after) {
-    if (item.quantity === 0) {
-      throw new Error(`order edit: quantity for ${item.productId} must not be zero`);
+    // An edit states the order's NEW contents, so every line must be a real
+    // quantity. Removing a product is expressed by leaving it out, never by
+    // passing zero or a negative — which reserved stock backwards.
+    if (item.quantity <= 0) {
+      throw new Error(`order edit: quantity for ${item.productId} must be positive`);
     }
   }
 
@@ -361,8 +421,27 @@ export function orderItemsTotal(items: OrderLineItem[]): number {
 
 export interface ReturnConfirmedInput {
   items: OrderLineItem[];
-  /** What is being handed back to the customer, EGP. */
+  /**
+   * What is being handed back to the customer, EGP.
+   *
+   * This is the amount BEFORE the deposit is withheld. Pass the full sum the
+   * customer paid for the goods; `forfeitedDeposit` below is subtracted from it.
+   */
   refundAmount: number;
+  /**
+   * The deposit the shop KEEPS, EGP. Never refunded, by store policy.
+   *
+   * A deposit is what makes an online order real: it is the customer's stake in
+   * a delivery the shop is about to pay a courier to attempt. When the order
+   * comes back, that attempt has still been made and paid for, so the deposit
+   * stays — it is earned, not held.
+   *
+   * Booked as revenue under `forfeited_deposit` rather than simply left out of
+   * the reversal. Both would leave the same cash in the till, but only this one
+   * SAYS SO: صافي الربح shows the retained income, and it can be reported on
+   * separately from goods sold, because it is not a sale.
+   */
+  forfeitedDeposit?: number;
   /** The till the refund comes out of. */
   wallet: string;
   /** Revenue being reversed — the original order total, EGP. */
@@ -447,15 +526,37 @@ export function buildReturnConfirmedLines(ret: ReturnConfirmedInput): NewLine[] 
   if (ret.refundAmount < 0) {
     throw new Error("return: refund cannot be negative");
   }
-  if (ret.refundAmount > 0) {
-    lines.push({ account: "wallet", subjectId: ret.wallet, amount: -ret.refundAmount });
+
+  const forfeited = ret.forfeitedDeposit ?? 0;
+  if (forfeited < 0) {
+    throw new Error("return: forfeited deposit cannot be negative");
+  }
+  if (forfeited > ret.refundAmount) {
+    // Keeping more than the customer paid is not a forfeit, it is a charge.
+    throw new Error(
+      `return: forfeited deposit (${forfeited}) is more than the refund (${ret.refundAmount})`,
+    );
   }
 
+  // Only what is left after the deposit leaves the till.
+  const cashOut = ret.refundAmount - forfeited;
+  if (cashOut > 0) {
+    lines.push({ account: "wallet", subjectId: ret.wallet, amount: -cashOut });
+  }
+
+  // The sale reverses in FULL — no goods were sold.
   lines.push({
     account: "revenue",
     subjectId: ret.channel ?? "ecommerce",
     amount: -ret.revenueAmount,
   });
+
+  // …and the retained deposit comes back as its own kind of income. Netting it
+  // into the line above would hide it inside "reversed sales", where no report
+  // could ever tell earned-and-kept from never-earned.
+  if (forfeited > 0) {
+    lines.push({ account: "revenue", subjectId: "forfeited_deposit", amount: forfeited });
+  }
 
   const fee = ret.returnFee ?? 0;
   if (fee > 0) {
@@ -477,10 +578,12 @@ export function buildReturnConfirmedLines(ret: ReturnConfirmedInput): NewLine[] 
   }
 
   if (ret.customerId) {
+    // LTV mirrors revenue, so it mirrors the NET of the reversal and the
+    // retained deposit. The customer really did leave that money with us.
     lines.push({
       account: "customer_ltv",
       subjectId: ret.customerId,
-      amount: -ret.revenueAmount,
+      amount: -(ret.revenueAmount - forfeited),
     });
   }
 
@@ -496,6 +599,18 @@ export interface OrderRTOInput {
   returnFee?: number;
   /** The courier owed the fee. Required when there is one. */
   courierId?: string;
+  /**
+   * The deposit the shop keeps, EGP. Never refunded, by store policy.
+   *
+   * An RTO writes no wallet line — the deposit was banked at `order_placed` and
+   * simply stays. But nothing had ever EXPLAINED it: revenue is booked at
+   * delivery, and this order never delivered, so the till held money with no
+   * income line behind it. Cash overstated, profit understated, and no report
+   * able to say why. This books the reason.
+   */
+  forfeitedDeposit?: number;
+  /** Whose LTV keeps the forfeited amount. Omit for a guest order. */
+  customerId?: string;
 }
 
 /**
@@ -543,6 +658,19 @@ export function buildOrderRTOLines(rto: OrderRTOInput): NewLine[] {
     if (!rto.courierId) throw new Error("RTO: needs a courier to owe the fee to");
     lines.push({ account: "payable_courier", subjectId: rto.courierId, amount: fee });
     lines.push({ account: "expense", subjectId: "shipping_return", amount: fee });
+  }
+
+  const forfeited = rto.forfeitedDeposit ?? 0;
+  if (forfeited < 0) {
+    throw new Error("RTO: forfeited deposit cannot be negative");
+  }
+  if (forfeited > 0) {
+    // No wallet line: the money never left, so nothing moves. This only names
+    // what the cash already sitting in the till is FOR.
+    lines.push({ account: "revenue", subjectId: "forfeited_deposit", amount: forfeited });
+    if (rto.customerId) {
+      lines.push({ account: "customer_ltv", subjectId: rto.customerId, amount: forfeited });
+    }
   }
 
   return lines;

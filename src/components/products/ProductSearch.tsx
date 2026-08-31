@@ -9,9 +9,9 @@
  *
  * Two rules it holds:
  *
- *   - **Stock comes from the ledger, never a product field.** The caller
- *     passes `qtyOf`, so what the picker shows is the same number POS and
- *     جملة sell against — including stock another device moved a second ago.
+ *   - **One stock reader.** `sellableStock` — the same one POS, جملة,
+ *     أونلاين and الجرد use — so the picker cannot show a different number
+ *     from the screen that opened it.
  *   - **Out-of-stock stays visible but unpickable.** Hiding it makes the
  *     product look deleted and sends the user hunting; showing it greyed with
  *     "نفد المخزون" answers the question they actually have.
@@ -23,29 +23,29 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { searchProducts } from "@/lib/productSearch";
-import { productPrice, activeProducts } from "@/lib/product";
+import { productPrice, activeProducts, sellableStock } from "@/lib/product";
 import { formatMoney, formatQty } from "@/lib/math";
 import type { Product } from "@/types";
 
 interface ProductSearchProps {
   products: Product[];
-  /** Ledger stock for a product id. Required — there is no stored-stock path. */
-  qtyOf: (productId: string) => number;
   onSelect: (product: Product) => void;
   /** Product ids already chosen, shown as "مضاف بالفعل" and not selectable. */
   excludeIds?: string[];
   placeholder?: string;
   /** How many results to render before asking the user to narrow the search. */
   limit?: number;
+  /** Whether to allow selection of products with 0 stock (e.g. for restocking) */
+  allowOutOfStock?: boolean;
 }
 
 export function ProductSearch({
   products,
-  qtyOf,
   onSelect,
   excludeIds = [],
   placeholder,
   limit = 8,
+  allowOutOfStock = false,
 }: ProductSearchProps) {
   const [query, setQuery] = useState("");
 
@@ -94,9 +94,10 @@ export function ProductSearch({
             </div>
           ) : (
             shown.map((product) => {
-              const stock = qtyOf(product.id);
+              // Bundle-aware: a بوكس reads its recipe, not its own record.
+              const stock = sellableStock(product, products);
               const already = excludeIds.includes(product.id);
-              const disabled = stock <= 0 || already;
+              const disabled = (!allowOutOfStock && stock <= 0) || already;
 
               return (
                 <button

@@ -11,13 +11,15 @@ import { Input } from "@/components/ui/input";
 import { Search, Receipt, ArrowLeftRight } from "lucide-react";
 import { events, eventLines, fromPiastres } from "@/lib/ledger";
 import type { LedgerEvent } from "@/lib/ledger";
+import { useBusinessStore } from "@/store/useBusinessStore";
 
 interface POSReturnModalProps {
-  onReturnItem: (product: { id: string; name: string; unitPrice: number }, qty: number) => void;
+  onReturnItem: (product: any, variantName?: string) => void;
   trigger?: React.ReactNode;
 }
 
 export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
+  const products = useBusinessStore(state => state.products);
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [receipts, setReceipts] = useState<(LedgerEvent & { parsedLines?: any[] })[]>([]);
@@ -65,16 +67,27 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
         const qty = sl ? Math.abs(sl.qty_delta) : 1;
         const unitPrice = fromPiastres(rl.amount_delta) / qty;
 
-        // name is in payload ideally
-        let name = "منتج غير معروف";
-        const payloadStr = JSON.stringify(rec.payload || {});
+        const product = products.find((p: any) => String(p.id) === String(rl.subject_id));
+        let name = product?.name || "منتج غير معروف";
+        let variantName = undefined;
+
         try {
-          if (typeof rec.payload === "object" && rec.payload && "lines" in rec.payload) {
+          if (typeof rec.payload === "object" && rec.payload && "items" in rec.payload) {
+            const pItems = (rec.payload as any).items as any[];
+            const match = pItems.find(pl => String(pl.productId) === String(rl.subject_id));
+            if (match && match.variantName) {
+              variantName = match.variantName;
+            }
+            if (match && match.productName && !product) {
+              name = match.productName;
+            } else if (match && match.name && !product) {
+              name = match.name;
+            }
+          } else if (typeof rec.payload === "object" && rec.payload && "lines" in rec.payload) {
             const pLines = (rec.payload as any).lines as any[];
-            // Payload doesn't have productId, but it has name and quantity.
-            // This is a best effort mapping. If we don't know the name, we just show the ID.
             const match = pLines.find(pl => Math.abs(pl.qty) === qty);
-            if (match && match.name) name = match.name;
+            if (match && match.variantName) variantName = match.variantName;
+            if (match && match.name && !product) name = match.name;
           }
         } catch {}
 
@@ -83,6 +96,8 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
           name,
           unitPrice,
           qty,
+          variantName,
+          product
         };
       });
 
@@ -93,7 +108,7 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
   };
 
   const handleReturn = (line: any, rec: LedgerEvent) => {
-    onReturnItem({ id: line.productId, name: line.name, unitPrice: line.unitPrice }, 1);
+    onReturnItem(line.product || { id: line.productId, name: line.name, unitPrice: line.unitPrice }, line.variantName);
     // don't close modal immediately, they might return multiple things
   };
 
@@ -152,7 +167,9 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
                 {rec.parsedLines && rec.parsedLines.map((line, idx) => (
                   <div key={idx} className="flex items-center justify-between bg-background p-2 rounded border border-border">
                     <div>
-                      <p className="text-sm font-medium">{line.name}</p>
+                      <p className="text-sm font-medium">
+                        {line.name} {line.variantName ? `- (${line.variantName})` : ""}
+                      </p>
                       <p className="text-xs text-muted-foreground">{line.unitPrice.toLocaleString("ar-EG")} ج.م (الكمية: {line.qty})</p>
                     </div>
                     <Button variant="secondary" size="sm" onClick={() => handleReturn(line, rec)}>

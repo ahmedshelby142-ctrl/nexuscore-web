@@ -91,7 +91,7 @@ export function FinancialReportsPage() {
 
   // ponytail: one `fetchPnl` for the headline plus one per table row, fired
   // in parallel and capped at 60 rows by `buckets` — so at worst 305 indexed
-  // SUMs against a local SQLite file. If this ever drags, the fix is a GROUP
+  // SUMs in Postgres. If this ever drags, the fix is a GROUP
   // BY in the driver, not a cached total.
   useEffect(() => {
     if (!window) {

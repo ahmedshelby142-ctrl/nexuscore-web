@@ -31,9 +31,10 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useFinancialStore } from "@/store/useFinancialStore";
 import { getPartnerEarnings } from "@/services/financeService";
-import { add, subtract, multiply, divide, formatMoney } from "@/lib/math";
+import { add, subtract, multiply, divide, round, formatMoney } from "@/lib/math";
 import type { BusinessPersona, ExpenseCategory } from "@/types";
 import { useBalances } from "@/lib/ledger/useBalances";
+import { totalAssetsOf, netWorthOf } from "@/lib/dashboard";
 import { useStock } from "@/lib/ledger/useStock";
 import { CapitalEquityPage } from "@/components/finance/CapitalEquityPage";
 import { ownershipFits, totalOwnership, activePartners, isPartnerArchived } from "@/lib/partners";
@@ -178,6 +179,7 @@ interface LedgerSummary {
   profit: number;
   /** SUM(receivable_client) — unpaid wholesale credit. */
   receivableClient: number;
+  payableSupplier: number;
   /** Total value of inventory on hand at cost. */
   inventoryValue: number;
   /** SUM(wallet) across all wallets. */
@@ -259,15 +261,42 @@ const PERSONA_KPI_CONFIG: Record<
       compute: (ls) => formatMoney(ls.receivableClient),
     },
     {
+      key: "supplierDebts",
+      label: "ديون علينا (الموردين)",
+      sublabel: "المتبقي الآجل على فواتير المشتريات",
+      icon: TrendingUp,
+      bgClass: "from-red-500/10",
+      iconBg: "bg-red-100",
+      iconColor: "text-red-600",
+      valueColor: "text-red-600",
+      compute: (ls) => formatMoney(ls.payableSupplier),
+    },
+    {
       key: "totalAssets",
       label: "إجمالي أصول الشركة",
-      sublabel: "خزائن + مخزون + ديون",
+      sublabel: "خزائن + مخزون + ديون العملاء (قبل خصم ديون الموردين)",
       icon: Landmark,
       bgClass: "from-purple-500/10",
       iconBg: "bg-purple-100",
       iconColor: "text-purple-600",
       valueColor: "text-purple-600",
-      compute: (ls) => formatMoney(ls.walletsTotal + ls.inventoryValue + ls.receivableClient),
+      compute: (ls) => formatMoney(totalAssetsOf(ls)),
+    },
+    {
+      key: "netWorth",
+      label: "صافي القيمة",
+      sublabel: "إجمالي الأصول − ديون الموردين",
+      icon: Landmark,
+      bgClass: "from-emerald-500/10",
+      iconBg: "bg-emerald-100",
+      iconColor: "text-emerald-600",
+      valueColor: "text-emerald-600",
+      compute: (ls) => {
+        const net = netWorthOf(ls);
+        // A minus sign belongs OUTSIDE the currency, like the profit card does
+        // it — `formatMoney` of a negative reads as an amount, not a shortfall.
+        return net >= 0 ? formatMoney(net) : `-${formatMoney(Math.abs(net))}`;
+      },
     },
   ],
   ecommerce: [
@@ -336,15 +365,42 @@ const PERSONA_KPI_CONFIG: Record<
       compute: (ls) => formatMoney(ls.receivableClient),
     },
     {
+      key: "supplierDebts",
+      label: "ديون علينا (الموردين)",
+      sublabel: "المتبقي الآجل على فواتير المشتريات",
+      icon: TrendingUp,
+      bgClass: "from-red-500/10",
+      iconBg: "bg-red-100",
+      iconColor: "text-red-600",
+      valueColor: "text-red-600",
+      compute: (ls) => formatMoney(ls.payableSupplier),
+    },
+    {
       key: "totalAssets",
       label: "إجمالي أصول الشركة",
-      sublabel: "خزائن + مخزون + ديون",
+      sublabel: "خزائن + مخزون + ديون العملاء (قبل خصم ديون الموردين)",
       icon: Landmark,
       bgClass: "from-purple-500/10",
       iconBg: "bg-purple-100",
       iconColor: "text-purple-600",
       valueColor: "text-purple-600",
-      compute: (ls) => formatMoney(ls.walletsTotal + ls.inventoryValue + ls.receivableClient),
+      compute: (ls) => formatMoney(totalAssetsOf(ls)),
+    },
+    {
+      key: "netWorth",
+      label: "صافي القيمة",
+      sublabel: "إجمالي الأصول − ديون الموردين",
+      icon: Landmark,
+      bgClass: "from-emerald-500/10",
+      iconBg: "bg-emerald-100",
+      iconColor: "text-emerald-600",
+      valueColor: "text-emerald-600",
+      compute: (ls) => {
+        const net = netWorthOf(ls);
+        // A minus sign belongs OUTSIDE the currency, like the profit card does
+        // it — `formatMoney` of a negative reads as an amount, not a shortfall.
+        return net >= 0 ? formatMoney(net) : `-${formatMoney(Math.abs(net))}`;
+      },
     },
   ],
 };
@@ -401,14 +457,22 @@ export function PartnersFinancePage() {
   // جرد shrinkage and courier return fees.
   const { total: ledgerSales, error: salesError, amountOf: revenueOf } = useBalances("revenue");
   const { total: ledgerExpenses, error: expenseError, amountOf: expenseOf, refresh: refreshExpenses } = useBalances("expense");
-  const { refresh: refreshWallets, amountOf: walletAmountOf } = useBalances("wallet");
+  const {
+    refresh: refreshWallets,
+    amountOf: walletAmountOf,
+    total: walletsTotal,
+  } = useBalances("wallet");
   const { total: receivableClientTotal } = useBalances("receivable_client");
   const { total: inventoryValue } = useBalances("stock");
-  
-  const walletsTotal = (Object.keys(WALLET_LABELS) as WalletType[]).reduce(
-    (sum, w) => sum + walletAmountOf(w),
-    0
-  );
+  // What we owe suppliers. Reachable since the receipt screen learned to book
+  // a part-paid فاتورة آجل, and until now displayed by nothing at all.
+  const { total: payableSupplierTotal } = useBalances("payable_supplier");
+
+  // `walletsTotal` is the account's OWN sum, not a reduce over WALLET_LABELS.
+  // The whitelist version silently dropped any wallet line whose subject was
+  // not one of the four known keys — and `WalletType` is a bare `string`, so
+  // nothing stops one. It also disagreed with رأس المال, which has always used
+  // this same `total`. One figure, one definition.
 
   const hasOpeningBalance = (Object.keys(WALLET_LABELS) as WalletType[]).some(
     (w) => walletAmountOf(w) !== 0,
@@ -449,10 +513,11 @@ export function PartnersFinancePage() {
       // it is non-cash, so it lives as a memo on the reports tab (§3.12).
       profit: ledgerSales - totalCOGS - ledgerExpenses,
       receivableClient: receivableClientTotal,
+      payableSupplier: payableSupplierTotal,
       inventoryValue: inventoryValue,
       walletsTotal: walletsTotal,
     };
-  }, [busTrigger, finTrigger, totalCOGS, ledgerSales, ledgerExpenses, revenueOf, shippingCost, receivableClientTotal, inventoryValue, walletsTotal]);
+  }, [busTrigger, finTrigger, totalCOGS, ledgerSales, ledgerExpenses, revenueOf, shippingCost, receivableClientTotal, payableSupplierTotal, inventoryValue, walletsTotal]);
 
   // ── Partner earnings map ──
   const partnerEarningsMap = useMemo(() => {
@@ -576,7 +641,7 @@ export function PartnersFinancePage() {
     refreshWallets();
     refreshExpenses();
 
-    const result = addExpense({
+    const result = await addExpense({
       category: expenseForm.category as ExpenseCategory,
       amount,
       description: expenseForm.description || undefined,

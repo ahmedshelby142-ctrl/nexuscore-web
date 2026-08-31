@@ -12,6 +12,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { appendOpeningBalance } from "@/lib/ledger/openingBalance";
+import { appendEvent } from "@/lib/ledger";
+import { useStock } from "@/lib/ledger/useStock";
 import {
   parseImportRows,
   openingBalanceOf,
@@ -19,6 +21,7 @@ import {
   type ImportRow,
 } from "@/lib/productImport";
 import { useAuthStore } from "@/store/useAuthStore";
+import { toAppRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
 import type { Product } from "@/types";
 
@@ -43,13 +46,14 @@ const COLUMNS: {
   { key: "retail_price", label: "سعر البيع قطاعي", required: false, type: "number" },
   { key: "wholesale_price", label: "سعر البيع جملة", required: false, type: "number" },
   { key: "stock_qty", label: "الكمية الحالية", required: false, type: "number" },
+  { key: "variants_raw", label: "درجات الألوان (الاسم:الكمية,الاسم:الكمية)", required: false, type: "text" },
 ];
 
 function generateTemplateBuffer(): Uint8Array {
   const wb = XLSX.utils.book_new();
   const wsData = [COLUMNS.map((c) => c.label)];
-  wsData.push(["SKU-001", "منتج تجريبي 1", "إلكترونيات", "100", "250", "200", "50"]);
-  wsData.push(["", "", "", "", "", "", ""]);
+  wsData.push(["SKU-001", "منتج تجريبي 1", "إلكترونيات", "100", "250", "200", "50", "احمر:30, ازرق:20"]);
+  wsData.push(["", "", "", "", "", "", "", ""]);
   const ws = XLSX.utils.aoa_to_sheet(wsData);
   ws["!cols"] = COLUMNS.map(() => ({ wch: 20 }));
   XLSX.utils.book_append_sheet(wb, ws, "نموذج استيراد");
@@ -64,8 +68,9 @@ interface BulkImportProductProps {
 
 export function BulkImportProduct({ onClose, onImported }: BulkImportProductProps) {
   const { products, addProduct, updateProduct } = useBusinessStore();
+  const { qtyOf } = useStock();
   const userRole = useAuthStore((s) => s.userRole);
-  const isOwner = userRole === "owner";
+  const isOwner = toAppRole(userRole) === "ADMIN";
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [rows, setRows] = useState<ParsedRow[]>([]);
@@ -136,40 +141,89 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
       for (const row of rows) {
         const generatedSku = row.sku || autoSku();
         const price = Math.max(0, row.retail_price || 0);
+        
+        let variants: { name: string; stock: number }[] | undefined = undefined;
+        let finalStockQty = row.stock_qty;
+
+        if (row.variants_raw) {
+          variants = [];
+          const pairs = row.variants_raw.split(",");
+          for (const pair of pairs) {
+            const [vName, vStock] = pair.split(":");
+            if (vName && vName.trim()) {
+              const parsedStock = parseInt(vStock) || 0;
+              variants.push({ name: vName.trim(), stock: parsedStock });
+            }
+          }
+          if (variants.length > 0) {
+            finalStockQty = variants.reduce((sum, v) => sum + v.stock, 0);
+            row.stock_qty = finalStockQty; // So openingBalanceOf sees it
+          }
+        }
+
         const fields = {
           name: row.name,
           sku: generatedSku,
           barcode: row.sku || generatedSku,
           category: row.category || "أخرى",
-          unitPrice: price || 1,
-          wholesalePrice: Math.max(0, row.wholesale_price || price || 0),
+          costPrice: Math.max(0, Number(row.purchase_price) || 0),
+          purchasePrice: Math.max(0, Number(row.purchase_price) || 0),
+          unitPrice: Math.max(0, Number(price) || 1),
+          wholesalePrice: Math.max(0, Number(row.wholesale_price) || Number(price) || 0),
+          totalQuantity: Math.max(0, Number(finalStockQty) || 0),
           minStockLevel: 0,
           maxStockLevel: 0,
           supplier: undefined,
           description: undefined,
           isActive: true,
+          metadata: variants ? { variants } : undefined,
         };
 
-        // Re-importing the same sheet must not double the shelf. A row whose
-        // barcode/SKU is already registered updates that product's details and
-        // records NO opening balance — the same guard the product form applies
-        // when editing: the opening balance was a one-off assertion on the day
-        // the product was registered, and re-applying it counts the stock twice.
         const existing = findImportedProduct(products, row);
         if (existing) {
-          updateProduct(existing.id, fields);
-          skipped++;
+          // UPDATE MODE: Update fields and adjust stock
+          updateProduct(existing.id, {
+            ...fields,
+            sku: existing.sku,
+            barcode: existing.barcode,
+          });
+          
+          const currentStock = qtyOf(existing.id);
+          const delta = finalStockQty - currentStock;
+          
+          if (delta !== 0) {
+            await appendEvent({
+              kind: "stock_adjustment",
+              actor: "نظام الاستيراد",
+              refType: "product_edit",
+              payload: {
+                notes: "تسوية تلقائية لتحديث المخزون عبر الإكسل",
+              },
+              lines: [
+                {
+                  account: "stock",
+                  subjectId: existing.id,
+                  qty: delta,
+                  unitCost: 0,
+                }
+              ]
+            });
+            opened++; // We can reuse this counter to show modified/adjusted rows
+            units += delta;
+          }
+          
+          skipped++; // Keeping this as "Existing matched" for UI reporting
           continue;
         }
 
-        const product = addProduct(fields);
+        // Awaited: the opening-balance event below names this product by
+        // id, so it must exist in the database before the event is written.
+        const product = await addProduct(fields);
         count++;
 
-        // ONE event per row that carries a quantity — the shop asserting what
-        // is on its shelf today, through the SAME function the product form's
-        // "الكمية الموجودة حالياً" uses. Writing it to the product record (the
-        // old `quantity` field) is what made every imported shop open at zero.
+        // INSERT MODE: One event per row that carries a quantity
         const opening = openingBalanceOf(row);
+        opening.quantity = Math.max(0, finalStockQty); // Ensure the variants sum is used
         const eventId = await appendOpeningBalance({
           productId: product.id,
           productName: product.name,
@@ -362,6 +416,9 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
                   <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
                     الكمية
                   </th>
+                  <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
+                    الأنواع (درجات)
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -410,6 +467,9 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
                       <td className="text-center p-2.5 text-xs whitespace-nowrap">
                         {row.stock_qty}
                       </td>
+                      <td className="text-center p-2.5 text-xs whitespace-nowrap">
+                        {row.variants_raw || "—"}
+                      </td>
                     </tr>
                   );
                 })}
@@ -452,8 +512,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
           </p>
           {skippedCount > 0 && (
             <p className="text-sm text-muted-foreground">
-              {skippedCount} منتج كان متسجّل قبل كده بنفس الباركود — بياناته اتحدّثت، ومتسجّلش رصيد
-              افتتاحي تاني عشان الكمية متتحسبش مرتين.
+              {skippedCount} منتج كان متسجّل قبل كده بنفس الباركود — بياناته اتحدّثت، وتم تسوية المخزون الخاص به ليطابق الملف إذا كان هناك اختلاف.
             </p>
           )}
           <p className="text-sm text-muted-foreground">

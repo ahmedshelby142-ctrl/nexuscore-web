@@ -1,57 +1,35 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Branch, BranchAssignment, UserRole } from "@/types";
-import { safeInvoke, isDesktop } from "@/lib/tauri";
-import { pushPendingChanges } from "@/services/ledgerSyncEngine";
-import { SyncService } from "@/services/api/SyncService";
+import { writeThrough } from "@/services/cloudData";
 
-async function syncBranchToDb(branch: Branch) {
-  try {
-    if (isDesktop) {
-      const identity: any = await safeInvoke("ledger_identity", {
-        candidateStoreId: "dummy",
-        candidateDeviceId: "dummy",
-      });
-      if (!identity || identity.store_provisional) return;
-      
-      const Database = (await import("@tauri-apps/plugin-sql")).default;
-      const dbPath = await safeInvoke<string | null>("ledger_db_path");
-      if (!dbPath) return;
-      
-      const db = await Database.load(`sqlite:${dbPath}`);
-      
-      await db.execute(
-        `INSERT INTO branches (id, name, code, address, phone, is_active, created_at, deleted_at, store_id, device_id, sync_status) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
-         ON CONFLICT(id) DO UPDATE SET 
-           name = EXCLUDED.name,
-           code = EXCLUDED.code,
-           address = EXCLUDED.address,
-           phone = EXCLUDED.phone,
-           is_active = EXCLUDED.is_active,
-           deleted_at = EXCLUDED.deleted_at,
-           sync_status = 'pending'`,
-        [
-          branch.id, 
-          branch.name, 
-          branch.code, 
-          branch.address || null, 
-          branch.phone || null, 
-          branch.isActive ? 1 : 0,
-          branch.createdAt.toISOString(),
-          (branch as any).deleted_at || null,
-          identity.store_id,
-          identity.device_id
-        ]
-      );
-      
-      await pushPendingChanges();
-    } else {
-      await SyncService.pushChanges("branches", branch);
+/**
+ * Write one branch to Supabase, then commit WHAT SUPABASE STORED.
+ *
+ * This used to `set` first and push after, swallowing the failure in a
+ * `console.error` — so a branch could be created, selected as the current
+ * scope, and be absent everywhere else. Nothing is committed here until the
+ * database has the row; a failure throws, having changed nothing.
+ */
+async function saveBranch(
+  set: (fn: (state: any) => any) => void,
+  branch: Branch,
+): Promise<Branch> {
+  const saved = (await writeThrough("branches", branch)) as Branch;
+  set((state: any) => {
+    const at = state.branches.findIndex((b: Branch) => b.id === saved.id);
+    if (at < 0) {
+      return {
+        branches: [...state.branches, saved],
+        // If this is the first branch, auto-select it.
+        currentBranchId: state.currentBranchId ?? saved.id,
+      };
     }
-  } catch (err) {
-    console.error("Failed to sync branch to DB:", err);
-  }
+    const next = state.branches.slice();
+    next[at] = { ...next[at], ...saved };
+    return { branches: next };
+  });
+  return saved;
 }
 
 /**
@@ -80,11 +58,11 @@ interface BranchState {
   assignments: BranchAssignment[];
 
   // Branch CRUD
-  addBranch: (branch: Omit<Branch, "id" | "createdAt">) => void;
-  updateBranch: (id: string, patch: Partial<Branch>) => void;
-  removeBranch: (id: string) => void;
+  addBranch: (branch: Omit<Branch, "id" | "createdAt">) => Promise<void>;
+  updateBranch: (id: string, patch: Partial<Branch>) => Promise<void>;
+  removeBranch: (id: string) => Promise<void>;
   setCurrentBranch: (id: string | null) => void;
-  toggleBranchActive: (id: string) => void;
+  toggleBranchActive: (id: string) => Promise<void>;
 
   // User assignment
   assignUser: (assignment: Omit<BranchAssignment, "id" | "createdAt">) => void;
@@ -105,33 +83,32 @@ export const useBranchStore = create<BranchState>()(
       currentBranchId: null,
       assignments: [],
 
-      addBranch: (branchData) => {
-        const branch: Branch = {
+      addBranch: async (branchData) => {
+        await saveBranch(set, {
           ...branchData,
           id: crypto.randomUUID(),
           createdAt: new Date(),
-        };
-        set((state) => ({
-          branches: [...state.branches, branch],
-          // If this is the first branch, auto-select it.
-          currentBranchId: state.currentBranchId ?? branch.id,
-        }));
-        syncBranchToDb(branch);
+          // Epoch-ms sync clock, distinct from `createdAt` above.
+          updated_at: Date.now(),
+        } as Branch);
       },
 
-      updateBranch: (id, patch) => {
-        set((state) => ({
-          branches: state.branches.map((b) => (b.id === id ? { ...b, ...patch } : b)),
-        }));
-        const b = get().branches.find((br) => br.id === id);
-        if (b) syncBranchToDb(b);
+      updateBranch: async (id, patch) => {
+        const current = get().branches.find((br) => br.id === id);
+        if (!current) return;
+        await saveBranch(set, { ...current, ...patch, updated_at: Date.now() });
       },
 
-      removeBranch: (id) => {
-        const b = get().branches.find((br) => br.id === id);
-        if (b) {
-          syncBranchToDb({ ...b, deleted_at: new Date().toISOString() } as unknown as Branch);
-        }
+      removeBranch: async (id) => {
+        const current = get().branches.find((br) => br.id === id);
+        if (!current) return;
+        // Tombstoned, not deleted — assignments and scoped records still point
+        // here. The local drop happens only once the server has the tombstone.
+        await writeThrough("branches", {
+          ...current,
+          deleted_at: new Date().toISOString(),
+          updated_at: Date.now(),
+        });
         set((state) => ({
           branches: state.branches.filter((br) => br.id !== id),
           assignments: state.assignments.filter((a) => a.branchId !== id),
@@ -141,12 +118,10 @@ export const useBranchStore = create<BranchState>()(
 
       setCurrentBranch: (id) => set({ currentBranchId: id }),
 
-      toggleBranchActive: (id) => {
-        set((state) => ({
-          branches: state.branches.map((b) => (b.id === id ? { ...b, isActive: !b.isActive } : b)),
-        }));
-        const b = get().branches.find((br) => br.id === id);
-        if (b) syncBranchToDb(b);
+      toggleBranchActive: async (id) => {
+        const current = get().branches.find((br) => br.id === id);
+        if (!current) return;
+        await saveBranch(set, { ...current, isActive: !current.isActive, updated_at: Date.now() });
       },
 
       assignUser: (assignmentData) => {
@@ -183,7 +158,15 @@ export const useBranchStore = create<BranchState>()(
 
       clearAll: () => set({ branches: [], currentBranchId: null, assignments: [] }),
     }),
-    { name: "branch-storage" },
+    {
+      name: "branch-storage",
+      // `branches` is cloud-owned. `currentBranchId` and the local
+      // assignments have no cloud table, so they stay persisted.
+      partialize: (state: any) => ({
+        currentBranchId: state.currentBranchId,
+        assignments: state.assignments,
+      }),
+    },
   ),
 );
 

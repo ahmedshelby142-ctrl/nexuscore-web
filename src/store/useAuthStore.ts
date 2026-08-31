@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { getOperationMode } from "@/lib/supabase";
 import type {
   PublicSession,
   UserRole,
@@ -80,7 +81,16 @@ interface AuthState {
   logout: () => void;
 }
 
-const LEGACY_DEFAULT: Pick<
+/**
+ * A function, not a const, on purpose.
+ *
+ * `operationMode` is derived by calling into `lib/supabase`, and doing that
+ * while THIS module is still being evaluated makes the value hostage to import
+ * order — which showed up as `getOperationMode is not defined` at runtime even
+ * though the types were fine. Zustand calls the initializer lazily, on first
+ * use, by which point every module has finished loading.
+ */
+function legacyDefault(): Pick<
   AuthState,
   | "userRole"
   | "businessType"
@@ -88,19 +98,23 @@ const LEGACY_DEFAULT: Pick<
   | "isAuthenticated"
   | "username"
   | "activeBusinessProfile"
-> = {
-  userRole: "owner",
-  businessType: "retail",
-  operationMode: "offline_local",
-  isAuthenticated: false,
-  username: "",
-  activeBusinessProfile: "omnichannel",
-};
+> {
+  return {
+    userRole: "owner",
+    businessType: "retail",
+    // Derived from configuration, never chosen: there is no local database to
+    // fall back to, so "local" is not a mode this app has.
+    operationMode: getOperationMode(),
+    isAuthenticated: false,
+    username: "",
+    activeBusinessProfile: "omnichannel",
+  };
+}
 
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
-      ...LEGACY_DEFAULT,
+      ...legacyDefault(),
       status: "idle",
       session: null,
       lastError: null,

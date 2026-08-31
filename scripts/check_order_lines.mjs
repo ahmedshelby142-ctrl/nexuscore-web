@@ -552,3 +552,52 @@ test("settlement clears the debt without booking the fee a second time", () => {
   assert.equal(amountOn(all, "payable_courier"), 0, "and the fee debt cleared");
   assert.equal(amountOn(all, "wallet"), 2000, "the till keeps the goods money only");
 });
+
+
+// ── the direction that actually invented stock ──────────────────────────────
+//
+// The guards used to test `quantity === 0`. Zero was refused; NEGATIVE was
+// waved through, and the sign flip did real damage:
+//
+//     order_placed     qty: -(-2) = +2   placing an order CREATED inventory
+//     order_cancelled  qty:   -2         cancelling DESTROYED it
+//
+// Neither is reachable from the UI today, which is exactly why it survived —
+// the ledger is append-only, so a line like that is permanent once written.
+
+test("placing an order cannot create stock out of a negative quantity", () => {
+  assert.throws(
+    () => buildOrderPlacedLines({ items: [{ ...MUG, quantity: -2 }] }),
+    /positive/,
+  );
+});
+
+test("cancelling an order cannot destroy stock either", () => {
+  assert.throws(
+    () => buildOrderCancelledLines({ items: [{ ...MUG, quantity: -2 }] }),
+    /positive/,
+  );
+});
+
+test("an edit refuses a negative line as well as a zero one", () => {
+  for (const q of [0, -1, -99]) {
+    assert.throws(
+      () => buildOrderEditLines({ before: ITEMS, after: [{ ...MUG, quantity: q }] }),
+      /positive/,
+      `quantity ${q}`,
+    );
+  }
+});
+
+test("removing a product from an edit means leaving it OUT, not passing zero", () => {
+  // The legitimate way to drop a line: it releases the reservation rather than
+  // being refused, which is what lets the guard above be strict about zero.
+  const lines = buildOrderEditLines({ before: [...ITEMS, MUG], after: ITEMS });
+  assert.equal(qtyOn(lines, "stock"), MUG.quantity, "the mug's 3 units come back");
+});
+
+test("a real positive quantity still passes everywhere", () => {
+  assert.doesNotThrow(() => buildOrderPlacedLines({ items: [MUG] }));
+  assert.doesNotThrow(() => buildOrderCancelledLines({ items: [MUG] }));
+  assert.doesNotThrow(() => buildOrderEditLines({ before: ITEMS, after: [MUG] }));
+});

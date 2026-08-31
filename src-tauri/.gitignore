@@ -1,9 +1,0 @@
-# Rust build artifacts
-target/
-WixTools/
-
-# Generated Tauri bindings
-gen/schemas/
-
-# Local Tauri config overrides
-tauri.conf.local.json

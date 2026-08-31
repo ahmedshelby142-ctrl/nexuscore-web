@@ -19,9 +19,7 @@ import {
   Percent,
   UserCheck,
   Building2,
-  ShieldCheck,
-  DatabaseBackup,
-  KeyRound,
+  Palette,
 } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
@@ -34,7 +32,7 @@ import {
   type UserRole,
   type BusinessProfile,
 } from "@/types";
-import { getEffectiveVisibleNavRoles } from "@/lib/permissions";
+import { canAccess, toAppRole, ROLE_LABELS } from "@/lib/roles";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import logoLight from "@/assets/logo-light.png";
 import logoDark from "@/assets/logo-dark.png";
@@ -45,7 +43,6 @@ interface NavItem {
   prefLabel?: string; // alternate label for non-owner roles
   icon: React.ElementType;
   path: string;
-  roles: UserRole[];
   profiles: BusinessProfile[];
   featureKey?:
     | "returnsEnabled"
@@ -60,105 +57,90 @@ const allNavItems: NavItem[] = [
     label: "نظرة عامة",
     icon: LayoutDashboard,
     path: "/",
-    roles: ["owner"],
     profiles: ["omnichannel", "retail_only", "ecommerce_only"],
   },
   {
     label: "المنتجات",
     icon: PackageOpen,
     path: "/products",
-    roles: ["owner"],
     profiles: ["omnichannel", "retail_only", "ecommerce_only"],
   },
   {
     label: "نقاط البيع (POS)",
     icon: ShoppingCart,
     path: "/pos",
-    roles: ["owner", "cashier", "cashier_data_entry"],
     profiles: ["omnichannel", "retail_only"],
   },
   {
     label: "المخازن",
     icon: Package,
     path: "/inventory",
-    roles: ["owner"],
     profiles: ["omnichannel", "retail_only", "ecommerce_only"],
   },
   {
     label: "الجرد",
     icon: ClipboardCheck,
     path: "/stock-audit",
-    roles: ["owner"],
     profiles: ["omnichannel", "retail_only", "ecommerce_only"],
   },
   {
     label: "المشتريات والموردين",
     icon: Truck,
     path: "/purchasing",
-    roles: ["owner"],
     profiles: ["omnichannel", "retail_only", "ecommerce_only"],
   },
   {
     label: "الشركاء والمالية",
     icon: Users,
     path: "/partners",
-    roles: ["owner"],
     profiles: ["omnichannel", "retail_only", "ecommerce_only"],
   },
   {
     label: "الطلبات الإلكترونية",
     icon: ShoppingBag,
     path: "/ecommerce-orders",
-    roles: ["owner", "data_entry", "cashier_data_entry"],
     profiles: ["omnichannel", "ecommerce_only"],
   },
   {
     label: "إدارة الطلبات",
     icon: ClipboardList,
     path: "/orders",
-    roles: ["owner", "data_entry", "cashier_data_entry"],
     profiles: ["omnichannel", "ecommerce_only"],
   },
   {
     label: "حسابات الشحن",
     icon: Wallet,
     path: "/courier-ledger",
-    roles: ["owner"],
     profiles: ["omnichannel", "ecommerce_only"],
   },
   {
     label: "البوكسات/التجميعات",
     icon: Boxes,
     path: "/bundles",
-    roles: ["owner", "data_entry"],
     profiles: ["omnichannel", "ecommerce_only"],
   },
   {
     label: "الخصومات",
     icon: Percent,
     path: "/discounts",
-    roles: ["owner", "data_entry"],
     profiles: ["omnichannel", "ecommerce_only"],
   },
   {
     label: "قاعدة العملاء",
     icon: UserCheck,
     path: "/crm",
-    roles: ["owner", "data_entry"],
     profiles: ["omnichannel", "ecommerce_only"],
   },
   {
     label: "مبيعات الجملة",
     icon: Building2,
     path: "/wholesale",
-    roles: ["owner"],
     profiles: ["omnichannel", "retail_only", "ecommerce_only"],
   },
   {
     label: "المرتجعات والاستبدال",
     icon: RotateCcw,
     path: "/returns",
-    roles: ["owner", "cashier", "data_entry", "cashier_data_entry"],
     profiles: ["omnichannel", "ecommerce_only"],
     featureKey: "returnsEnabled",
   },
@@ -166,38 +148,21 @@ const allNavItems: NavItem[] = [
     label: "ربط المتجر الإلكتروني",
     icon: Globe,
     path: "/integrations",
-    roles: ["owner"],
     profiles: ["omnichannel", "ecommerce_only"],
     featureKey: "ecommerceSyncEnabled",
+  },
+  {
+    label: "التفضيلات الشخصية",
+    icon: Palette,
+    path: "/preferences",
+    profiles: ["omnichannel", "retail_only", "ecommerce_only"],
   },
   {
     label: "الإعدادات",
     icon: Settings,
     path: "/settings",
-    roles: ["owner", "cashier", "data_entry", "cashier_data_entry"],
     profiles: ["omnichannel", "retail_only", "ecommerce_only"],
     prefLabel: "التفضيلات الشخصية",
-  },
-  {
-    label: "الفروع والمنافذ",
-    icon: Building2,
-    path: "/branches",
-    roles: ["owner"],
-    profiles: ["omnichannel", "retail_only", "ecommerce_only"],
-  },
-  {
-    label: "المستخدمين والصلاحيات",
-    icon: ShieldCheck,
-    path: "/users",
-    roles: ["owner"],
-    profiles: ["omnichannel", "retail_only", "ecommerce_only"],
-  },
-  {
-    label: "النسخ الاحتياطي والاستعادة",
-    icon: DatabaseBackup,
-    path: "/backups",
-    roles: ["owner"],
-    profiles: ["omnichannel", "retail_only", "ecommerce_only"],
   },
 ];
 
@@ -256,9 +221,11 @@ export function Sidebar() {
   const logoSrc = mode === "dark" ? logoDark : logoLight;
   const collapsed = sidebarCollapsed;
 
+  // `canAccess` is the SAME function the router calls, so a visible link can
+  // never lead to a redirect and a hidden one can never be reachable by URL.
   const navItems = allNavItems.filter(
     (item) =>
-      getEffectiveVisibleNavRoles(userRole).some((r) => item.roles.includes(r)) &&
+      canAccess(userRole, item.path) &&
       item.profiles.includes(activeBusinessProfile) &&
       (!item.featureKey || featureFlags[item.featureKey]),
   );
@@ -320,7 +287,8 @@ export function Sidebar() {
           )}
         >
           {navItems.map((item) => {
-            const label = userRole !== "owner" && item.prefLabel ? item.prefLabel : item.label;
+            const label =
+              toAppRole(userRole) !== "ADMIN" && item.prefLabel ? item.prefLabel : item.label;
             return (
               <NavLink
                 key={item.path}

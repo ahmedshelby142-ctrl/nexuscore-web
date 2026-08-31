@@ -182,7 +182,7 @@ export function DiscountsPage() {
               {discounts.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center text-muted-foreground py-12">
-                    لا توجد أكوام خصم محفوظة
+                    لا توجد أكواد خصم محفوظة
                   </TableCell>
                 </TableRow>
               ) : (

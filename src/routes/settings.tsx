@@ -1,26 +1,18 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useBusinessStore } from "@/store/useBusinessStore";
-import { useSubscriptionStore } from "@/store/useSubscriptionStore";
 import { useFeatureStore } from "@/store/useFeatureStore";
 import { useAuthStore } from "@/store/useAuthStore";
+import { toAppRole } from "@/lib/roles";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { ShippingRateMatrix } from "@/components/shipping/ShippingRateMatrix";
 import { GeneralSettingsPanel } from "@/components/settings/GeneralSettingsPanel";
+import { BranchesPage } from "@/routes/branches";
+import { BackupsPage } from "@/routes/backups";
+import { UserManagementPanel } from "@/components/auth/UserManagementPanel";
 import { Switch } from "@/components/ui/switch";
-import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogFooter,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogAction,
-  AlertDialogCancel,
-} from "@/components/ui/alert-dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { DEV_RESET_AVAILABLE, resetTestData } from "@/lib/devReset";
-import { ShoppingBag, Store, Trash2 } from "lucide-react";
+import { ShoppingBag, Store } from "lucide-react";
 
 function SettingsCard({
   title,
@@ -73,6 +65,38 @@ function SettingRow({
   );
 }
 
+/**
+ * A tab panel that mounts on first visit and then STAYS mounted, hidden.
+ *
+ * Plain `TabsContent` unmounts the moment you switch away, which would throw
+ * away a half-filled فرع form and re-run the staff fetch in الصلاحيات on every
+ * visit. Mounting all five up front has the opposite problem — the staff fetch
+ * would fire even for an owner who only came to edit أسعار الشحن. So: lazy the
+ * first time, sticky afterwards.
+ */
+function KeepAliveTab({
+  value,
+  current,
+  children,
+}: {
+  value: string;
+  current: string;
+  children: React.ReactNode;
+}) {
+  const seen = useRef(false);
+  if (value === current) seen.current = true;
+
+  return (
+    <TabsContent
+      value={value}
+      forceMount={seen.current || undefined}
+      className="mt-6 space-y-6 data-[state=inactive]:hidden"
+    >
+      {seen.current ? children : null}
+    </TabsContent>
+  );
+}
+
 const channels = [
   {
     name: "Shopify",
@@ -90,13 +114,7 @@ const channels = [
 
 export function Settings() {
   const userRole = useAuthStore((s) => s.userRole);
-  // Dev-only test-data reset. `import.meta.env.DEV` keeps it out of the
-  // production bundle entirely; the Rust command refuses the call in a
-  // release build as well.
-  const [resetOpen, setResetOpen] = useState(false);
-  const [resetError, setResetError] = useState<string | null>(null);
   const { partnershipEnabled, togglePartnership } = useBusinessStore();
-  const { isProPlan, setProPlan } = useSubscriptionStore();
   const {
     returnsEnabled,
     shippingTrackingEnabled,
@@ -109,9 +127,12 @@ export function Settings() {
     toggleEcommerceSync,
     toggleDepositMandatory,
   } = useFeatureStore();
+  const [tab, setTab] = useState("general");
 
   // Non-owner staff see only personal theme preferences
-  if (userRole !== "owner") {
+  // Unreachable via the router (/settings is ADMIN-only in lib/roles.ts);
+  // kept as a defence-in-depth fallback if the map ever opens it up.
+  if (toAppRole(userRole) !== "ADMIN") {
     return (
       <div className="space-y-6 max-w-4xl mx-auto w-full">
         <div className="pb-1">
@@ -130,184 +151,153 @@ export function Settings() {
   }
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto w-full">
+    <div className="space-y-6 max-w-6xl mx-auto w-full">
       <div className="pb-1">
         <h2 className="text-3xl font-display font-bold tracking-tight">الإعدادات</h2>
-        <p className="text-muted-foreground mt-1">تكوين النظام والميزات والهوية البصرية</p>
+        <p className="text-muted-foreground mt-1">
+          تكوين النظام والميزات والفروع والصلاحيات والنسخ الاحتياطي
+        </p>
       </div>
 
-      <SettingsCard
-        title="بيانات المحل"
-        badge="General"
-        description="معلومات المحل الأساسية والإعدادات الضريبية التي تظهر في الفواتير."
-      >
-        <GeneralSettingsPanel />
-      </SettingsCard>
+      <Tabs value={tab} onValueChange={setTab} dir="rtl">
+        <TabsList className="h-auto flex-wrap justify-start gap-1 p-1">
+          <TabsTrigger value="general" className="px-4 py-2">
+            عام
+          </TabsTrigger>
+          <TabsTrigger value="shipping" className="px-4 py-2">
+            الشحن
+          </TabsTrigger>
+          <TabsTrigger value="branches" className="px-4 py-2">
+            الفروع
+          </TabsTrigger>
+          <TabsTrigger value="roles" className="px-4 py-2">
+            الصلاحيات
+          </TabsTrigger>
+          <TabsTrigger value="backups" className="px-4 py-2">
+            النسخ الاحتياطي
+          </TabsTrigger>
+        </TabsList>
 
-      <SettingsCard
-        title="أسعار الشحن"
-        badge="Shipping"
-        description="سعر لكل محافظة ولكل نوع حركة: توصيل، مرتجع، استبدال. ده المصدر الوحيد لأي رسم شحن في النظام."
-      >
-        <ShippingRateMatrix />
-      </SettingsCard>
+        {/* ── عام ─────────────────────────────────────────────────────── */}
+        <KeepAliveTab value="general" current={tab}>
+          <SettingsCard
+            title="بيانات المحل"
+            badge="General"
+            description="معلومات المحل الأساسية والإعدادات الضريبية التي تظهر في الفواتير."
+          >
+            <GeneralSettingsPanel />
+          </SettingsCard>
 
-      <SettingsCard
-        title="الهوية البصرية ونوع النشاط"
-        badge="Brand Identity"
-        description="اختر ملف الألوان المناسب لنشاطك التجاري: أزياء وموضة، جمال ومكياج، مؤسسات متكاملة، أو جملة وتوزيع. جميع القوالب تتميز بنسق فاتح وداكن متكاملين."
-      >
-        <ThemeSwitcher />
-      </SettingsCard>
+          <SettingsCard
+            title="تكوين موديول التجزئة والأونلاين"
+            badge="Retail & E‑commerce"
+            description="تشغيل أو إيقاف ميزات التجزئة المتقدمة والربط الإلكتروني وإدارة الشحن والعمولات."
+          >
+            <div className="divide-y divide-border">
+              <SettingRow
+                label="نظام المرتجعات والاستبدال المتقدم"
+                description="تفعيل نظام متكامل لإدارة مرتجعات العملاء واستبدال المنتجات مع تتبع الأسباب"
+                checked={returnsEnabled}
+                onCheckedChange={toggleReturns}
+              />
+              <SettingRow
+                label="إدارة شحن المحافظات وتتبع المناديب"
+                description="جدولة الشحن للمحافظات، تعيين مناديب، وتتبع حالة التوصيل في الوقت الفعلي"
+                checked={shippingTrackingEnabled}
+                onCheckedChange={toggleShippingTracking}
+              />
+              <SettingRow
+                label="حساب عمولات موظفي المبيعات والمناديب"
+                description="احتساب العمولات تلقائياً لكل عملية بيع بناءً على نسب مئوية مخصصة لكل موظف"
+                checked={salesCommissionsEnabled}
+                onCheckedChange={toggleSalesCommissions}
+              />
+              <SettingRow
+                label="الربط الإلكتروني والمزامنة الذكية للمتاجر الأونلاين"
+                description="ربط المتجر الإلكتروني (Shopify، متجر مخصص) ومزامنة الطلبات والمخزون تلقائياً"
+                checked={ecommerceSyncEnabled}
+                onCheckedChange={toggleEcommerceSync}
+              />
+            </div>
+          </SettingsCard>
 
-      <SettingsCard
-        title="تكوين موديول التجزئة والأونلاين"
-        badge="Retail & E‑commerce"
-        description="تشغيل أو إيقاف ميزات التجزئة المتقدمة والربط الإلكتروني وإدارة الشحن والعمولات."
-      >
-        <div className="divide-y divide-border">
-          <SettingRow
-            label="نظام المرتجعات والاستبدال المتقدم"
-            description="تفعيل نظام متكامل لإدارة مرتجعات العملاء واستبدال المنتجات مع تتبع الأسباب"
-            checked={returnsEnabled}
-            onCheckedChange={toggleReturns}
-          />
-          <SettingRow
-            label="إدارة شحن المحافظات وتتبع المناديب"
-            description="جدولة الشحن للمحافظات، تعيين مناديب، وتتبع حالة التوصيل في الوقت الفعلي"
-            checked={shippingTrackingEnabled}
-            onCheckedChange={toggleShippingTracking}
-          />
-          <SettingRow
-            label="حساب عمولات موظفي المبيعات والمناديب"
-            description="احتساب العمولات تلقائياً لكل عملية بيع بناءً على نسب مئوية مخصصة لكل موظف"
-            checked={salesCommissionsEnabled}
-            onCheckedChange={toggleSalesCommissions}
-          />
-          <SettingRow
-            label="الربط الإلكتروني والمزامنة الذكية للمتاجر الأونلاين"
-            description="ربط المتجر الإلكتروني (Shopify، متجر مخصص) ومزامنة الطلبات والمخزون تلقائياً"
-            checked={ecommerceSyncEnabled}
-            onCheckedChange={toggleEcommerceSync}
-          />
-        </div>
-      </SettingsCard>
-
-      {ecommerceSyncEnabled && (
-        <SettingsCard
-          title="قنوات الربط النشطة"
-          badge="Connected Channels"
-          description="القنوات الإلكترونية المتصلة حاليًا — يتم تحديث الطلبات والمخزون تلقائياً دون تدخل موظف."
-        >
-          <div className="space-y-3">
-            {channels.map((ch) => (
-              <div
-                key={ch.name}
-                className="flex items-center gap-4 rounded-xl border border-border bg-muted/40 p-4"
-              >
-                <div className="size-10 rounded-lg flex items-center justify-center bg-background border border-border">
-                  <ch.icon className="size-5 text-primary" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium">{ch.name}</p>
-                  <p className={cn("text-sm mt-0.5", ch.color)}>{ch.status}</p>
-                </div>
+          {ecommerceSyncEnabled && (
+            <SettingsCard
+              title="قنوات الربط النشطة"
+              badge="Connected Channels"
+              description="القنوات الإلكترونية المتصلة حاليًا — يتم تحديث الطلبات والمخزون تلقائياً دون تدخل موظف."
+            >
+              <div className="space-y-3">
+                {channels.map((ch) => (
+                  <div
+                    key={ch.name}
+                    className="flex items-center gap-4 rounded-xl border border-border bg-muted/40 p-4"
+                  >
+                    <div className="size-10 rounded-lg flex items-center justify-center bg-background border border-border">
+                      <ch.icon className="size-5 text-primary" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium">{ch.name}</p>
+                      <p className={cn("text-sm mt-0.5", ch.color)}>{ch.status}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </SettingsCard>
-      )}
-
-      <SettingsCard title="حالة الاشتراك" badge="Subscription">
-        <div className="divide-y divide-border">
-          <SettingRow
-            label="الخطة الاحترافية (Pro Plan)"
-            description="تفعيل هذا الخيار يفتح ميزات التكامل متعدد القنوات والتحليلات المتقدمة"
-            checked={isProPlan}
-            onCheckedChange={setProPlan}
-          />
-
-          {isProPlan && (
-            <div className="rounded-lg bg-green-50 dark:bg-green-950/40 border border-green-200 dark:border-green-800 p-4">
-              <p className="text-sm font-medium text-green-900 dark:text-green-300">
-                ✓ الخطة الاحترافية مفعلة
-              </p>
-              <p className="text-xs text-green-700 dark:text-green-400 mt-1">
-                يمكنك الآن استخدام ميزات التكامل متعدد القنوات والتحليلات المتقدمة
-              </p>
-            </div>
+            </SettingsCard>
           )}
-        </div>
-      </SettingsCard>
 
-      <SettingsCard title="ميزات النظام" badge="Features">
-        <div className="divide-y divide-border">
-          <SettingRow
-            label="تفعيل نظام الشراكة"
-            description="تفعيل هذا الخيار يسمح بإدارة الشركاء وتوزيع الأرباح بينهم"
-            checked={partnershipEnabled}
-            onCheckedChange={togglePartnership}
-          />
+          <SettingsCard
+            title="الهوية البصرية ونوع النشاط"
+            badge="Brand Identity"
+            description="اختر ملف الألوان المناسب لنشاطك التجاري: أزياء وموضة، جمال ومكياج، مؤسسات متكاملة، أو جملة وتوزيع. جميع القوالب تتميز بنسق فاتح وداكن متكاملين."
+          >
+            <ThemeSwitcher />
+          </SettingsCard>
 
-          <SettingRow
-            label="تفعيل شرط العربون الإلزامي للأوردرات الأونلاين"
-            description="عند تفعيله، يطلب النظام إدخال قيمة العربون المدفوع قبل تأكيد أي طلب — مع تعطيل زر الإرسال في حال عدم الإدخال"
-            checked={depositMandatory}
-            onCheckedChange={toggleDepositMandatory}
-          />
-        </div>
-      </SettingsCard>
-
-      {DEV_RESET_AVAILABLE && (
-        <SettingsCard title="أدوات التطوير" badge="Dev">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="font-medium">تصفير بيانات التجربة</p>
-              <p className="text-sm text-muted-foreground mt-1">
-                يمسح دفتر الحسابات (كل الحركات) والمنتجات والعملاء والطلبات والإعدادات المحفوظة،
-                ويرجّع البرنامج زي أول تشغيل. للتجربة بس — مش موجود في النسخة النهائية.
-              </p>
-              {resetError && <p className="text-sm text-destructive mt-2">{resetError}</p>}
+          <SettingsCard title="ميزات النظام" badge="Features">
+            <div className="divide-y divide-border">
+              <SettingRow
+                label="تفعيل نظام الشراكة"
+                description="تفعيل هذا الخيار يسمح بإدارة الشركاء وتوزيع الأرباح بينهم"
+                checked={partnershipEnabled}
+                onCheckedChange={togglePartnership}
+              />
+              <SettingRow
+                label="تفعيل شرط العربون الإلزامي للأوردرات الأونلاين"
+                description="عند تفعيله، يطلب النظام إدخال قيمة العربون المدفوع قبل تأكيد أي طلب — مع تعطيل زر الإرسال في حال عدم الإدخال"
+                checked={depositMandatory}
+                onCheckedChange={toggleDepositMandatory}
+              />
             </div>
-            <Button variant="destructive" className="gap-2" onClick={() => setResetOpen(true)}>
-              <Trash2 className="size-4" />
-              تصفير بيانات التجربة
-            </Button>
-          </div>
+          </SettingsCard>
+        </KeepAliveTab>
 
-          <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>متأكد إنك عايز تصفّر كل بيانات التجربة؟</AlertDialogTitle>
-                <AlertDialogDescription>
-                  هيتمسح كل حاجة: الحركات في الدفتر، المنتجات، العملاء، الطلبات، الخزائن
-                  والإعدادات. البرنامج هيرجع لأول تشغيل وهيطلب تسجيل الدخول من جديد. مفيش رجوع في
-                  الخطوة دي.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>إلغاء</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setResetError(null);
-                    // The page reloads on success, so there is nothing to do
-                    // after this but report a failure.
-                    void resetTestData().catch((err: unknown) => {
-                      setResetError(
-                        `التصفير مانجحش، ومحصلش أي مسح. ${err instanceof Error ? err.message : String(err)}`,
-                      );
-                      setResetOpen(false);
-                    });
-                  }}
-                >
-                  تأكيد التصفير
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </SettingsCard>
-      )}
+        {/* ── الشحن ───────────────────────────────────────────────────── */}
+        <KeepAliveTab value="shipping" current={tab}>
+          <SettingsCard
+            title="أسعار الشحن"
+            badge="Shipping"
+            description="سعر لكل محافظة ولكل نوع حركة: توصيل، مرتجع، استبدال. ده المصدر الوحيد لأي رسم شحن في النظام."
+          >
+            <ShippingRateMatrix />
+          </SettingsCard>
+        </KeepAliveTab>
+
+        {/* ── الفروع ──────────────────────────────────────────────────── */}
+        <KeepAliveTab value="branches" current={tab}>
+          <BranchesPage />
+        </KeepAliveTab>
+
+        {/* ── الصلاحيات ───────────────────────────────────────────────── */}
+        <KeepAliveTab value="roles" current={tab}>
+          <UserManagementPanel />
+        </KeepAliveTab>
+
+        {/* ── النسخ الاحتياطي ─────────────────────────────────────────── */}
+        <KeepAliveTab value="backups" current={tab}>
+          <BackupsPage />
+        </KeepAliveTab>
+      </Tabs>
     </div>
   );
 }

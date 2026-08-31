@@ -1,11 +1,11 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Package, Plus, Search, FileText, AlertTriangle, Copy, Inbox } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useFinancialStore } from "@/store/useFinancialStore";
-import { add, subtract, formatQty } from "@/lib/math";
+import { add, subtract, formatQty, formatMoney } from "@/lib/math";
 import { activeProducts } from "@/lib/product";
-import { appendEvent } from "@/lib/ledger";
+import { appendEvent, events as fetchLedgerEvents } from "@/lib/ledger";
 import {
   buildStockAdjustmentLines,
   countDiscrepancies,
@@ -13,6 +13,7 @@ import {
   isCounted,
 } from "@/lib/ledger/audit";
 import { useStock } from "@/lib/ledger/useStock";
+import { getActualStock } from "@/lib/product";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { generateFinancialPdf } from "@/lib/pdfGenerator";
 import type { StockActionType, StockLog } from "@/types";
@@ -59,9 +60,14 @@ export function StockAuditPage() {
   // Nothing is written until the auditor has seen a summary of what will
   // change and confirmed it. "تأكيد المراجعة" used to commit on the first click.
   const [isReviewing, setIsReviewing] = useState(false);
-  const { stockLogs, logStockChange } = useFinancialStore();
-  // Wallet total is SUM(wallet) over the ledger, like everywhere else.
-  const { total: walletsTotal } = useBalances("wallet");
+  
+  // Ledger-based audit history
+  const [auditEvents, setAuditEvents] = useState<any[]>([]);
+
+  // رصيد المخزن — SUM(stock.amount), the weighted-average value actually on the
+  // shelf. This card used to show SUM(wallet), the TILL total, on a screen about
+  // inventory: a real number, answering a question nobody asked here.
+  const { total: inventoryValue, refresh: refreshInventoryValue } = useBalances("stock");
 
   const [isAuditOpen, setIsAuditOpen] = useState(false);
   const [auditCategory, setAuditCategory] = useState("all");
@@ -72,7 +78,11 @@ export function StockAuditPage() {
   const [auditResults, setAuditResults] = useState<
     Array<{
       product: any;
+      variantName?: string;
+      /** What the auditor is shown — the ledger for a plain product. */
       systemQty: number;
+      /** What the shelf RECORD holds, which the mirror move is relative to. */
+      mirrorQty: number;
       actualQty: number | "";
       discrepancy: number;
     }>
@@ -88,35 +98,74 @@ export function StockAuditPage() {
     return products.filter((p) => p.category === auditCategory);
   }, [products, auditCategory]);
 
-  const stockLogsByDate = useMemo(() => {
+  // Fetch stock audit events from the ledger
+  const fetchAudits = async () => {
+    try {
+      const rows = await fetchLedgerEvents({ refType: "stock_audit" });
+      setAuditEvents(rows);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    fetchAudits();
+  }, []);
+
+  const auditsByDate = useMemo(() => {
     const start = new Date(auditDateRange.startDate);
+    start.setHours(0, 0, 0, 0);
     const end = new Date(auditDateRange.endDate);
-    return stockLogs.filter((log) => {
-      const logDate = new Date(log.timestamp);
+    end.setHours(23, 59, 59, 999);
+    
+    return auditEvents.filter((ev) => {
+      // `createdAt`, not `created_at`. The driver hands back camelCase; reading
+      // the snake_case name gave `undefined` → `Invalid Date` → every
+      // comparison false, so this table has never rendered a single row. The
+      // fallback covers a raw row arriving straight off the wire.
+      const logDate = new Date(ev.createdAt ?? ev.created_at);
       return logDate >= start && logDate <= end;
     });
-  }, [stockLogs, auditDateRange]);
+  }, [auditEvents, auditDateRange]);
 
   const handlePerformAudit = () => {
-    const results = filteredProducts.map((product) => ({
-      product,
-      // The system figure is the ledger's SUM, not the product record's
-      // stored `stock_qty` — auditing against a stale number would "correct"
-      // the count to match a value that was already wrong.
-      systemQty: qtyOf(product.id),
-      actualQty: "" as any,
-      discrepancy: 0,
-    }));
+    const results = filteredProducts.flatMap((product) => {
+      const vars = product.metadata?.variants || [];
+      if (vars.length > 0) {
+        // The ledger holds ONE quantity per product; only the mirror knows the
+        // per-درجة split. So a variant row is counted against the mirror, and
+        // the product TOTAL is reconciled against the ledger at commit time.
+        return vars.map((v: any) => ({
+          product,
+          variantName: v.name,
+          systemQty: v.stock || 0,
+          mirrorQty: v.stock || 0,
+          actualQty: "" as any,
+          discrepancy: 0,
+        }));
+      }
+      return [{
+        product,
+        // What the AUDITOR is shown is what every other screen shows: the
+        // ledger. It used to be `getActualStock` — the mirror — which is how a
+        // جرد could correct the shelf record and leave the ledger disagreeing
+        // by exactly the drift it was run to find.
+        systemQty: qtyOf(product.id),
+        mirrorQty: getActualStock(product),
+        actualQty: "" as any,
+        discrepancy: 0,
+      }];
+    });
     setAuditResults(results);
     setIsReviewing(false);
     setAuditError(null);
   };
 
-  const handleActualQtyChange = (productId: string, actualQty: string) => {
+  const handleActualQtyChange = (productId: string, variantName: string | undefined, actualQty: string) => {
     const qty = parseInt(actualQty) || 0;
     setAuditResults((prev) =>
       prev.map((r) =>
-        r.product.id === productId
+        r.product.id === productId && r.variantName === variantName
           ? {
               ...r,
               actualQty: actualQty as any,
@@ -137,14 +186,44 @@ export function StockAuditPage() {
    */
   const countedRows = auditResults.filter((r) => isCounted(r.actualQty));
 
-  const auditItems = countedRows.map((r) => ({
-    productId: r.product.id,
-    systemQty: r.systemQty,
-    countedQty: parseInt(r.actualQty as any) || 0,
-    // Real weighted-average cost from the ledger. The code this replaces
-    // valued every missing unit at a flat 10 ج.م, whatever the product.
-    unitCost: costOf(r.product.id),
-  }));
+  /**
+   * The ledger correction: one item per PRODUCT, never per درجة.
+   *
+   * The ledger keeps a single quantity per product, so a variant product needs
+   * its whole new total — the درجات that were counted, plus the ones that were
+   * not, still holding what they held. Sending a line per variant would
+   * reconcile each against a product-level number and land nowhere near it.
+   *
+   * `systemQty` is the LEDGER's figure so the delta corrects the ledger to the
+   * count. The mirror is moved separately below, against its own baseline —
+   * two books, one truth, each reached from where it actually stands.
+   */
+  const auditItems = useMemo(() => {
+    const byProduct = new Map<string, { counted: number; touched: boolean }>();
+
+    for (const r of auditResults) {
+      const entry = byProduct.get(r.product.id) ?? { counted: 0, touched: false };
+      if (isCounted(r.actualQty)) {
+        entry.counted += parseInt(r.actualQty as any) || 0;
+        entry.touched = true;
+      } else {
+        // Not counted: it keeps whatever the shelf record already says.
+        entry.counted += r.mirrorQty ?? 0;
+      }
+      byProduct.set(r.product.id, entry);
+    }
+
+    return [...byProduct.entries()]
+      .filter(([, v]) => v.touched)
+      .map(([productId, v]) => ({
+        productId,
+        systemQty: qtyOf(productId),
+        countedQty: v.counted,
+        // Real weighted-average cost from the ledger. The code this replaces
+        // valued every missing unit at a flat 10 ج.م, whatever the product.
+        unitCost: costOf(productId),
+      }));
+  }, [auditResults, qtyOf, costOf]);
 
   const handleConfirmAudit = async () => {
     const items = auditItems;
@@ -184,29 +263,32 @@ export function StockAuditPage() {
       return;
     }
 
-    // The stock log stays as a human-readable audit trail; it is a document,
-    // not a balance — no screen computes a number from it.
-    // Counted rows only. This used to walk `auditResults`, where an uncounted
-    // row's blank box parses to 0 — so a product nobody counted was logged as
-    // "newQty 0". The ledger never had that bug (it reads `auditItems`), but
-    // the human-readable trail claimed a correction that never happened.
-    for (const result of countedRows) {
-      const actual = parseInt(result.actualQty as any) || 0;
-      if (actual !== result.systemQty) {
-        logStockChange({
-          productSku: result.product.sku,
-          productName: result.product.name,
-          actionType: "adjustment",
-          qtyChange: subtract(actual, result.systemQty),
-          previousQty: result.systemQty,
-          newQty: actual,
-          operator: "audit",
-          notes: `تصحيح عجز/زيادة - مراجعة مخزون`,
-        });
-      }
-    }
+    // We no longer manually log to stockLogs for UI history; the ledger event
+    // is the source of truth for audits. 
+
+    // The count IS the new truth, for plain products as much as for variants.
+    // This used to be gated on `if (result.variantName)`, so auditing a shop
+    // of plain products moved the ledger and left every record untouched —
+    // and the next جرد reported the very same discrepancy again.
+    //
+    // An audit states an absolute quantity, so it is expressed as the delta
+    // from what the record currently holds. `applyStockMoves` then owns the
+    // write, exactly as a sale or a توريد does.
+    useBusinessStore.getState().applyStockMoves(
+      countedRows.map((result) => ({
+        productId: result.product.id,
+        // Relative to the MIRROR's own figure, not the ledger's. Using one
+        // baseline for both books is what let a جرد fix one and break the other.
+        delta: (parseInt(result.actualQty as any) || 0) - (result.mirrorQty ?? result.systemQty),
+        variantName: result.variantName,
+      })),
+    );
 
     refreshStock();
+    // The card reads its OWN aggregation, so `refreshStock` alone left رصيد
+    // المخزن showing the pre-جرد figure next to a corrected shelf.
+    refreshInventoryValue();
+    fetchAudits();
     setIsSaving(false);
     setIsAuditOpen(false);
     setAuditResults([]);
@@ -252,16 +334,16 @@ export function StockAuditPage() {
         <div className="rounded-2xl border border-border bg-card p-6">
           <div className="flex items-center gap-3 mb-2">
             <FileText className="size-5 text-blue-600" />
-            <p className="text-sm text-muted-foreground">سجلات الحركة</p>
+            <p className="text-sm text-muted-foreground">عمليات الجرد</p>
           </div>
-          <p className="text-2xl font-bold">{stockLogs.length}</p>
+          <p className="text-2xl font-bold">{auditEvents.length}</p>
         </div>
         <div className="rounded-2xl border border-border bg-card p-6">
           <div className="flex items-center gap-3 mb-2">
             <AlertTriangle className="size-5 text-amber-600" />
-            <p className="text-sm text-muted-foreground">الرصيد الإجمالي للخزائن</p>
+            <p className="text-sm text-muted-foreground">رصيد المخزن (بالتكلفة)</p>
           </div>
-          <p className="text-2xl font-bold">{formatQty(walletsTotal)}</p>
+          <p className="text-2xl font-bold">{formatMoney(inventoryValue)}</p>
         </div>
       </div>
 
@@ -296,7 +378,7 @@ export function StockAuditPage() {
       {/* Stock Logs Table */}
       <div className="rounded-2xl border border-border bg-card p-6">
         <h3 className="font-display text-xl font-bold mb-4">سجل حركة المخزون</h3>
-        {stockLogsByDate.length === 0 ? (
+        {auditsByDate.length === 0 ? (
           <div className="py-8">
             <EmptyState icon={Inbox} title="لا توجد حركات مخزون مسجلة" />
           </div>
@@ -306,44 +388,44 @@ export function StockAuditPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="text-right px-4">التاريخ</TableHead>
-                  <TableHead className="text-right px-4">SKU</TableHead>
-                  <TableHead className="text-right px-4">المنتج</TableHead>
-                  <TableHead className="text-center px-4">نوع الحركة</TableHead>
-                  <TableHead className="text-center px-4">الكمية</TableHead>
-                  <TableHead className="text-center px-4">الكمية السابقة</TableHead>
-                  <TableHead className="text-center px-4">الكمية الجديدة</TableHead>
+                  <TableHead className="text-right px-4">المرجع</TableHead>
+                  <TableHead className="text-center px-4">المنتجات المجردة</TableHead>
+                  <TableHead className="text-center px-4">المنتجات المخالفة</TableHead>
+                  <TableHead className="text-center px-4">صافي العجز/الزيادة</TableHead>
                   <TableHead className="text-right px-4">الموظف</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {stockLogsByDate
-                  .slice(-50)
-                  .reverse()
-                  .map((log) => (
-                    <TableRow key={log.id}>
-                      <TableCell className="text-sm px-4">
-                        {new Date(log.timestamp).toLocaleDateString("ar-EG")}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs px-4">{log.productSku}</TableCell>
-                      <TableCell className="text-sm px-4">{log.productName || "-"}</TableCell>
-                      <TableCell className="text-center px-4">
-                        <Badge variant="outline">{ACTION_LABELS[log.actionType]}</Badge>
-                      </TableCell>
-                      <TableCell
-                        className={`text-center px-4 font-mono ${log.qtyChange >= 0 ? "text-green-600" : "text-red-600"}`}
-                      >
-                        {log.qtyChange >= 0 ? "+" : ""}
-                        {formatQty(log.qtyChange)}
-                      </TableCell>
-                      <TableCell className="text-center px-4 font-mono">
-                        {formatQty(log.previousQty)}
-                      </TableCell>
-                      <TableCell className="text-center px-4 font-mono">
-                        {formatQty(log.newQty)}
-                      </TableCell>
-                      <TableCell className="text-sm px-4">{log.operator}</TableCell>
-                    </TableRow>
-                  ))}
+                {auditsByDate
+                  .map((ev) => {
+                    const payload = ev.payload || {};
+                    return (
+                      <TableRow key={ev.id}>
+                        <TableCell className="text-sm px-4">
+                          {new Date(ev.createdAt ?? ev.created_at).toLocaleString("ar-EG")}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs px-4">
+                          {ev.id.split('-')[0]}
+                        </TableCell>
+                        <TableCell className="text-center px-4 font-mono">
+                          {payload.countedProducts || 0}
+                        </TableCell>
+                        <TableCell className="text-center px-4 font-mono text-amber-600">
+                          {payload.discrepancies || 0}
+                        </TableCell>
+                        <TableCell className="text-center px-4 font-mono font-bold">
+                          {payload.netValue === 0 ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : payload.netValue < 0 ? (
+                            <span className="text-red-600">عجز {formatQty(Math.abs(payload.netValue))} ج.م</span>
+                          ) : (
+                            <span className="text-green-600">زيادة {formatQty(payload.netValue)} ج.م</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-sm px-4">{ev.actor || "النظام"}</TableCell>
+                      </TableRow>
+                    );
+                  })}
               </TableBody>
             </Table>
           </div>
@@ -399,7 +481,14 @@ export function StockAuditPage() {
                     {auditResults.map((r, idx) => (
                       <TableRow key={idx}>
                         <TableCell className="font-mono text-xs px-4">{r.product.sku}</TableCell>
-                        <TableCell className="text-sm px-4">{r.product.name}</TableCell>
+                        <TableCell className="text-sm px-4">
+                          {r.product.name}
+                          {r.variantName && (
+                            <Badge variant="outline" className="ml-2 text-[10px]">
+                              {r.variantName}
+                            </Badge>
+                          )}
+                        </TableCell>
                         <TableCell className="text-center px-4 font-mono">
                           {formatQty(r.systemQty)}
                         </TableCell>
@@ -408,7 +497,7 @@ export function StockAuditPage() {
                             type="number"
                             min="0"
                             value={r.actualQty}
-                            onChange={(e) => handleActualQtyChange(r.product.id, e.target.value)}
+                            onChange={(e) => handleActualQtyChange(r.product.id, r.variantName, e.target.value)}
                             className="w-20 mx-auto text-center"
                           />
                         </TableCell>

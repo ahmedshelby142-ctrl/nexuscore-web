@@ -1,5 +1,12 @@
 import type { SyncAction } from '../../types';
 import { getSupabaseClient, isCloudSyncMode } from './supabaseClient';
+import {
+  toRemoteRow,
+  fromRemoteRow,
+  noteMissingColumn,
+  unknownColumnFrom,
+} from './fieldMapping';
+import { getSyncIdentity } from './storeContext';
 
 /**
  * SyncService — Real Supabase Push Engine
@@ -25,9 +32,59 @@ export class SyncService {
       return;
     }
 
-    const { error } = await supabase.from(table).upsert(data, { onConflict: 'id' });
+    // The row must carry `store_id` or RLS refuses it. Every reference table's
+    // policy is `WITH CHECK (has_role(store_id, …))`, and a missing store_id
+    // makes that check false — a 403 that used to be logged and swallowed,
+    // which is the whole reason reference data never left the device.
+    const identity = await getSyncIdentity();
+    if (!identity) {
+      // Not an error: a device that has not been bound to a store yet has
+      // nothing valid to tag rows with. Throwing puts the row in the caller's
+      // sync queue, so it goes out on the next attempt once login has bound it
+      // — far better than pushing rows the server will reject or orphan.
+      throw new Error(
+        `[SyncService] no active store yet — [${table}] queued until this device is bound`,
+      );
+    }
 
-    if (error) {
+    // One stamp for the whole batch, so rows written together sort together and
+    // a pull cannot see half of a multi-row write.
+    const stamp = Date.now();
+
+    // A column the server does not have sinks the WHOLE upsert, so a rejection
+    // naming one is recorded and the push retried without it. That is what lets
+    // `metadata` (the per-درجة stock) be sent optimistically: a server that has
+    // the column stores the variants, one that does not costs a single extra
+    // request per session and still syncs everything else. See `fieldMapping`.
+    //
+    // Bounded, and each pass drops one more column, so it always terminates.
+    for (let attempt = 0; ; attempt++) {
+      const payload = Array.isArray(data)
+        ? data.map((row) =>
+            toRemoteRow(table, row, {
+              storeId: identity.storeId,
+              deviceId: identity.deviceId,
+              stamp,
+            }),
+          )
+        : toRemoteRow(table, data, {
+            storeId: identity.storeId,
+            deviceId: identity.deviceId,
+            stamp,
+          });
+
+      const { error } = await supabase.from(table).upsert(payload, { onConflict: 'id' });
+      if (!error) return;
+
+      const missing = unknownColumnFrom(error);
+      if (missing && attempt < 8) {
+        console.warn(
+          `[SyncService] [${table}] has no '${missing}' column — retrying without it.`,
+        );
+        noteMissingColumn(table, missing);
+        continue;
+      }
+
       console.error(`[SyncService] Supabase upsert error on [${table}]:`, error.message);
       throw error;
     }
@@ -70,7 +127,8 @@ export class SyncService {
       return [];
     }
 
-    return data ?? [];
+    // Columns → the field names the local stores read.
+    return (data ?? []).map((row) => fromRemoteRow(table, row));
   }
 
   /**

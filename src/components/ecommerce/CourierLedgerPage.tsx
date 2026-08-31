@@ -18,7 +18,7 @@ import { useBalances } from "@/lib/ledger/useBalances";
 import { appendEvent, events } from "@/lib/ledger";
 import { buildCourierBatchSettlementLines } from "@/lib/ledger/orders";
 import { batchSummary, courierIdOf, unsettledDeliveries } from "@/lib/courierBatch";
-import { generateCourierPdf } from "@/lib/pdfGenerator";
+import { generateCourierPdf, storeIdentity } from "@/lib/pdfGenerator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -298,7 +298,7 @@ export function CourierLedgerPage() {
 
   const handleExportPdf = () => {
     generateCourierPdf({
-      companyName: "نظام حلقة واحدة",
+      companyName: storeIdentity().name,
       reportDate: new Date(),
       accounts: couriers.map((courier) => ({
         name: courier.name,

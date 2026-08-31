@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { appendOpeningBalance } from "@/lib/ledger/openingBalance";
+import { appendEvent } from "@/lib/ledger";
 import { useStock } from "@/lib/ledger/useStock";
 import {
   StockSummaryCards,
@@ -29,6 +30,7 @@ import {
   type StockFilter,
 } from "@/components/inventory/StockSummaryCards";
 import { useAuthStore } from "@/store/useAuthStore";
+import { toAppRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -61,7 +63,7 @@ import { BulkImportProduct } from "./BulkImportProduct";
 import { ProductRemovalDialog } from "./ProductRemovalDialog";
 import { QuickRestockDialog } from "./QuickRestockDialog";
 import { searchProducts } from "@/lib/productSearch";
-import { activeProducts, isProductArchived } from "@/lib/product";
+import { activeProducts, isProductArchived, sellableStock } from "@/lib/product";
 import type { Product } from "@/types";
 
 const defaultCategories = [
@@ -112,7 +114,7 @@ export function ProductsPage() {
   // shop that already has stock gets its first numbers in.
   const { qtyOf, costOf, refresh: refreshStock } = useStock();
   const userRole = useAuthStore((s) => s.userRole);
-  const isOwner = userRole === "owner";
+  const isOwner = toAppRole(userRole) === "ADMIN";
 
   const [searchQuery, setSearchQuery] = useState("");
   // The product form and its dialog are drafted together, so stepping away
@@ -157,9 +159,12 @@ export function ProductsPage() {
     if (showArchived) return result;
     // Same predicate the cards counted with, so a card's number always equals
     // the number of rows clicking it produces.
-    result = result.filter((p) => matchesStockFilter(qtyOf(p.id), p, stockStatusFilter));
+    result = result.filter((p) => {
+      const displayQty = sellableStock(p, products);
+      return matchesStockFilter(displayQty, p, stockStatusFilter);
+    });
     return result;
-  }, [products, archivedList, showArchived, searchQuery, categoryFilter, stockStatusFilter, qtyOf]);
+  }, [products, archivedList, showArchived, searchQuery, categoryFilter, stockStatusFilter]);
 
   function openAddDialog() {
     clearDrafts("product:");
@@ -184,6 +189,7 @@ export function ProductsPage() {
       minStockLevel: product.minStockLevel,
       maxStockLevel: product.maxStockLevel,
       description: product.description || "",
+      metadata: product.metadata || { variants: [] },
     });
     setFormErrors({});
     setOpeningQty("");
@@ -243,19 +249,50 @@ export function ProductsPage() {
         : 0;
 
       if (editingProduct) {
-        // Editing NEVER touches the opening balance. It was a one-off event on
-        // the day the product was registered; re-applying it on every save would
-        // double-count the shelf, the same way a جرد recount must find nothing
-        // left to correct.
-        updateProduct(editingProduct.id, data);
+        // `sellableStock` prefers the variants, but totalQuantity is what a
+        // plain product is read by and what sync carries — so on a variant
+        // product it is kept equal to their sum rather than left stale.
+        updateProduct(editingProduct.id, {
+          ...data,
+          ...(hasVariants ? { totalQuantity: totalVariantStock } : {}),
+        });
+        
+        // STRICT SYNCHRONIZATION: Total stock must match sum of variants exactly.
+        const currentTotal = qtyOf(editingProduct.id);
+        if (hasVariants && totalVariantStock !== currentTotal) {
+          const difference = totalVariantStock - currentTotal;
+          await appendEvent({
+            kind: "stock_adjustment",
+            actor: "النظام",
+            refType: "product_edit",
+            payload: {
+              notes: "تسوية تلقائية لمطابقة مجموع مخزون الدرجات/الأنواع",
+            },
+            lines: [
+              {
+                account: "stock",
+                subjectId: editingProduct.id,
+                qty: difference,
+                unitCost: 0,
+              }
+            ]
+          });
+          refreshStock();
+        }
+
         clearDrafts("product:");
         setIsDialogOpen(false);
         return;
       }
 
-      const product = addProduct(data);
-
       const qty = hasVariants ? totalVariantStock : (parseFloat(openingQty) || 0);
+
+      // The opening quantity goes on the RECORD as well as into the ledger
+      // event below. Every selling screen reads the record through
+      // `sellableStock`, so a product created with 40 on the shelf and no
+      // `totalQuantity` would show up as نفد المخزون the moment it was saved.
+      const product = await addProduct({ ...data, totalQuantity: qty });
+
       if (qty <= 0) {
         // No opening balance entered — the product starts at zero, and stock
         // arrives the normal way, through a توريد.
@@ -295,10 +332,10 @@ export function ProductsPage() {
 
   function updateField<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
-    if (formErrors[key]) {
+    if (formErrors[key as string]) {
       setFormErrors((prev) => {
         const next = { ...prev };
-        delete next[key];
+        delete next[key as string];
         return next;
       });
     }
@@ -466,7 +503,8 @@ export function ProductsPage() {
                 </TableRow>
               ) : (
                 filteredProducts.map((product) => {
-                  const status = stockStatusOf(qtyOf(product.id), product);
+                  const displayQty = sellableStock(product, products);
+                  const status = stockStatusOf(displayQty, product);
                   return (
                     <TableRow key={product.id}>
                       <TableCell className="font-medium px-4 whitespace-nowrap min-w-[200px]">
@@ -517,12 +555,12 @@ export function ProductsPage() {
                               status.variant === "destructive" && "text-destructive",
                             )}
                           >
-                            {qtyOf(product.id)}
+                            {displayQty}
                           </span>
                           {product.metadata?.variants && product.metadata.variants.length > 0 && (
                             <>
-                              <Badge variant="outline" className="text-[10px] h-4 px-1 opacity-60">
-                                {product.metadata.variants.length}
+                              <Badge variant="outline" className="text-[10px] h-4 px-1.5 opacity-80 gap-1 flex items-center border-border/60">
+                                <span className="font-medium">{product.metadata.variants.length} أنواع</span>
                               </Badge>
                               {/* Hover Popover */}
                               <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 w-48 bg-popover border border-border shadow-lg rounded-xl p-3 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">

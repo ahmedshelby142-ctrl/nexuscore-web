@@ -2,7 +2,7 @@
  * The money boundary. Above it: EGP. Below it: integer piastres.
  *
  * Deliberately dependency-free so it can be imported by tooling and tests
- * without dragging in the Tauri bridge. See docs/LEDGER_SCHEMA.md §2.
+ * without dragging in the Supabase client. See docs/LEDGER_SCHEMA.md §2.
  */
 
 /** EGP → piastres. Rounds here so float dust never reaches the database. */

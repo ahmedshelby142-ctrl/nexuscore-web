@@ -45,12 +45,28 @@ test("shipping is offered ONLY from pending", () => {
 
 // ── The lifecycle the brief describes ───────────────────────────────────────
 
-test("pending → hand over, change, or call off", () => {
-  assert.deepEqual([...actionsFor("pending")].sort(), ["cancel", "edit", "ship"]);
+test("pending → hand over, change, call off, or take money", () => {
+  assert.deepEqual([...actionsFor("pending")].sort(), ["cancel", "edit", "pay", "ship"]);
 });
 
-test("with the courier → it arrives, or it comes back", () => {
-  assert.deepEqual([...actionsFor("shipped")].sort(), ["deliver", "return", "settle"]);
+test("with the courier → it arrives, comes back, or gets paid down", () => {
+  assert.deepEqual([...actionsFor("shipped")].sort(), ["deliver", "pay", "return", "settle"]);
+});
+
+test("a customer can pay down an order right up until it is delivered", () => {
+  // Money can arrive by transfer while the goods sit in the shop OR ride in the
+  // van — both are moments where the COD can still be reduced before the
+  // courier knocks.
+  assert.ok(canDo("pending", "pay"));
+  assert.ok(canDo("shipped", "pay"));
+});
+
+test("but not after — by then the courier has already collected", () => {
+  // Past delivery, further movement is a settlement or a refund, and those have
+  // their own actions with their own ledger events.
+  for (const status of ["delivered", "returned", "cancelled"]) {
+    assert.equal(canDo(status, "pay"), false, `${status} must not accept a payment`);
+  }
 });
 
 test("delivered → only a return, which reverses the money too", () => {

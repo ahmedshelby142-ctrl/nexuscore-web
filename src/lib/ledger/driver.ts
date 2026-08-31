@@ -1,31 +1,29 @@
 /**
  * Ledger driver — the only place that knows where events are stored.
  *
- * The interface is deliberately SQL-free. It describes *what* the ledger is
- * asked for, not how it is queried, so the in-memory driver is an honest
- * implementation rather than a fake SQL engine, and so swapping in a real
- * browser backend (IndexedDB / wa-sqlite) later is a one-file change.
+ * There is exactly one store now: Supabase. The SQLite (Tauri) and IndexedDB
+ * drivers this replaces were two independent ledgers reconciled by a sync
+ * engine, and every disagreement between them showed up as stock and money that
+ * differed per machine. A single remote ledger cannot disagree with itself.
  *
- * Runtime selection, per the agreed Option A:
- *   - Tauri  → SQLite. Writes via the `ledger_append` command (one
- *              sqlx::Transaction), reads via tauri-plugin-sql.
- *   - Browser → in-memory. Demo only, gone on refresh. `npm run dev` alone
- *              is not a supported way to run this app; use `tauri:dev`.
+ * What that costs, honestly: a write needs the network. That is the deliberate
+ * trade of going cloud-native — `append` throws when the network is down
+ * instead of queueing, and the caller surfaces the failure rather than
+ * pretending the sale landed.
  */
 
-import { isDesktop } from "../tauri";
 import type { Balance, BalanceQuery, EventQuery, Identity, LedgerEvent, SyncStatus } from "./types";
+import { getSupabaseClient } from "@/lib/supabase";
+import { getSyncIdentity } from "@/services/api/storeContext";
 
 // ── Money boundary ──────────────────────────────────────────────────────────
 // Lives in ./money so tooling and tests can convert without importing the
-// Tauri bridge. Re-exported here because this file is the boundary in spirit.
+// Supabase client. Re-exported here because this file is the boundary in spirit.
 export { fromPiastres, toPiastres } from "./money";
-import { fromPiastres, toPiastres } from "./money";
-import { pushPendingChanges } from "../../services/ledgerSyncEngine";
+import { fromPiastres } from "./money";
 
 // ── Wire shapes ─────────────────────────────────────────────────────────────
-// snake_case, piastres, fully-formed ids: exactly what Rust's serde expects
-// and exactly what the SQLite columns hold.
+// snake_case, piastres, fully-formed ids: exactly what the Postgres columns hold.
 
 export interface WireLine {
   id: string;
@@ -51,173 +49,211 @@ export interface WireEvent {
 }
 
 export interface LedgerDriver {
-  /** Append one event and all its lines atomically. Throws on rejection. */
+  /** Append one event and all its lines. Throws on rejection. */
   append(event: WireEvent): Promise<void>;
   /** Aggregate. Never reads a stored total — always sums lines. */
   balances(query: BalanceQuery): Promise<Balance[]>;
   events(query: EventQuery): Promise<LedgerEvent[]>;
   /** Fetch the lines of a specific event */
   eventLines(eventId: string): Promise<WireLine[]>;
-  /** How many events are waiting to reach Supabase. Drives the Sidebar badge. */
+  /** Retained for the interface; always 0 — nothing is queued locally. */
   pendingCount(): Promise<number>;
-  /** Device tenancy, creating it on first run. */
+  /** Store tenancy, from the signed-in session. */
   identity(): Promise<Identity>;
 }
 
-// ── Tauri / SQLite driver ───────────────────────────────────────────────────
-
-interface SqlDb {
-  select<T>(sql: string, params?: unknown[]): Promise<T>;
+/** The cloud is the only ledger, so no client means no ledger. */
+export class LedgerUnavailable extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LedgerUnavailable";
+  }
 }
 
-let dbPromise: Promise<SqlDb> | null = null;
+function requireClient() {
+  const sb = getSupabaseClient();
+  if (!sb) throw new LedgerUnavailable("لا يوجد اتصال بالسحابة");
+  return sb;
+}
+
+async function requireStoreId(): Promise<string> {
+  const identity = await getSyncIdentity();
+  if (!identity) {
+    throw new LedgerUnavailable("لم يتم ربط هذا الجهاز بمتجر بعد — سجّل الدخول أولاً");
+  }
+  return identity.storeId;
+}
 
 /**
- * Open the read connection against the exact file Rust wrote to.
+ * PostgREST caps a response at 1000 rows. A balance is a SUM over every line
+ * ever written for an account, so a shop with history WILL cross that — and a
+ * silently truncated page reads as stock that vanished.
  *
- * The path comes from `ledger_db_path` rather than being guessed from a
- * `sqlite:name.db` shorthand, so the read pool and the write pool can never
- * end up on different files.
+ * ponytail: pages client-side and sums in JS. Correct at any size, but it
+ * transfers every line to compute one number. If a balance read ever gets slow,
+ * the upgrade is a Postgres view or RPC that returns the SUM — `balances()` is
+ * the only caller that would change.
  */
-async function readDb(): Promise<SqlDb> {
-  if (!dbPromise) {
-    dbPromise = (async () => {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const path = await invoke<string>("ledger_db_path");
-      const Database = (await import("@tauri-apps/plugin-sql")).default;
-      return (await Database.load(`sqlite:${path}`)) as unknown as SqlDb;
-    })();
+const PAGE = 1000;
+
+async function selectAll<T>(
+  build: (from: number, to: number) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await build(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as T[];
+    out.push(...rows);
+    if (rows.length < PAGE) return out;
   }
-  return dbPromise;
 }
 
-/** Builds the `occurred_at` window shared by the balance and event queries. */
-function window(from?: Date, to?: Date): { clause: string; params: string[] } {
-  const parts: string[] = [];
-  const params: string[] = [];
-  if (from) {
-    parts.push("e.occurred_at >= ?");
-    params.push(from.toISOString());
-  }
-  if (to) {
-    parts.push("e.occurred_at < ?");
-    params.push(to.toISOString());
-  }
-  return { clause: parts.length ? ` AND ${parts.join(" AND ")}` : "", params };
+/** A line joined to the two parent facts a balance query filters on. */
+interface JoinedLine {
+  subject_id: string;
+  qty_delta: number | string;
+  amount_delta: number | string;
 }
 
-const tauriDriver: LedgerDriver = {
+const supabaseDriver: LedgerDriver = {
+  /**
+   * Insert the event, then its lines.
+   *
+   * Not one transaction: PostgREST has no multi-table transaction, and adding a
+   * Postgres function would put a migration between this code and a working
+   * app. Instead the event is deleted again when its lines fail, so the ledger
+   * never keeps a header that moved no stock and no money.
+   *
+   * ponytail: compensating delete rather than an RPC. If a crash between the
+   * two writes ever leaves an orphan header, move both inserts into a
+   * `ledger_append(event jsonb)` SQL function — this method is the only caller.
+   */
   async append(event) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("ledger_append", { event });
-    pushPendingChanges().catch(console.error);
+    const sb = requireClient();
+    const { lines, payload, ...header } = event;
+
+    const { error: evErr } = await sb.from("ledger_events").insert({
+      ...header,
+      payload: safeParse(payload),
+      sync_status: "synced",
+    });
+    if (evErr) throw new Error(`[ledger_events] ${evErr.message}`);
+
+    if (lines.length > 0) {
+      const { error: lnErr } = await sb.from("ledger_lines").insert(
+        lines.map((l) => ({
+          id: l.id,
+          event_id: event.id,
+          store_id: event.store_id,
+          account: l.account,
+          subject_id: l.subject_id,
+          // The deployed columns are `qty_delta` / `amount_delta` — the same
+          // names as the wire shape. The sync layer this replaces sent `qty`
+          // and `amount`, which are not columns on this table, so every line it
+          // ever pushed was rejected. Verified against the live schema, not
+          // against docs/migrations/000_master_schema.sql, which has drifted.
+          qty_delta: l.qty_delta,
+          // Piastres. No float ever crosses this.
+          amount_delta: l.amount_delta,
+          unit_cost: l.unit_cost,
+          sync_status: "synced",
+        })),
+      );
+
+      if (lnErr) {
+        await sb.from("ledger_events").delete().eq("id", event.id);
+        throw new Error(`[ledger_lines] ${lnErr.message}`);
+      }
+    }
   },
 
   async balances(query) {
-    const db = await readDb();
-    const { storeId } = await this.identity();
-    const w = window(query.from, query.to);
+    const sb = requireClient();
+    const storeId = await requireStoreId();
 
-    // Joined to ledger_events rather than reading the account_balance view,
-    // because the view cannot express a date window. Same aggregation.
-    const rows = await db.select<
-      { account: string; subject_id: string; qty: number; amount: number }[]
-    >(
-      `SELECT l.account, l.subject_id,
-              COALESCE(SUM(l.qty_delta), 0)    AS qty,
-              COALESCE(SUM(l.amount_delta), 0) AS amount
-         FROM ledger_lines l
-         JOIN ledger_events e ON e.id = l.event_id
-        WHERE l.store_id = ? AND l.account = ?
-          ${query.subjectId ? "AND l.subject_id = ?" : ""}
-          ${query.kind ? "AND e.kind = ?" : ""}
-          ${w.clause}
-        GROUP BY l.account, l.subject_id`,
-      [
-        storeId,
-        query.account,
-        ...(query.subjectId ? [query.subjectId] : []),
-        ...(query.kind ? [query.kind] : []),
-        ...w.params,
-      ],
-    );
+    // `!inner` makes the join a filter: a line whose event does not match the
+    // kind or the date window is dropped by Postgres rather than fetched here
+    // and discarded.
+    const rows = await selectAll<JoinedLine>((from, to) => {
+      let q = sb
+        .from("ledger_lines")
+        .select("subject_id, qty_delta, amount_delta, ledger_events!inner(kind, occurred_at)")
+        .eq("store_id", storeId)
+        .eq("account", query.account);
 
-    return rows.map((r) => ({
-      account: r.account as Balance["account"],
-      subjectId: r.subject_id,
-      qty: r.qty,
-      amount: fromPiastres(r.amount),
+      if (query.subjectId) q = q.eq("subject_id", query.subjectId);
+      if (query.kind) q = q.eq("ledger_events.kind", query.kind);
+      if (query.from) q = q.gte("ledger_events.occurred_at", query.from.toISOString());
+      if (query.to) q = q.lt("ledger_events.occurred_at", query.to.toISOString());
+
+      return q.range(from, to);
+    });
+
+    const totals = new Map<string, { qty: number; amount: number }>();
+    for (const r of rows) {
+      const t = totals.get(r.subject_id) ?? { qty: 0, amount: 0 };
+      t.qty += Number(r.qty_delta) || 0;
+      t.amount += Number(r.amount_delta) || 0;
+      totals.set(r.subject_id, t);
+    }
+
+    return [...totals].map(([subjectId, t]) => ({
+      account: query.account as Balance["account"],
+      subjectId,
+      qty: t.qty,
+      // Piastres in the column, EGP at the boundary.
+      amount: fromPiastres(t.amount),
     }));
   },
 
   async events(query) {
-    const db = await readDb();
-    const { storeId } = await this.identity();
-    const w = window(query.from, query.to);
-    const filters: string[] = [];
-    const params: unknown[] = [storeId];
+    const sb = requireClient();
+    const storeId = await requireStoreId();
 
-    if (query.kind) {
-      filters.push("e.kind = ?");
-      params.push(query.kind);
-    }
-    if (query.refType) {
-      filters.push("e.ref_type = ?");
-      params.push(query.refType);
-    }
-    if (query.refId) {
-      filters.push("e.ref_id = ?");
-      params.push(query.refId);
-    }
-    params.push(...w.params);
+    let q = sb.from("ledger_events").select("*").eq("store_id", storeId);
 
-    const rows = await db.select<Record<string, string | null>[]>(
-      `SELECT * FROM ledger_events e
-        WHERE e.store_id = ?
-          ${filters.length ? `AND ${filters.join(" AND ")}` : ""}
-          ${w.clause}
-        ORDER BY e.occurred_at DESC
-        LIMIT ${Number(query.limit ?? 200)}`,
-      params,
-    );
+    if (query.kind) q = q.eq("kind", query.kind);
+    if (query.refType) q = q.eq("ref_type", query.refType);
+    if (query.refId) q = q.eq("ref_id", query.refId);
+    if (query.from) q = q.gte("occurred_at", query.from.toISOString());
+    if (query.to) q = q.lt("occurred_at", query.to.toISOString());
 
-    return rows.map(rowToEvent);
+    const { data, error } = await q
+      .order("occurred_at", { ascending: false })
+      .limit(Number(query.limit ?? 200));
+
+    if (error) throw new Error(`[ledger_events] ${error.message}`);
+    return (data ?? []).map(rowToEvent);
   },
 
   async eventLines(eventId) {
-    const db = await readDb();
-    const rows = await db.select<WireLine[]>(
-      `SELECT * FROM ledger_lines WHERE event_id = ?`,
-      [eventId]
-    );
-    return rows;
+    const sb = requireClient();
+    const { data, error } = await sb.from("ledger_lines").select("*").eq("event_id", eventId);
+    if (error) throw new Error(`[ledger_lines] ${error.message}`);
+
+    return (data ?? []).map((l: Record<string, unknown>) => ({
+      id: String(l.id),
+      account: String(l.account),
+      subject_id: String(l.subject_id ?? ""),
+      qty_delta: Number(l.qty_delta) || 0,
+      amount_delta: Number(l.amount_delta) || 0,
+      unit_cost: l.unit_cost == null ? null : Number(l.unit_cost),
+    }));
   },
 
+  /** Nothing is queued locally any more. Kept so the interface stays honest. */
   async pendingCount() {
-    const db = await readDb();
-    const rows = await db.select<{ n: number }[]>(
-      "SELECT COUNT(*) AS n FROM ledger_events WHERE sync_status = 'pending'",
-    );
-    return rows[0]?.n ?? 0;
+    return 0;
   },
 
   async identity() {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const row = await invoke<{
-      store_id: string;
-      device_id: string;
-      store_provisional: boolean;
-    }>("ledger_identity", {
-      // Candidate ids, used only if this device has none yet. Generating them
-      // here keeps UUID creation client-side (brief §1.4) without pulling a
-      // uuid crate into the Rust build.
-      candidateStoreId: crypto.randomUUID(),
-      candidateDeviceId: crypto.randomUUID(),
-    });
+    const identity = await getSyncIdentity();
     return {
-      storeId: row.store_id,
-      deviceId: row.device_id,
-      storeProvisional: row.store_provisional,
+      storeId: identity?.storeId ?? "",
+      deviceId: identity?.deviceId ?? "",
+      // Provisional means "no confirmed store". Without a session there is none.
+      storeProvisional: !identity,
     };
   },
 };
@@ -226,102 +262,35 @@ function rowToEvent(r: Record<string, unknown>): LedgerEvent {
   return {
     id: String(r.id),
     storeId: String(r.store_id),
-    deviceId: String(r.device_id),
+    // NOT String(): on a row whose device_id is NULL this produced the literal
+    // "undefined", which then travelled all the way to a UUID column.
+    deviceId: r.device_id == null ? "" : String(r.device_id),
     kind: r.kind as LedgerEvent["kind"],
     occurredAt: String(r.occurred_at),
     createdAt: String(r.created_at),
     actor: (r.actor as string) ?? null,
     refType: (r.ref_type as string) ?? null,
     refId: (r.ref_id as string) ?? null,
-    payload: safeJson(r.payload),
+    // `payload` is a jsonb column, so it arrives parsed. The string branch is
+    // for rows written by the old SQLite path, which stored it as text.
+    payload: asObject(r.payload),
     reversedBy: (r.reversed_by as string) ?? null,
-    syncStatus: r.sync_status as SyncStatus,
+    syncStatus: (r.sync_status as SyncStatus) ?? "synced",
   };
 }
 
-function safeJson(v: unknown): Record<string, unknown> {
-  if (typeof v !== "string") return {};
+function asObject(v: unknown): Record<string, unknown> {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
+  if (typeof v === "string") return asObject(safeParse(v));
+  return {};
+}
+
+function safeParse(v: string): unknown {
   try {
-    const parsed: unknown = JSON.parse(v);
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    return JSON.parse(v);
   } catch {
     return {};
   }
 }
 
-// ── In-memory driver (browser demo only) ────────────────────────────────────
-//
-// ponytail: no persistence, no date-window index, linear scans. That is the
-// whole point — the browser path is a demo, not a supported runtime. If it
-// ever needs to be real, replace this object with an IndexedDB implementation
-// and nothing above driver.ts changes.
-
-function memoryDriver(): LedgerDriver {
-  const events: WireEvent[] = [];
-  const identity: Identity = {
-    storeId: "demo-store",
-    deviceId: "demo-device",
-    storeProvisional: true,
-  };
-
-  const inWindow = (e: WireEvent, from?: Date, to?: Date) =>
-    (!from || e.occurred_at >= from.toISOString()) && (!to || e.occurred_at < to.toISOString());
-
-  return {
-    append(event) {
-      // Mirrors the transaction guarantee: the array push is all-or-nothing.
-      events.push(event);
-      return Promise.resolve();
-    },
-
-    balances(query) {
-      const totals = new Map<string, { qty: number; amount: number }>();
-      for (const e of events) {
-        if (!inWindow(e, query.from, query.to)) continue;
-        if (query.kind && e.kind !== query.kind) continue;
-        for (const l of e.lines) {
-          if (l.account !== query.account) continue;
-          if (query.subjectId && l.subject_id !== query.subjectId) continue;
-          const t = totals.get(l.subject_id) ?? { qty: 0, amount: 0 };
-          t.qty += l.qty_delta;
-          t.amount += l.amount_delta;
-          totals.set(l.subject_id, t);
-        }
-      }
-      return Promise.resolve(
-        [...totals].map(([subjectId, t]) => ({
-          account: query.account,
-          subjectId,
-          qty: t.qty,
-          amount: fromPiastres(t.amount),
-        })),
-      );
-    },
-
-    events(query) {
-      const out = events
-        .filter(
-          (e) =>
-            (!query.kind || e.kind === query.kind) &&
-            (!query.refType || e.ref_type === query.refType) &&
-            (!query.refId || e.ref_id === query.refId) &&
-            inWindow(e, query.from, query.to),
-        )
-        .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
-        .slice(0, query.limit ?? 200)
-        .map((e) => rowToEvent({ ...e, reversed_by: null, sync_status: "pending" }));
-      return Promise.resolve(out);
-    },
-
-    async eventLines(eventId) {
-      const e = events.find((ev) => ev.id === eventId);
-      return e ? e.lines : [];
-    },
-
-    pendingCount: () => Promise.resolve(events.length),
-    identity: () => Promise.resolve(identity),
-  };
-}
-
-/** The active driver for this runtime. */
-export const driver: LedgerDriver = isDesktop ? tauriDriver : memoryDriver();
+export const driver: LedgerDriver = supabaseDriver;

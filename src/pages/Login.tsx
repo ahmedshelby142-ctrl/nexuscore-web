@@ -10,18 +10,32 @@ import {
   KeyRound,
   ShieldAlert,
   Info,
+  RotateCcw,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { wipeLocalData } from "@/lib/localWipe";
 import { useThemeStore } from "@/store/useThemeStore";
 import logoLight from "@/assets/logo-light.png";
 import logoDark from "@/assets/logo-dark.png";
 import { useAuthStore } from "@/store/useAuthStore";
+import { getOperationMode } from "@/lib/supabase";
+import { clearStoreIdCache } from "@/services/api/storeContext";
+import { toAppRole } from "@/lib/roles";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import {
   BUSINESS_PROFILE_LABELS,
   BUSINESS_PROFILE_DESCRIPTIONS,
   BUSINESS_PROFILE_TO_BUSINESS_TYPE,
   BUSINESS_TYPE_TO_MODE,
-  OPERATION_MODE_LABELS,
   type BusinessProfile,
   type OperationMode,
 } from "@/types";
@@ -39,7 +53,6 @@ import { cn } from "@/lib/utils";
 import { login as serverLogin, changePassword as serverChangePassword } from "@/lib/api/authServer";
 import { getMachineFingerprint } from "@/lib/machineId";
 import { getSupabaseClient } from "@/lib/supabase";
-import { isDesktop, safeInvoke } from "../lib/tauri";
 
 const PROFILE_ICONS: Record<BusinessProfile, React.ElementType> = {
   omnichannel: Store,
@@ -68,18 +81,56 @@ export function Login() {
   const mode = useThemeStore((s) => s.mode);
   const logoSrc = mode === "dark" ? logoDark : logoLight;
   const [selectedProfile, setSelectedProfile] = useState<BusinessProfile>("omnichannel");
-  const [opMode, setOpMode] = useState<OperationMode>("offline_local");
+  // Not a choice any more. Whether this deployment talks to Supabase is
+  // decided by whether Supabase is configured — there is no local database to
+  // fall back to, so offering "local" as an option would offer an app with
+  // nowhere to put anything.
+  const opMode: OperationMode = getOperationMode();
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
   const [error, setLocalError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [machineId, setMachineId] = useState<string>("");
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   // Compute the machine fingerprint once on mount.
   useEffect(() => {
     getMachineFingerprint().then(setMachineId);
   }, []);
+
+  /**
+   * Factory reset — the release build has no devtools, so this is the only way
+   * to run the wipe on a compiled .exe.
+   *
+   * The confirm step is still not optional politeness, but the stakes changed:
+   * nothing here is the only copy of anything any more, so this clears caches
+   * and signs the user out rather than destroying sales. The dialog says so.
+   */
+  const openResetDialog = () => {
+    setResetOpen(true);
+  };
+
+  const handleFactoryReset = async () => {
+    setResetting(true);
+    try {
+      // `reload: false` matters: wipeLocalData reloads by default, which would
+      // race the two clears below and leave them unfinished. The reload is done
+      // last, deliberately, once everything is gone.
+      await wipeLocalData({ force: true, reload: false });
+    } catch (err) {
+      // Even if clearing the caches fails, the
+      // storage clears below still get the device out of its stuck state.
+      console.error("factory reset: ledger wipe failed", err);
+    }
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } finally {
+      window.location.reload();
+    }
+  };
 
   const handleLogin = async () => {
     if (!username.trim() || !password.trim()) {
@@ -97,29 +148,11 @@ export function Login() {
 
     try {
       if (opMode === "offline_local") {
-        // [BYPASS] Developer bypass for default owner account (OFFLINE ONLY)
-        if (opMode === "offline_local" && username.trim() === "owner" && password.trim() === "owner") {
-          setSession({
-            token: "dev-bypass-token",
-            expires_at: new Date() as any,
-            machine_id: "dev-machine",
-            user: {
-              id: "dev-owner-id",
-              username: "owner",
-              role: "owner",
-              is_active: true,
-              created_at: new Date() as any,
-              must_change_password: false,
-            }
-          });
-          setBusinessType(BUSINESS_PROFILE_TO_BUSINESS_TYPE[selectedProfile]);
-          setOperationMode(opMode);
-          setBusinessProfile(selectedProfile);
-          setBusinessMode(BUSINESS_TYPE_TO_MODE[BUSINESS_PROFILE_TO_BUSINESS_TYPE[selectedProfile]]);
-          navigate("/", { replace: true });
-          return;
-        }
-
+        // The hardcoded `owner` / `owner` ADMIN bypass that used to sit here is
+        // gone. It was gated on `offline_local`, which was ALSO the default
+        // mode — and on a public URL that is not a developer convenience, it is
+        // an unauthenticated admin login compiled into the bundle any visitor
+        // can read. The real server login below is the only way in.
         const fp = machineId || (await getMachineFingerprint());
         const result = await serverLogin({
           data: {
@@ -153,7 +186,7 @@ export function Login() {
           return;
         }
 
-        let userSession = null;
+        let userSession: any = null;
         let userId = "";
 
         if (authMode === "signup") {
@@ -185,6 +218,22 @@ export function Login() {
           return;
         }
 
+        // The role is the SERVER's answer, never a literal.
+        //
+        // This used to hardcode `role: "owner"`, so every cloud login — every
+        // cashier, every accountant — arrived holding full admin in the client.
+        // `store_members.role` is the same column the RLS policies read, so the
+        // screen a user sees and the rows they may touch now come from one fact.
+        //
+        // A missing membership row means the account is not attached to this
+        // shop yet; `toAppRole(null)` lands on the least privileged role rather
+        // than assuming the best case.
+        const { data: membership } = await sb
+          .from("store_members")
+          .select("role")
+          .eq("user_id", userId)
+          .maybeSingle();
+
         setSession({
           token: userSession.access_token,
           expires_at: new Date(userSession.expires_at ? userSession.expires_at * 1000 : Date.now() + 3600000) as any,
@@ -192,47 +241,26 @@ export function Login() {
           user: {
             id: userId,
             username: username.trim(),
-            role: "owner",
+            role: toAppRole(membership?.role),
             is_active: true,
             created_at: new Date() as any,
             must_change_password: false,
           }
         });
 
-        // --- Tenancy Sync Resolution (LEDGER_SCHEMA §5) ---
+        // --- Tenancy ---
+        // There is nothing to claim or re-tag: this browser has no local store
+        // id of its own, and `store_members` is the only answer to "which store
+        // is this?". Dropping the cache is all that login has to do.
         try {
-          if (isDesktop) {
-            const localIdentity: any = await safeInvoke("ledger_identity", {
-              candidateStoreId: crypto.randomUUID(),
-              candidateDeviceId: crypto.randomUUID(),
-            });
-            
-            if (localIdentity && localIdentity.store_provisional) {
-              const { data: claimData, error: claimError } = await sb.rpc("claim_store", {
-                local_store_id: localIdentity.store_id,
-              });
-
-              if (!claimError && claimData) {
-                const { canonical, rekey } = claimData as { canonical: string; rekey: boolean };
-                
-                if (rekey) {
-                  await safeInvoke("ledger_retag_store", {
-                    oldStoreId: localIdentity.store_id,
-                    newStoreId: canonical,
-                  });
-                } else {
-                  await safeInvoke("ledger_retag_store", {
-                    oldStoreId: localIdentity.store_id,
-                    newStoreId: localIdentity.store_id, 
-                  });
-                }
-              } else {
-                console.error("claim_store RPC failed:", claimError);
-              }
-            }
-          }
+          clearStoreIdCache();
+          // The store is known now, so reference data can be read. Not awaited:
+          // the dashboard renders and fills in as the tables land.
+          void import("@/services/cloudHydrate")
+            .then((m) => m.hydrateAll())
+            .catch((e) => console.error("hydrate after login failed:", e));
         } catch (err) {
-          console.error("Failed to resolve tenancy sync:", err);
+          console.error("Failed to resolve tenancy:", err);
         }
       }
 
@@ -241,6 +269,14 @@ export function Login() {
       setOperationMode(opMode);
       setBusinessProfile(selectedProfile);
       setBusinessMode(BUSINESS_TYPE_TO_MODE[BUSINESS_PROFILE_TO_BUSINESS_TYPE[selectedProfile]]);
+
+      // Read the cloud so this device starts the session as a mirror of the
+      // server. Nothing is pushed first — there is no local queue that could be
+      // holding work. Deliberately not awaited: a slow read must not hold the
+      // user on the login screen.
+      void import("@/services/cloudHydrate")
+        .then((m) => m.hydrateAll())
+        .catch((e) => console.error("[Login] hydrate failed:", e));
 
       navigate("/", { replace: true });
     } catch (e) {
@@ -282,6 +318,14 @@ export function Login() {
       setBusinessProfile(selectedProfile);
       setBusinessMode(BUSINESS_TYPE_TO_MODE[BUSINESS_PROFILE_TO_BUSINESS_TYPE[selectedProfile]]);
 
+      // Read the cloud so this device starts the session as a mirror of the
+      // server. Nothing is pushed first — there is no local queue that could be
+      // holding work. Deliberately not awaited: a slow read must not hold the
+      // user on the login screen.
+      void import("@/services/cloudHydrate")
+        .then((m) => m.hydrateAll())
+        .catch((e) => console.error("[Login] hydrate failed:", e));
+
       navigate("/", { replace: true });
     } finally {
       setIsSubmitting(false);
@@ -300,32 +344,83 @@ export function Login() {
       className="relative min-h-screen flex items-center justify-center p-4 bg-[#0F172A] overflow-hidden"
       dir="rtl"
     >
-      <div className="absolute -top-40 -left-40 size-[500px] rounded-full bg-[#06B6D4]/10 blur-[120px]" />
-      <div className="absolute -bottom-40 -right-40 size-[400px] rounded-full bg-[#06B6D4]/8 blur-[100px]" />
-      <div className="absolute top-1/3 right-1/4 size-[200px] rounded-full bg-[#64748B]/10 blur-[80px]" />
+      {/* Ambient light. Kept subtle: this screen is the first impression of a
+          system people trust with their money, so it should read as calm and
+          solid rather than decorated. */}
+      <div className="absolute -top-40 -left-40 size-[520px] rounded-full bg-[#06B6D4]/12 blur-[130px]" />
+      <div className="absolute -bottom-48 -right-32 size-[440px] rounded-full bg-[#0EA5E9]/10 blur-[110px]" />
+      <div className="absolute top-1/3 right-1/4 size-[220px] rounded-full bg-[#64748B]/10 blur-[80px]" />
+      <div
+        className="absolute inset-0 opacity-[0.035]"
+        style={{
+          backgroundImage:
+            "linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)",
+          backgroundSize: "56px 56px",
+        }}
+      />
 
-      <div className="relative w-full max-w-[680px]">
-        <div className="flex items-center justify-center gap-3 mb-8">
-          <img src={logoSrc} alt="NexusCore" className="size-11 object-contain" />
+      <div className="relative w-full max-w-[1040px] grid lg:grid-cols-[0.85fr_1fr] gap-0 rounded-3xl overflow-hidden border border-[#1E293B] shadow-2xl shadow-black/40">
+        {/* ── Brand panel. Hidden on small screens, where the form is all that
+               matters and vertical space is scarce. ─────────────────────── */}
+        <aside className="hidden lg:flex flex-col justify-between bg-gradient-to-br from-[#0B1220] via-[#0F172A] to-[#0B1220] border-l border-[#1E293B] p-10">
+          <div className="flex items-center gap-3">
+            <img src={logoSrc} alt="NexusCore" className="size-10 object-contain" />
+            <div>
+              <h1 className="text-2xl font-bold text-white font-display tracking-tight">
+                NexusCore
+              </h1>
+              <p className="text-[11px] text-white/50 tracking-widest mt-0.5">
+                منظومة إدارة المؤسسات
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <h2 className="text-[26px] leading-snug font-bold text-white">
+              كل رقم في المنظومة
+              <br />
+              <span className="text-[#06B6D4]">محسوب من دفتر الحسابات</span>
+            </h2>
+            <ul className="space-y-3.5">
+              {[
+                "مخزون وأرصدة محسوبة لحظياً من الدفتر",
+                "بياناتك على السحابة، ومتاحة من أي جهاز",
+                "صلاحيات مقفولة لكل دور على حدة",
+              ].map((line) => (
+                <li key={line} className="flex items-start gap-3 text-sm text-white/70">
+                  <span className="mt-[6px] size-1.5 rounded-full bg-[#06B6D4] shrink-0 shadow-[0_0_8px_rgba(6,182,212,0.8)]" />
+                  {line}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <p className="text-[11px] text-white/35 leading-relaxed">
+            النسخة 1.0.0 — جميع الحقوق محفوظة © {new Date().getFullYear()} NexusCore
+          </p>
+        </aside>
+
+        {/* ── Form panel ──────────────────────────────────────────────── */}
+        <div className="bg-[#111C2E]/90 backdrop-blur-2xl p-8 sm:p-10 space-y-6 max-h-[92vh] overflow-y-auto">
+          {/* The logo repeats here for small screens, where the panel above is
+              hidden and the user would otherwise see an unbranded form. */}
+          <div className="flex lg:hidden items-center justify-center gap-3 pb-2">
+            <img src={logoSrc} alt="NexusCore" className="size-9 object-contain" />
+            <h1 className="text-2xl font-bold text-white font-display">NexusCore</h1>
+          </div>
+
           <div>
-            <h1 className="text-3xl font-bold text-white font-display tracking-tight">NexusCore</h1>
-            <p className="text-xs text-white/60 tracking-widest mt-0.5">
-              نيكسوس كور — منظومة إدارة المؤسسات
-            </p>
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-[#1E293B] bg-[#1E293B]/80 backdrop-blur-2xl shadow-2xl shadow-[#06B6D4]/5 p-8 space-y-6">
-          <div className="text-center">
-            <h2 className="text-xl font-bold text-white">بوابة الدخول الذكية</h2>
-            <p className="text-sm text-white/60 mt-1">
+            <h2 className="text-2xl font-bold text-white tracking-tight">
+              {mustChangePassword ? "تغيير كلمة المرور" : "تسجيل الدخول"}
+            </h2>
+            <p className="text-sm text-white/55 mt-1.5 leading-relaxed">
               {mustChangePassword
-                ? "يرجى تغيير كلمة المرور المؤقتة للمتابعة"
-                : "قم بتسجيل الدخول واختيار ملف النشاط التجاري"}
+                ? "كلمة المرور الحالية مؤقتة — اختر واحدة جديدة للمتابعة."
+                : "أدخل بياناتك واختر ملف النشاط التجاري للبدء."}
             </p>
           </div>
 
-          <div className="h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+          <div className="h-px bg-gradient-to-l from-transparent via-white/15 to-transparent" />
 
           {!mustChangePassword ? (
             <>
@@ -416,25 +511,6 @@ export function Login() {
                 </div>
               </div>
 
-              {/* Operation mode selector */}
-              <div className="rounded-2xl border border-slate-700/40 bg-slate-800/30 p-4">
-                <div className="space-y-1.5">
-                  <Label className="text-slate-400 text-xs">نظام تشغيل البيانات</Label>
-                  <Select value={opMode} onValueChange={(v: OperationMode) => setOpMode(v)}>
-                    <SelectTrigger className="bg-slate-800/50 border-slate-700/60 text-white h-10 text-sm">
-                      <SelectValue placeholder="اختر نظام التشغيل" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(["offline_local", "cloud_sync"] as const).map((m) => (
-                        <SelectItem key={m} value={m}>
-                          {OPERATION_MODE_LABELS[m]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
               {error && (
                 <div className="text-red-300 text-sm text-center bg-red-500/10 rounded-lg py-2 px-3 border border-red-500/20 flex items-center justify-center gap-2">
                   <ShieldAlert className="size-4" />
@@ -451,45 +527,6 @@ export function Login() {
                 {isSubmitting ? "يرجى الانتظار…" : (authMode === "signup" ? "إنشاء الحساب الجديد" : "دخول إلى النظام")}
               </Button>
               
-              <Button
-                variant="destructive"
-                type="button"
-                onClick={async () => {
-                  if (!confirm("هل أنت متأكد من مسح جميع البيانات المحلية؟ هذا الإجراء لا يمكن التراجع عنه.")) return;
-                  try {
-                    if (isDesktop) {
-                      const Database = (await import("@tauri-apps/plugin-sql")).default;
-                      const dbPath: string | null = await safeInvoke("ledger_db_path");
-                      if (dbPath) {
-                        const db = await Database.load(`sqlite:${dbPath}`);
-                        const tables = [
-                          "ledger_events",
-                          "ledger_lines",
-                          "products",
-                          "customers",
-                          "suppliers",
-                          "discount_codes",
-                          "return_records",
-                          "app_state"
-                        ];
-                        for (const table of tables) {
-                          await db.execute(`DELETE FROM ${table}`);
-                        }
-                        alert("تم مسح قاعدة البيانات المحلية بنجاح.");
-                        window.location.reload();
-                      }
-                    } else {
-                      alert("مسح قاعدة البيانات متاح فقط في نسخة سطح المكتب.");
-                    }
-                  } catch (e) {
-                    console.error("Wipe failed:", e);
-                    alert("حدث خطأ أثناء مسح قاعدة البيانات.");
-                  }
-                }}
-                className="w-full h-11 text-base font-semibold bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30"
-              >
-                تصفير قاعدة البيانات المحلية
-              </Button>
 
               {opMode === "cloud_sync" && (
                 <div className="text-center pt-2">
@@ -506,7 +543,7 @@ export function Login() {
               <div className="rounded-lg bg-slate-800/40 border border-slate-700/40 p-3 flex items-start gap-2 text-[11px] text-slate-400 leading-relaxed">
                 <Info className="size-3.5 shrink-0 mt-0.5 text-cyan-400" />
                 <p>
-                  الوضع السحابي (Cloud Sync) يتطلب إنشاء حساب أو تسجيل الدخول بالبريد الإلكتروني للوصول إلى قاعدة بيانات Supabase. الوضع المحلي يبقي البيانات على الجهاز فقط.
+                  يتطلب الدخول إنشاء حساب أو تسجيل الدخول بالبريد الإلكتروني. كل البيانات محفوظة على قاعدة بيانات Supabase، ولا يُحفظ أي شيء على هذا الجهاز.
                 </p>
               </div>
             </>
@@ -558,16 +595,79 @@ export function Login() {
               </div>
             </>
           )}
-        </div>
 
-        {machineId && !mustChangePassword && (
-          <p className="text-center text-[10px] text-white/20 mt-4 font-mono" dir="ltr">
-            machine-id: {machineId.slice(0, 12)}…
+          {/* Inside the form panel, not after it: as a sibling of the grid
+              columns it became a third cell and broke the two-panel layout.
+              The copyright lives in the brand panel now — no duplicate. */}
+          {/* ── Factory reset ────────────────────────────────────────────
+              Lives on the login screen because the release build ships no
+              devtools: this is the only way to clear a device that is stuck on
+              a dead store id. Separated by a rule and styled as destructive so
+              it never reads as part of the sign-in flow. */}
+          {!mustChangePassword && (
+            <div className="pt-4 mt-2 border-t border-white/10 space-y-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={openResetDialog}
+                disabled={isSubmitting || resetting}
+                className="w-full h-10 text-red-400/80 hover:text-red-300 hover:bg-red-500/10 border border-red-500/20"
+              >
+                <RotateCcw className="size-4 ml-2" />
+                {resetting ? "جارٍ المسح…" : "ضبط المصنع"}
+              </Button>
+              <p className="text-center text-[10px] text-white/25 leading-relaxed">
+                يمسح كل البيانات المحلية على هذا الجهاز ويعيد تحميلها من السحابة
+              </p>
+            </div>
+          )}
+
+          {machineId && !mustChangePassword && (
+            <p className="text-center text-[10px] text-white/20 pt-2 font-mono" dir="ltr">
+              machine-id: {machineId.slice(0, 12)}…
+            </p>
+          )}
+
+          <AlertDialog open={resetOpen} onOpenChange={(o) => !resetting && setResetOpen(o)}>
+            <AlertDialogContent dir="rtl">
+              <AlertDialogHeader>
+                <AlertDialogTitle>ضبط المصنع لهذا الجهاز؟</AlertDialogTitle>
+                <AlertDialogDescription asChild>
+                  <div className="space-y-3 leading-relaxed">
+                    <p>
+                      سيتم مسح كل البيانات المحلية على هذا الجهاز: المنتجات
+                      والعملاء والطلبات ودفتر الحسابات وبيانات الدخول. لا يمكن
+                      التراجع عن هذا الإجراء.
+                    </p>
+                    <p>
+                      البيانات الموجودة على السحابة{" "}
+                      <span className="font-semibold text-foreground">لن تتأثر</span>، وسيتم
+                      تحميلها من جديد بعد تسجيل الدخول.
+                    </p>
+                  </div>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={resetting}>إلغاء</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(e) => {
+                    // The dialog closes on click by default; the reset needs the
+                    // component alive long enough to finish and reload.
+                    e.preventDefault();
+                    void handleFactoryReset();
+                  }}
+                  disabled={resetting}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  {resetting ? "جارٍ المسح…" : "نعم، امسح كل شيء"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+          <p className="lg:hidden text-center text-xs text-white/30">
+            النسخة 1.0.0 — © {new Date().getFullYear()} NexusCore
           </p>
-        )}
-        <p className="text-center text-xs text-white/30 mt-6">
-          النسخة 1.0.0 — جميع الحقوق محفوظة © {new Date().getFullYear()} NexusCore
-        </p>
+        </div>
       </div>
     </div>
   );

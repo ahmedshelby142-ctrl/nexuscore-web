@@ -16,15 +16,23 @@ import {
   Inbox,
   Search,
   Loader2,
+  X,
+  Plus,
+  RefreshCw,
+  PackageCheck,
+  Calendar as CalendarIcon,
+  MessageCircle,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { cn } from "@/lib/utils";
 import { useOrderStore } from "@/store/useOrderStore";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useFinancialStore } from "@/store/useFinancialStore";
 import { customerIdOf } from "@/lib/customers";
 import { useCustomerStore } from "@/store/useCustomerStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
-import { rateFor } from "@/lib/shippingRates";
+import { rateFor, clearsShippingDebt } from "@/lib/shippingRates";
+import { storeIdentity } from "@/lib/pdfGenerator";
 import { appendEvent } from "@/lib/ledger";
 import {
   buildOrderDeliveredLines,
@@ -33,14 +41,21 @@ import {
   buildOrderCancelledLines,
   buildReturnConfirmedLines,
   buildOrderRTOLines,
+  buildOrderPaymentLines,
   buildOrderEditLines,
   orderItemsTotal,
 } from "@/lib/ledger/orders";
 import { useStock } from "@/lib/ledger/useStock";
 import { buildWholesaleInvoiceLines } from "@/lib/ledger/wholesale";
 import { productPrice, productWholesalePrice } from "@/lib/product";
-import { formatMoney } from "@/lib/math";
+import { formatMoney, discountAmountFor, subtract, round } from "@/lib/math";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import { useBalances } from "@/lib/ledger/useBalances";
+import {
+  buildWholesaleReturnLines,
+  reconcileWholesaleReturn,
+} from "@/lib/ledger/wholesale";
+import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -116,6 +131,12 @@ export function OrdersPage() {
   const products = useBusinessStore((s) => s.products);
   const wholesaleClients = useBusinessStore((s) => s.wholesaleClients);
   const addWholesaleInvoice = useBusinessStore((s) => s.addWholesaleInvoice);
+  const applyStockMoves = useBusinessStore((s) => s.applyStockMoves);
+  const promoDiscounts = useBusinessStore((s) => s.promoDiscounts);
+  // A trader's outstanding balance, for reconciling a wholesale return.
+  const { amountOf: debtOf, refresh: refreshDebt } = useBalances("receivable_client");
+  // Re-read after a payment so الخزنة reflects the new cash immediately.
+  const { refresh: refreshWallets } = useBalances("wallet");
   const { qtyOf, costOf, refresh: refreshStock } = useStock();
   // Every shipping fee comes from the Settings matrix — nothing hardcodes one.
   const shippingRates = useShippingRatesStore((s) => s.rows);
@@ -137,6 +158,13 @@ export function OrdersPage() {
   const [isWorking, setIsWorking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   // §3.9 return confirmation — the operator types the customer's name.
+  /** تسجيل دفعة إضافية — the order, the amount and which till it lands in. */
+  const [payOrderId, setPayOrderId] = useState<string | null>(null);
+  const [payAmount, setPayAmount] = useState("");
+  const [payWallet, setPayWallet] = useState<WalletType>("vodafoneCash");
+
+  /** المبلغ المدفوع during a trader's return — see WholesaleReturnPanel. */
+  const [returnSettleInput, setReturnSettleInput] = useState("");
   const [confirmDialog, setConfirmDialog] = useState<{ orderId: string; open: boolean }>({
     orderId: "",
     open: false,
@@ -146,7 +174,31 @@ export function OrdersPage() {
   // order document and the ledger are only touched on confirm.
   const [editOrderId, setEditOrderId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EcommerceOrderItem[]>([]);
-  const [pendingVariantSelection, setPendingVariantSelection] = useState<{ product: Product; qty: number } | null>(null);
+  const [pendingVariantSelection, setPendingVariantSelection] = useState<{ product: any; qty: number } | null>(null);
+
+  const addItemToDraft = (product: any, qty: number, variantName?: string) => {
+    setDraft((prev) => {
+      const existing = prev.find((l) => l.productId === product.id && l.variantName === variantName);
+      if (existing) {
+        return prev.map((l) =>
+          l.productId === product.id && l.variantName === variantName
+            ? { ...l, quantity: l.quantity + qty }
+            : l,
+        );
+      }
+      return [
+        ...prev,
+        {
+          productId: product.id,
+          productName: product.name,
+          quantity: qty,
+          unitPrice: product.price,
+          unitCost: product.cost ?? 0,
+          variantName,
+        },
+      ];
+    });
+  };
 
   const [query, setQuery] = useState("");
   // Native date inputs (§3.8). Empty = no bound, so one end can be set alone.
@@ -229,7 +281,23 @@ export function OrdersPage() {
   /** The order the deliver dialog is about, for display only. */
   const deliverOrder = orders.find((o) => o.id === reconcileDialog.orderId) ?? null;
 
-  const draftTotal = orderItemsTotal(
+  /**
+   * The order the return dialog is about, and its trader if it had one.
+   *
+   * An online order delivered in وضع الجملة carries `wholesaleClientId`. That
+   * is the only signal that its return settles against a debt rather than
+   * refunding cash — without it a trader would be handed money they never paid.
+   */
+  const returningOrder = orders.find((o) => o.id === confirmDialog.orderId) ?? null;
+  const returnClientId: string | undefined = (returningOrder as any)?.wholesaleClientId || undefined;
+  const returnClientDebt = returnClientId ? debtOf(returnClientId) : 0;
+  const returnSettle = reconcileWholesaleReturn(
+    returningOrder?.totalAmount ?? 0,
+    returnClientDebt,
+    returnSettleInput,
+  );
+
+  const draftGoods = orderItemsTotal(
     draft.map((l) => ({
       productId: l.productId,
       quantity: l.quantity,
@@ -237,6 +305,27 @@ export function OrdersPage() {
       unitCost: l.unitCost ?? 0,
     })),
   );
+
+  /**
+   * The discount the order was placed with, carried through the edit.
+   *
+   * Editing used to write back the raw goods total, which silently threw the
+   * discount away: the customer had agreed a price, and changing one line
+   * quietly put them back on list price — inflating both the COD the courier
+   * collects and the revenue booked at delivery.
+   *
+   * A percentage re-applies to the NEW basket (that is what a % means). If the
+   * code has since been deleted, the amount already agreed is honoured but
+   * never allowed to exceed the smaller basket.
+   */
+  const draftDiscount = useMemo(() => {
+    if (!editingOrder) return 0;
+    const code = promoDiscounts.find((d: any) => d.id === editingOrder.discountCodeId);
+    if (code) return discountAmountFor(draftGoods, code.type, code.value);
+    return Math.min(editingOrder.discountAmount ?? 0, draftGoods);
+  }, [editingOrder, draftGoods, promoDiscounts]);
+
+  const draftTotal = subtract(draftGoods, draftDiscount);
 
   const saveEdit = async () => {
     // `editingOrder` is the render value the dialog draws from; the SAVE reads
@@ -261,12 +350,14 @@ export function OrdersPage() {
       quantity: l.quantity,
       unitPrice: l.unitPrice,
       unitCost: l.unitCost ?? 0,
+      variantName: (l as any).variantName,
     }));
     const after = draft.map((l) => ({
       productId: l.productId,
       quantity: l.quantity,
-      unitPrice: l.unitPrice,
+      unitPrice: l.unitPrice ?? 0,
       unitCost: l.unitCost ?? 0,
+      variantName: (l as any).variantName,
     }));
 
     // Anything newly reserved has to actually be on the shelf. Checked against
@@ -318,11 +409,28 @@ export function OrdersPage() {
         });
       }
 
+      // The edit as one movement: what the old basket held comes back, what
+      // the new basket holds goes out. Plain products move too — the pair of
+      // loops this replaced were both gated on `variantName`.
+      applyStockMoves([
+        ...before.map((b: any) => ({
+          productId: b.productId,
+          delta: b.quantity,
+          variantName: b.variantName,
+        })),
+        ...after.map((a: any) => ({
+          productId: a.productId,
+          delta: -a.quantity,
+          variantName: a.variantName,
+        })),
+      ]);
+
       // The document follows the ledger, not the other way round. Deposit is
       // already paid, so the COD absorbs the change in total.
       updateOrder(order.id, {
         items: draft,
         stockItems: draft,
+        discountAmount: draftDiscount || undefined,
         totalAmount: draftTotal,
         cogsAmount: after.reduce((sum, l) => sum + l.unitCost * l.quantity, 0),
         expectedCod: Math.max(0, draftTotal + order.shippingFee - order.depositAmount),
@@ -384,6 +492,16 @@ export function OrdersPage() {
           wallet: order.depositWallet,
         }),
       });
+      
+      // Called off before it ever shipped — everything goes back on the shelf.
+      applyStockMoves(
+        (order.stockItems ?? []).map((line: any) => ({
+          productId: line.productId,
+          delta: line.quantity,
+          variantName: line.variantName,
+        })),
+      );
+      
       updateOrderStatus(orderId, "cancelled");
     } catch (e) {
       setActionError(
@@ -455,6 +573,11 @@ export function OrdersPage() {
             })),
             returnFee: rateFor(shippingRates, order.governorate, "return"),
             courierId: courierIdOf(order),
+            // Refused at the door: the trip was still made and paid for, so the
+            // deposit stays and is booked as income rather than sitting in the
+            // till unexplained.
+            forfeitedDeposit: order.depositAmount ?? 0,
+            customerId: customerId ?? undefined,
           }),
         });
       } else {
@@ -488,6 +611,55 @@ export function OrdersPage() {
           });
         }
 
+        // A trader's return settles against their account, not the till. The
+        // same تسوية POS does — see `buildWholesaleReturnLines`.
+        if (returnClientId) {
+          await appendEvent({
+            kind: "return_confirmed",
+            actor: "أونلاين",
+            refType: "wholesale_client",
+            refId: returnClientId,
+            payload: {
+              type: "wholesale_return",
+              customerName: order.customerName,
+              confirmedBy: confirmName.trim(),
+              previousDebt: returnClientDebt,
+              returnValue: order.totalAmount,
+              paidNow: returnSettle.paidNow,
+            },
+            lines: buildWholesaleReturnLines({
+              items: (order.stockItems ?? []).map((line) => ({
+                productId: line.productId,
+                quantity: line.quantity,
+                unitPrice: line.unitPrice,
+                unitCost: line.unitCost ?? 0,
+              })),
+              clientId: returnClientId,
+              wallet: targetWallet,
+              currentDebt: returnClientDebt,
+              paidNow: returnSettle.paidNow,
+            }),
+          });
+
+          applyStockMoves(
+            (order.stockItems ?? []).map((line: any) => ({
+              productId: line.productId,
+              delta: line.quantity,
+              variantName: line.variantName,
+            })),
+          );
+          useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date() });
+          updateOrderStatus(order.id, "returned");
+          refreshStock();
+          refreshDebt();
+          setReturnSettleInput("");
+          setConfirmDialog({ open: false, orderId: "" });
+          setConfirmName("");
+          setIsWorking(false);
+          releaseOrder(order.id);
+          return;
+        }
+
         await appendEvent({
           kind: "return_confirmed",
           actor: "أونلاين",
@@ -504,6 +676,9 @@ export function OrdersPage() {
             // Refund and revenue reversal are the GOODS. The delivery fee was
             // never our revenue, so there is nothing of it to reverse.
             refundAmount: order.totalAmount,
+            // …but the deposit never goes back. Capped at the refund so a
+            // deposit larger than the goods cannot turn a return into a charge.
+            forfeitedDeposit: Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0),
             wallet: targetWallet,
             revenueAmount: order.totalAmount,
             // The return fee comes from the Settings matrix for this governorate.
@@ -515,6 +690,19 @@ export function OrdersPage() {
           }),
         });
       }
+      
+      // This person has now sent an order back. Every future order of theirs is
+      // quoted at double shipping — see `shippingFeeFor`.
+      if (customerId) useCustomerStore.getState().recordReturn(customerId);
+
+      // The courier brought it back. Same movement as a cancellation.
+      applyStockMoves(
+        (order.stockItems ?? []).map((line: any) => ({
+          productId: line.productId,
+          delta: line.quantity,
+          variantName: line.variantName,
+        })),
+      );
 
       // The status union has no state after `returned`, so the confirmation is
       // stamped on the document instead. Without it the button comes back on
@@ -613,12 +801,87 @@ export function OrdersPage() {
     generateOrdersPdf({
       companyName:
         fromDate || toDate
-          ? `NexusCore — طلبات ${fromDate || "البداية"} إلى ${toDate || "النهاية"}`
-          : "NexusCore — كل الطلبات",
+          ? `${storeIdentity().name} — طلبات ${fromDate || "البداية"} إلى ${toDate || "النهاية"}`
+          : `${storeIdentity().name} — كل الطلبات`,
       reportDate: new Date(),
       orders: orderRows,
       totals: { orders: exported.length, revenue, cod, fees },
     });
+  };
+
+  /** The order the payment dialog is about, and what is still owed on it. */
+  const payingOrder = orders.find((o) => o.id === payOrderId) ?? null;
+  const payOutstanding = Math.max(0, payingOrder?.expectedCod ?? 0);
+  const payValue = Math.min(Math.max(0, Number(payAmount) || 0), payOutstanding);
+
+  const openPayment = (order: any) => {
+    setPayOrderId(order.id);
+    setPayAmount("");
+    // Most top-ups are a transfer, not cash in the shop — start there.
+    setPayWallet("vodafoneCash");
+    setActionError(null);
+  };
+
+  /**
+   * Record money the customer sent before delivery.
+   *
+   * Raises the deposit and drops the COD by the SAME amount, so
+   * `deposit + cod === net goods + shipping` still holds and the delivery event
+   * balances later. The ledger gets a wallet line for the till actually chosen,
+   * so the Treasury shows the cash under the account it really arrived in.
+   */
+  const confirmPayment = async () => {
+    const order = currentOrder(payOrderId ?? "");
+    if (!order) return;
+
+    if (payValue <= 0) {
+      setActionError("اكتب مبلغ أكبر من صفر.");
+      return;
+    }
+    // Re-read rather than trust the render: the dialog can sit open while the
+    // order is delivered in another tab.
+    if (payValue > Math.max(0, order.expectedCod ?? 0)) {
+      setActionError("المبلغ أكبر من المتبقي على الطلب.");
+      return;
+    }
+
+    setIsWorking(true);
+    setActionError(null);
+    try {
+      await appendEvent({
+        // The existing kind for "a customer paid us". Deliberately NOT
+        // `order_placed`: the dashboard counts those as عمليات, so a top-up
+        // would invent an order that never happened.
+        kind: "client_payment",
+        actor: "أونلاين",
+        refType: "ecommerce_order",
+        refId: order.orderNumber,
+        payload: {
+          type: "order_additional_payment",
+          customerName: order.customerName,
+          wallet: payWallet,
+          amount: payValue,
+        },
+        lines: buildOrderPaymentLines({ wallet: payWallet, amount: payValue }),
+      });
+
+      useOrderStore.getState().updateOrder(order.id, {
+        depositAmount: round((order.depositAmount ?? 0) + payValue),
+        expectedCod: round(Math.max(0, (order.expectedCod ?? 0) - payValue)),
+        // Remember the till of the FIRST money in, so an order that was never
+        // topped up reads exactly as it did before.
+        depositWallet: order.depositWallet ?? payWallet,
+      });
+
+      refreshWallets();
+      setPayOrderId(null);
+    } catch (e) {
+      setActionError(
+        `لم تُسجَّل الدفعة ولم يتغيّر أي رصيد. ${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      setIsWorking(false);
+    }
   };
 
   const confirmDeliver = async () => {
@@ -788,6 +1051,20 @@ export function OrdersPage() {
         // batch the courier owes us (§3.9). Stamped with the same field the
         // batch settlement uses, so "settled" has ONE meaning.
         updateOrder(order.id, { codSettledAt: new Date() });
+      }
+
+      // Remember that this went out as a wholesale sale. Without it the return
+      // path has no way to know the goods are on a trader's account rather
+      // than a retail customer's card, and would refund cash against a debt.
+      if (saleMode === "wholesale" && wholesaleClient) {
+        updateOrder(order.id, { wholesaleClientId: wholesaleClient });
+      }
+
+      // The order that carried the doubled fee has landed and been paid for, so
+      // ONE wasted trip is recovered. A customer who returned three orders owes
+      // three, and settles them one delivery at a time.
+      if (clearsShippingDebt(order) && customerId) {
+        useCustomerStore.getState().settleWastedTrip(customerId);
       }
 
       updateOrderStatus(reconcileDialog.orderId, "delivered");
@@ -1116,6 +1393,19 @@ export function OrdersPage() {
                               </span>
                             )}
 
+                            {/* Money sent before the courier arrives. Only
+                                offered while something is still owed. */}
+                            {actions.includes("pay") && order.expectedCod > 0 && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={isWorking}
+                                onClick={() => openPayment(order)}
+                              >
+                                تسجيل دفعة إضافية
+                              </Button>
+                            )}
+
                             {actions.includes("edit") && (
                               <Button
                                 variant="outline"
@@ -1297,6 +1587,99 @@ export function OrdersPage() {
         </DialogContent>
       </Dialog>
 
+      {/* ===== RECORD AN ADDITIONAL PAYMENT ===== */}
+      <Dialog open={payOrderId !== null} onOpenChange={(open) => !open && setPayOrderId(null)}>
+        <DialogContent dir="rtl" className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>تسجيل دفعة إضافية — {payingOrder?.orderNumber}</DialogTitle>
+            <DialogDescription>
+              العميل حوّل جزء أو كل المتبقي قبل الشحن. سجّلها هنا عشان المندوب ميطلبش منه الفلوس
+              تاني، والمبلغ يدخل الخزنة الصح.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="rounded-xl border border-border bg-muted/40 p-4 space-y-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">مدفوع مقدماً</span>
+                <span className="font-semibold">{formatMoney(payingOrder?.depositAmount ?? 0)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">المتبقي على المندوب (COD)</span>
+                <span className="font-bold text-lg">{formatMoney(payOutstanding)}</span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="payAmount">المبلغ المدفوع الآن</Label>
+              <Input
+                id="payAmount"
+                type="number"
+                min={0}
+                max={payOutstanding}
+                value={payAmount}
+                onChange={(e) => setPayAmount(e.target.value)}
+                placeholder={String(payOutstanding)}
+                className="font-bold text-lg"
+              />
+              <button
+                type="button"
+                className="text-xs text-primary hover:underline"
+                onClick={() => setPayAmount(String(payOutstanding))}
+              >
+                سدّد المتبقي بالكامل ({formatMoney(payOutstanding)})
+              </button>
+            </div>
+
+            {/* The point of the whole dialog: WHICH account the money landed in.
+                Without it every transfer would pile into one till and the
+                Treasury would show cash where none arrived. */}
+            <div className="space-y-1.5">
+              <Label>طريقة الدفع / الخزنة المستلمة</Label>
+              <Select value={payWallet} onValueChange={(v) => setPayWallet(v as WalletType)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(WALLET_LABELS).map(([key, label]) => (
+                    <SelectItem key={key} value={key}>
+                      {label as string}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {payValue > 0 && (
+              <div className="flex items-center justify-between rounded-xl border border-green-200 bg-green-50 dark:bg-green-950/20 dark:border-green-900 px-4 py-3">
+                <span className="font-semibold text-green-900 dark:text-green-300">
+                  المتبقي بعد الدفعة
+                </span>
+                <span className="text-xl font-black text-green-800 dark:text-green-300">
+                  {formatMoney(Math.max(0, payOutstanding - payValue))}
+                </span>
+              </div>
+            )}
+
+            {actionError && (
+              <div className="rounded-lg p-3 bg-red-50 border border-red-200">
+                <p className="text-sm font-medium text-red-900">{actionError}</p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setPayOrderId(null)} disabled={isWorking}>
+              إلغاء
+            </Button>
+            <Button onClick={() => void confirmPayment()} disabled={isWorking || payValue <= 0}>
+              {isWorking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isWorking ? "جاري التسجيل..." : "تأكيد الدفعة"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ===== EDIT A PENDING ORDER ===== */}
       <Dialog open={editOrderId !== null} onOpenChange={(open) => !open && setEditOrderId(null)}>
         <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
@@ -1386,7 +1769,6 @@ export function OrdersPage() {
               <Label>إضافة منتج</Label>
               <ProductSearch
                 products={products}
-                qtyOf={qtyOf}
                 onSelect={(product) => {
                   if (product.metadata?.variants?.length > 0) {
                     setPendingVariantSelection({ product, qty: 1 });
@@ -1402,8 +1784,14 @@ export function OrdersPage() {
             <div className="rounded-xl border border-border p-4 space-y-1 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">إجمالي المنتجات</span>
-                <span className="font-semibold">{formatMoney(draftTotal)}</span>
+                <span className="font-semibold">{formatMoney(draftGoods)}</span>
               </div>
+              {draftDiscount > 0 && (
+                <div className="flex justify-between text-green-600 dark:text-green-400">
+                  <span>الخصم</span>
+                  <span className="font-semibold">− {formatMoney(draftDiscount)}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-muted-foreground">الشحن</span>
                 <span>{formatMoney(editingOrder?.shippingFee ?? 0)}</span>
@@ -1484,6 +1872,16 @@ export function OrdersPage() {
                 </SelectContent>
               </Select>
             </div>
+            {/* Delivered on a trader's account: the goods pay down the debt
+                instead of the till paying out. Same panel as نقطة البيع. */}
+            {returnClientId && (
+              <WholesaleReturnPanel
+                debt={returnClientDebt}
+                returnValue={returningOrder?.totalAmount ?? 0}
+                paidInput={returnSettleInput}
+                onPaidChange={setReturnSettleInput}
+              />
+            )}
             {actionError && (
               <div className="rounded-lg p-3 bg-red-50 border border-red-200">
                 <p className="text-sm font-medium text-red-900">{actionError}</p>
@@ -1503,7 +1901,11 @@ export function OrdersPage() {
               disabled={isWorking || !confirmName.trim()}
             >
               {isWorking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isWorking ? "جاري التأكيد..." : "تأكيد الاستلام وإرجاع المخزون"}
+              {isWorking
+                ? "جاري التأكيد..."
+                : returnClientId
+                  ? "تأكيد المرتجع وتسوية الحساب"
+                  : "تأكيد الاستلام وإرجاع المخزون"}
             </Button>
           </DialogFooter>
         </DialogContent>

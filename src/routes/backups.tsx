@@ -43,7 +43,6 @@ import {
   checkBackupVersionCompat,
   type VersionCompatResult,
 } from "@/lib/appVersion";
-import { isDesktop } from "@/lib/tauri";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -158,66 +157,7 @@ export function BackupsPage() {
     }
   };
 
-  const handleTauriRestoreFile = async () => {
-    setError(null);
-    setSuccess(null);
-    setBusy(true);
-    try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const { readTextFile } = await import("@tauri-apps/plugin-fs");
-      const selected = await open({
-        multiple: false,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (!selected || typeof selected !== "string") return;
-      
-      const text = await readTextFile(selected);
-      const bundle = JSON.parse(text) as BackupBundle;
-      const err = await validateBundle(bundle);
-      if (err) {
-        setError(err);
-        return;
-      }
-      setConfirm({ bundle, stores: Object.keys(bundle.data) });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "تعذّر قراءة الملف");
-    } finally {
-      setBusy(false);
-    }
-  };
 
-  const handleTauriVerifyFile = async () => {
-    setError(null);
-    setSuccess(null);
-    setBusy(true);
-    try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const { readTextFile } = await import("@tauri-apps/plugin-fs");
-      const selected = await open({
-        multiple: false,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (!selected || typeof selected !== "string") return;
-      
-      const text = await readTextFile(selected);
-      const bundle = JSON.parse(text) as BackupBundle;
-      const err = await validateBundle(bundle);
-      const compat = checkBackupVersionCompat(bundle.version);
-      if (err) {
-        setVerifyResult({ ok: false, reason: err, compat });
-        return;
-      }
-      setVerifyResult({ ok: true, bundle, compat });
-    } catch (parseErr) {
-      setVerifyResult({
-        ok: false,
-        reason: parseErr instanceof Error ? parseErr.message : "تعذّر قراءة الملف",
-        compat: checkBackupVersionCompat(null),
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const performRestore = () => {
     if (!confirm) return;
@@ -269,11 +209,7 @@ export function BackupsPage() {
           <Button
             variant="ghost"
             onClick={() => {
-              if (isDesktop) {
-                handleTauriVerifyFile();
-              } else {
-                verifyInput.current?.click();
-              }
+              verifyInput.current?.click();
             }}
             disabled={busy}
             title="تحقق من سلامة ملف نسخة احتياطية بدون استعادته"
@@ -284,11 +220,7 @@ export function BackupsPage() {
           <Button 
             variant="outline" 
             onClick={() => {
-              if (isDesktop) {
-                handleTauriRestoreFile();
-              } else {
-                fileInput.current?.click();
-              }
+              fileInput.current?.click();
             }} 
             disabled={busy}
           >

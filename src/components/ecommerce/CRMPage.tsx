@@ -26,7 +26,7 @@ import { useBalances } from "@/lib/ledger/useBalances";
 import { events } from "@/lib/ledger";
 import type { LedgerEvent } from "@/lib/ledger";
 import { toWhatsAppNumber } from "@/lib/phone";
-import { openExternal } from "@/lib/tauri";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -122,7 +122,7 @@ export function CRMPage() {
     setEditorOpen(true);
   };
 
-  const saveCustomer = () => {
+  const saveCustomer = async () => {
     if (!canSave) return;
     const fields = {
       name: form.name.trim(),
@@ -132,9 +132,16 @@ export function CRMPage() {
     // Reference data, not a ledger event: correcting a spelling moves no
     // money. Past orders and every `customer_ltv` line keep pointing at this
     // customer by ID, so they follow the new name automatically.
-    if (editingId) updateCustomer(editingId, fields);
-    else setSelectedCustomerId(addCustomer(fields));
-    setEditorOpen(false);
+    // Awaited: the editor stays open (and the typed values stay on screen)
+    // until Supabase confirms. A failure toasts from the store and the dialog
+    // does not close, instead of closing over a customer that was never saved.
+    try {
+      if (editingId) await updateCustomer(editingId, fields);
+      else setSelectedCustomerId(await addCustomer(fields));
+      setEditorOpen(false);
+    } catch {
+      /* the store already told the user; keep the form open to retry */
+    }
   };
 
   // This customer's history. It used to be a raw `===` on the phone OR the
@@ -142,11 +149,37 @@ export function CRMPage() {
   // and any two customers sharing a first name saw each other's. Orders placed
   // since §3.7 carry the customer id; `orderBelongsTo` matches on that and
   // falls back to the phone key for the ones placed before.
-  const customerOrders = useMemo(
-    () =>
-      selectedCustomer ? orders.filter((order) => orderBelongsTo(order, selectedCustomer)) : [],
-    [orders, selectedCustomer],
-  );
+  const timelineEvents = useMemo(() => {
+    if (!selectedCustomer) return [];
+    
+    const ecOrders = orders.filter((order) => orderBelongsTo(order, selectedCustomer)).map(o => ({
+      id: o.id,
+      type: "ecommerce" as const,
+      date: new Date(o.createdAt),
+      displayId: o.orderNumber,
+      status: o.status,
+      totalAmount: o.totalAmount,
+      expectedCod: o.expectedCod,
+      originalData: o,
+    }));
+    
+    const pos = posSales.filter(sale => (sale.payload as any)?.customerId === selectedCustomer.id).map(s => {
+      const p = s.payload as any;
+      const totalAmount = p.totalAmount || (p.items || []).reduce((acc: number, item: any) => acc + (item.quantity * item.unitPrice), 0);
+      return {
+        id: s.id,
+        type: "pos" as const,
+        date: new Date(s.occurredAt),
+        displayId: "POS-" + (s.id.split("-")[0] || "").toUpperCase(),
+        status: "delivered",
+        totalAmount,
+        expectedCod: 0,
+        originalData: s,
+      };
+    });
+    
+    return [...ecOrders, ...pos].sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [orders, posSales, selectedCustomer]);
 
   // Pre-calculate metrics for all listed customers so the table renders instantly
   const customerMetrics = useMemo(() => {
@@ -161,8 +194,33 @@ export function CRMPage() {
     ? customerMetrics.get(selectedCustomer.id) || deriveCustomerMetrics(selectedCustomer.id, orders, posSales)
     : { totalOrders: 0, preferredProducts: [], lastOrderAt: undefined };
 
+  const [selectedTimelineOrder, setSelectedTimelineOrder] = useState<any | null>(null);
+
+  const timelineOrderItems = useMemo(() => {
+    if (!selectedTimelineOrder) return [];
+    if (selectedTimelineOrder.type === "pos") {
+      const payload = selectedTimelineOrder.originalData.payload;
+      return (payload.items || payload.lines || []).map((i: any) => ({
+        name: i.productName || i.name,
+        quantity: i.quantity || i.qty || 1,
+        unitPrice: i.unitPrice || 0,
+        variantName: i.variantName,
+        total: (i.quantity || i.qty || 1) * (i.unitPrice || 0)
+      }));
+    } else {
+      return (selectedTimelineOrder.originalData.items || []).map((i: any) => ({
+        name: i.productName || i.name,
+        quantity: i.quantity,
+        unitPrice: i.unitPrice,
+        variantName: i.variantName,
+        total: i.total || (i.quantity * i.unitPrice)
+      }));
+    }
+  }, [selectedTimelineOrder]);
+
   return (
-    <div className="space-y-6">
+    <>
+    <div className="space-y-6 print:hidden">
       <div>
         <h1 className="text-3xl font-display font-bold">قاعدة العملاء</h1>
         <p className="text-muted-foreground mt-1">
@@ -347,7 +405,7 @@ export function CRMPage() {
                               className="size-6 text-green-600 hover:text-green-700 hover:bg-green-50 rounded-full"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                openExternal(`https://wa.me/${toWhatsAppNumber(selectedCustomer.phone)}`);
+                                window.open(`https://wa.me/${toWhatsAppNumber(selectedCustomer.phone)}`, "_blank", "noreferrer");
                               }}
                               title="مراسلة واتساب"
                             >
@@ -454,7 +512,7 @@ export function CRMPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {customerOrders.length === 0 ? (
+                    {timelineEvents.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={5} className="py-12">
                           <EmptyState
@@ -464,30 +522,45 @@ export function CRMPage() {
                         </TableCell>
                       </TableRow>
                     ) : (
-                      customerOrders.map((order) => (
-                        <TableRow key={order.id}>
-                          <TableCell className="px-4 font-mono">{order.orderNumber}</TableCell>
+                      timelineEvents.map((event) => (
+                        <TableRow 
+                          key={event.id}
+                          onClick={() => setSelectedTimelineOrder(event)}
+                          className="cursor-pointer hover:bg-muted/50 transition-colors"
+                        >
+                          <TableCell className="px-4 font-mono flex items-center gap-2">
+                            {event.displayId}
+                            {event.type === "pos" ? (
+                              <Badge variant="outline" className="ml-2 text-[10px]">شراء من المحل</Badge>
+                            ) : (
+                              <Badge variant="outline" className="ml-2 text-[10px] text-blue-600 border-blue-200 bg-blue-50">طلب أونلاين</Badge>
+                            )}
+                          </TableCell>
                           <TableCell className="text-center px-4 text-sm text-muted-foreground">
-                            {new Date(order.createdAt).toLocaleString("ar-EG")}
+                            {event.date.toLocaleString("ar-EG")}
                           </TableCell>
                           <TableCell className="text-center px-4">
-                            <Badge
-                              variant={
-                                order.status === "delivered"
-                                  ? "default"
-                                  : order.status === "returned"
-                                    ? "destructive"
-                                    : "secondary"
-                              }
-                            >
-                              {order.status}
-                            </Badge>
+                            {event.type === "pos" ? (
+                              <Badge variant="default">مكتمل</Badge>
+                            ) : (
+                              <Badge
+                                variant={
+                                  event.status === "delivered"
+                                    ? "default"
+                                    : event.status === "returned"
+                                      ? "destructive"
+                                      : "secondary"
+                                }
+                              >
+                                {event.status}
+                              </Badge>
+                            )}
                           </TableCell>
                           <TableCell className="text-center px-4 font-mono">
-                            {formatMoney(order.totalAmount)}
+                            {formatMoney(event.totalAmount)}
                           </TableCell>
                           <TableCell className="text-center px-4 font-mono text-amber-600">
-                            {formatMoney(order.expectedCod)}
+                            {event.expectedCod > 0 ? formatMoney(event.expectedCod) : "-"}
                           </TableCell>
                         </TableRow>
                       ))
@@ -583,5 +656,110 @@ export function CRMPage() {
         onRemoved={() => setSelectedCustomerId("")}
       />
     </div>
+
+    <Dialog open={!!selectedTimelineOrder} onOpenChange={(open) => !open && setSelectedTimelineOrder(null)}>
+      {/* We use print:[&>button]:hidden to hide the Shadcn close (X) button during print. */}
+      <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto print:[&>button]:hidden">
+        <DialogHeader className="print:hidden">
+          <DialogTitle>
+            تفاصيل الطلب: {selectedTimelineOrder?.displayId}
+            {selectedTimelineOrder?.type === "pos" ? " (شراء من المحل)" : " (طلب أونلاين)"}
+          </DialogTitle>
+          <DialogDescription>
+            التاريخ: {selectedTimelineOrder?.date?.toLocaleString("ar-EG")}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-right">المنتج</TableHead>
+                <TableHead className="text-center">الدرجة / النوع</TableHead>
+                <TableHead className="text-center">الكمية</TableHead>
+                <TableHead className="text-center">سعر الوحدة</TableHead>
+                <TableHead className="text-left">الإجمالي</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {timelineOrderItems.map((item: any, i: number) => (
+                <TableRow key={i}>
+                  <TableCell className="font-medium text-right">{item.name}</TableCell>
+                  <TableCell className="text-center text-muted-foreground">{item.variantName || "—"}</TableCell>
+                  <TableCell className="text-center">{item.quantity}</TableCell>
+                  <TableCell className="text-center">{formatMoney(item.unitPrice)}</TableCell>
+                  <TableCell className="text-left font-mono">{formatMoney(item.total)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          
+          <div className="flex justify-between items-center bg-muted/30 p-4 rounded-xl border border-border">
+            <span className="font-bold">الإجمالي الكلي:</span>
+            <span className="font-bold text-lg font-mono text-green-600">{formatMoney(selectedTimelineOrder?.totalAmount || 0)}</span>
+          </div>
+
+          <div className="flex justify-end pt-2 print:hidden">
+            <Button onClick={() => { setTimeout(() => window.print(), 100); }}>
+              طباعة الإيصال (PDF)
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    {selectedTimelineOrder && (
+      <div className="hidden print:block absolute top-0 left-0 w-full min-h-screen bg-white text-black p-8 z-[99999]" dir="rtl">
+        <div className="text-center mb-8 border-b-2 border-black pb-4">
+          <h1 className="text-3xl font-bold mb-2">فاتورة مبيعات</h1>
+          <p className="text-gray-600">{selectedTimelineOrder.type === "pos" ? "شراء من المحل" : "طلب أونلاين"}</p>
+        </div>
+        
+        <div className="flex justify-between mb-8">
+          <div>
+            <p className="font-bold text-lg mb-1">بيانات العميل:</p>
+            <p>الاسم: {selectedCustomer?.name}</p>
+            <p>رقم الهاتف: {selectedCustomer?.phone}</p>
+          </div>
+          <div className="text-left">
+            <p className="font-bold text-lg mb-1">بيانات الطلب:</p>
+            <p>رقم الطلب: {selectedTimelineOrder.displayId}</p>
+            <p>التاريخ: {selectedTimelineOrder.date.toLocaleString("ar-EG")}</p>
+          </div>
+        </div>
+
+        <table className="w-full text-right border-collapse mb-8">
+          <thead>
+            <tr className="border-b-2 border-black">
+              <th className="py-2">المنتج</th>
+              <th className="py-2 text-center">الدرجة</th>
+              <th className="py-2 text-center">الكمية</th>
+              <th className="py-2 text-center">السعر</th>
+              <th className="py-2 text-left">الإجمالي</th>
+            </tr>
+          </thead>
+          <tbody>
+            {timelineOrderItems.map((item: any, i: number) => (
+              <tr key={i} className="border-b border-gray-300">
+                <td className="py-2 font-medium">{item.name}</td>
+                <td className="py-2 text-center text-gray-600">{item.variantName || "-"}</td>
+                <td className="py-2 text-center">{item.quantity}</td>
+                <td className="py-2 text-center">{item.unitPrice.toLocaleString("ar-EG")}</td>
+                <td className="py-2 text-left font-mono">{item.total.toLocaleString("ar-EG")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div className="flex justify-between items-center border-t-2 border-black pt-4">
+          <p className="text-xl font-bold">الإجمالي الكلي:</p>
+          <p className="text-2xl font-bold font-mono">{selectedTimelineOrder.totalAmount.toLocaleString("ar-EG")} ج.م</p>
+        </div>
+        
+        <div className="mt-12 text-center text-gray-500 text-sm">
+          <p>شكراً لتعاملكم معنا</p>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

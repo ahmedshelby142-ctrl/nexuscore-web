@@ -10,8 +10,8 @@ import { balances } from "@/lib/ledger";
 import { fetchPnl, periodWindow, channelLabel } from "@/lib/ledger/reports";
 import { Button } from "@/components/ui/button";
 import { BUSINESS_TYPE_LABELS } from "@/types";
-import { useSyncStore, forceFullSync } from "@/services/ledgerSyncEngine";
-import { Wifi, WifiOff, RefreshCw, HardDriveDownload } from "lucide-react";
+import { useOnline } from "@/hooks/useOnline";
+import { Wifi, WifiOff, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const HEADER_TITLES: Record<string, string> = {
@@ -23,6 +23,18 @@ export function Layout() {
   const { businessType, operationMode } = useAuthStore();
   const { sidebarCollapsed, toggleSidebar } = useThemeStore();
   const { wholesaleInvoices, transactions } = useBusinessStore();
+  const online = useOnline();
+  const [refreshing, setRefreshing] = useState(false);
+
+  const refreshFromCloud = async () => {
+    setRefreshing(true);
+    try {
+      const { hydrateAll } = await import("@/services/cloudHydrate");
+      await hydrateAll();
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const [exporting, setExporting] = useState(false);
   const [exportDone, setExportDone] = useState(false);
   const location = useLocation();
@@ -165,40 +177,34 @@ export function Layout() {
               )}
               {import.meta.env.DEV && <DevRoleSwitcher />}
               
-              {/* Sync Status Indicator */}
+              {/* Connection indicator.
+                  There is no "pending" state any more: every write is awaited
+                  against Supabase, so a change has either landed or the user
+                  was already told it did not. What still matters is whether
+                  the next write CAN land. */}
               {operationMode !== "offline_local" && (
                 <div className="flex items-center gap-2">
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => forceFullSync()}
-                    disabled={useSyncStore((s) => s.isSyncing)}
+                    onClick={() => void refreshFromCloud()}
+                    disabled={refreshing}
                     className="text-xs gap-1.5 h-8 bg-blue-50/50 hover:bg-blue-50 dark:bg-blue-950/20 dark:hover:bg-blue-950/40 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300"
                   >
-                    <HardDriveDownload className={cn("size-3.5", useSyncStore((s) => s.isSyncing) && "animate-pulse")} />
-                    مزامنة إجبارية
+                    <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+                    تحديث من السحابة
                   </Button>
                   <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/50 border border-border text-xs font-medium h-8">
-                    {!useSyncStore((s) => s.isOnline) ? (
-                    <>
-                      <WifiOff className="size-3.5 text-red-500" />
-                      <span className="text-muted-foreground">غير متصل</span>
-                    </>
-                  ) : useSyncStore((s) => s.isSyncing) ? (
-                    <>
-                      <RefreshCw className="size-3.5 text-blue-500 animate-spin" />
-                      <span className="text-blue-600 dark:text-blue-400">جاري المزامنة...</span>
-                    </>
-                  ) : useSyncStore((s) => s.pendingCount) > 0 ? (
-                    <>
-                      <RefreshCw className="size-3.5 text-yellow-500" />
-                      <span className="text-yellow-600 dark:text-yellow-400">{useSyncStore((s) => s.pendingCount)} قيد الانتظار</span>
-                    </>
-                  ) : (
-                    <>
-                      <Wifi className="size-3.5 text-green-500" />
-                      <span className="text-green-600 dark:text-green-400">متصل ومتزامن</span>
-                    </>
+                    {online ? (
+                      <>
+                        <Wifi className="size-3.5 text-green-500" />
+                        <span className="text-green-600 dark:text-green-400">متصل</span>
+                      </>
+                    ) : (
+                      <>
+                        <WifiOff className="size-3.5 text-red-500" />
+                        <span className="text-muted-foreground">غير متصل</span>
+                      </>
                     )}
                   </div>
                 </div>

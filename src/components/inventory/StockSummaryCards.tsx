@@ -12,11 +12,10 @@
  */
 
 import { Package, AlertTriangle, PackageCheck, DollarSign } from "lucide-react";
-import { productMinLevel } from "@/lib/product";
+import { productMinLevel, sellableStock } from "@/lib/product";
 import { formatMoney } from "@/lib/math";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { useStock } from "@/lib/ledger/useStock";
 
 /** Which subset of products a screen is showing. */
 export type StockFilter = "all" | "low" | "out";
@@ -24,7 +23,8 @@ export type StockFilter = "all" | "low" | "out";
 /** The fields these cards need. Deliberately not the whole `Product`. */
 export interface StockCardProduct {
   id: string;
-  minStockLevel?: number;
+  minStockLevel: number;
+  metadata?: { variants?: Array<{ name: string; stock: number }> };
 }
 
 /**
@@ -35,8 +35,8 @@ export interface StockCardProduct {
  * itself. The chain read `minStockLevel ?? reorder_point ?? 0` and always fell
  * through the middle term, because nothing ever wrote `reorder_point`.
  */
-export function reorderPointOf(product: StockCardProduct): number {
-  return productMinLevel(product);
+export function reorderPointOf(product: StockCardProduct | any): number {
+  return product.minStockLevel || 5;
 }
 
 /**
@@ -47,21 +47,21 @@ export function reorderPointOf(product: StockCardProduct): number {
  */
 export function stockStatusOf(
   quantity: number,
-  product: StockCardProduct,
+  product: StockCardProduct | any,
 ): { label: string; variant: "destructive" | "secondary" | "default" } {
-  if (quantity <= 0) return { label: "نفد", variant: "destructive" };
-  if (quantity <= reorderPointOf(product)) return { label: "منخفض", variant: "secondary" };
+  if (quantity <= 0 || quantity == null) return { label: "نفد", variant: "destructive" };
+  if (quantity > 0 && quantity <= reorderPointOf(product)) return { label: "منخفض", variant: "secondary" };
   return { label: "متوفر", variant: "default" };
 }
 
 /** Does this product belong in the current filter? */
 export function matchesStockFilter(
   quantity: number,
-  product: StockCardProduct,
+  product: StockCardProduct | any,
   filter: StockFilter,
 ): boolean {
   if (filter === "low") return quantity > 0 && quantity <= reorderPointOf(product);
-  if (filter === "out") return quantity <= 0;
+  if (filter === "out") return quantity <= 0 || quantity == null;
   return true;
 }
 
@@ -72,17 +72,30 @@ interface StockSummaryCardsProps {
 }
 
 export function StockSummaryCards({ products, value, onChange }: StockSummaryCardsProps) {
-  const { qtyOf, costOf } = useStock();
 
   let lowStock = 0;
   let outOfStock = 0;
   let totalValue = 0;
-  for (const product of products) {
-    const qty = qtyOf(product.id);
-    if (qty <= 0) outOfStock += 1;
-    else if (qty <= reorderPointOf(product)) lowStock += 1;
-    // Inventory is worth what it cost, not what it might sell for.
-    totalValue += qty * costOf(product.id);
+  
+  for (const product of products as any[]) {
+    // Sellable, not physical: a بوكس has no shelf of its own, so classing it
+    // نافد whenever its components are stocked would contradict the row.
+    // Its contribution to قيمة المخزون stays 0 — a bundle carries no cost
+    // of its own, so nothing is double-counted here.
+    const qty = sellableStock(product, products as any[]);
+
+    // 2. Out of Stock
+    if (qty === 0 || qty == null) {
+      outOfStock += 1;
+    } 
+    // 3. Low Stock (fallback to 5 if minStockLevel undefined)
+    else if (qty > 0 && qty <= (product.minStockLevel || 5)) {
+      lowStock += 1;
+    }
+
+    // 1. Total Inventory Value
+    const cost = (product.costPrice || product.purchasePrice || product.averageCost || 0);
+    totalValue += (qty || 0) * cost;
   }
 
   // Clicking the active filter clears it, so a card is a toggle rather than a

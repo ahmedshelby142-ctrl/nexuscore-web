@@ -4,10 +4,28 @@ let supabaseClient: SupabaseClient | null = null;
 let operationMode: "offline_local" | "cloud_sync" | null = null;
 
 /**
+ * Read a public config value under either supported prefix.
+ *
+ * `VITE_*` is Vite's own convention and what this app documents. `NEXT_PUBLIC_*`
+ * is accepted because it is what most Vercel projects already have set, and the
+ * failure mode for getting it wrong is silent: Vite drops an unrecognised
+ * variable from the bundle without a warning, and the app boots into an empty
+ * "offline" state that looks like a data problem rather than a config one.
+ *
+ * Both prefixes are declared in `vite.config.ts` — adding a name here without
+ * adding its prefix there would read `undefined` at runtime.
+ */
+function publicEnv(name: string): string {
+  const env = import.meta.env as Record<string, string | undefined>;
+  return env[`VITE_${name}`] || env[`NEXT_PUBLIC_${name}`] || "";
+}
+
+/**
  * Determine the operation mode based on environment variables.
  * 
  * Priority:
- *   1. If VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are both provided and valid → cloud_sync
+ *   1. If SUPABASE_URL and SUPABASE_ANON_KEY are both provided (under either
+ *      the VITE_ or NEXT_PUBLIC_ prefix) → cloud_sync
  *   2. Otherwise → offline_local (fallback)
  * 
  * This allows zero-code-touch environment toggle: just add the keys to .env
@@ -18,8 +36,8 @@ export function getOperationMode(): "offline_local" | "cloud_sync" {
     return operationMode;
   }
 
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
-  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+  const supabaseUrl = publicEnv("SUPABASE_URL");
+  const supabaseAnonKey = publicEnv("SUPABASE_ANON_KEY");
 
   // Both keys must be present and non-empty to enable cloud mode
   if (supabaseUrl && supabaseAnonKey) {
@@ -41,8 +59,8 @@ export function getSupabaseClient(): SupabaseClient | null {
     return supabaseClient;
   }
 
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
-  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+  const supabaseUrl = publicEnv("SUPABASE_URL");
+  const supabaseAnonKey = publicEnv("SUPABASE_ANON_KEY");
 
   // Return null if Supabase is not configured
   if (!supabaseUrl || !supabaseAnonKey) {
@@ -52,7 +70,11 @@ export function getSupabaseClient(): SupabaseClient | null {
   try {
 
     if (!supabaseUrl || !supabaseUrl.startsWith('http')) {
-        console.error("CRITICAL: Supabase URL is missing or invalid in .env.local!");
+        console.error(
+          "CRITICAL: Supabase URL is missing or invalid. Set VITE_SUPABASE_URL " +
+            "(or NEXT_PUBLIC_SUPABASE_URL) in .env.local, and in the Vercel " +
+            "project's Environment Variables for a deployed build.",
+        );
     }
 
     supabaseClient = createClient(supabaseUrl, supabaseAnonKey);

@@ -10,14 +10,22 @@ import {
   Barcode,
   Wallet,
   Trash2,
+  User,
+  Tags,
 } from "lucide-react";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import { useSettingsStore } from "@/store/useSettingsStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
 import { activeCustomers } from "@/lib/customers";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { appendEvent } from "@/lib/ledger";
 import { buildSaleLines } from "@/lib/ledger/sales";
-import { buildWholesaleInvoiceLines } from "@/lib/ledger/wholesale";
+import {
+  buildWholesaleInvoiceLines,
+  buildWholesaleReturnLines,
+  reconcileWholesaleReturn,
+} from "@/lib/ledger/wholesale";
+import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
 import { useStock } from "@/lib/ledger/useStock";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,12 +46,14 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
-import { add, multiply, formatQty } from "@/lib/math";
-import { productPrice, productWholesalePrice, productMinLevel, activeProducts } from "@/lib/product";
+import { add, multiply, subtract, round, formatQty, includedVat, discountAmountFor } from "@/lib/math";
+import { printTableAsPdf, storeIdentity } from "@/lib/pdfGenerator";
+import { sellableStock, productPrice, productWholesalePrice, productMinLevel, activeProducts } from "@/lib/product";
 import { ProductSearch } from "@/components/products/ProductSearch";
 import { CustomerPhoneMatch } from "@/components/ecommerce/CustomerPhoneMatch";
 import { POSReturnModal } from "./POSReturnModal";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { WalletType, PromoDiscount } from "@/types";
 import { WALLET_LABELS } from "@/types";
 
@@ -58,6 +68,56 @@ interface CartItem {
 // Bare number (the "ج.م" is in the surrounding markup here), but still routed
 // through the shared guard so a non-finite total can never print "NaN".
 const formatCurrency = formatQty;
+
+/**
+ * Print the فاتورة for the sale that just closed.
+ *
+ * POS had no invoice printer at all, which meant اسم المحل / الهاتف / العنوان /
+ * الرقم الضريبي / نسبة الضريبة from الإعدادات had nowhere to land on this
+ * screen. It reuses `printTableAsPdf` — the same generator الجملة and المخزون
+ * print through — so the shop header comes from `useSettingsStore` for free.
+ *
+ * VAT is shown as INCLUDED in the total, never added to it: prices in this app
+ * are entered as the final selling price and the total is already in the
+ * ledger, so the receipt may only break the tax out, never change the amount.
+ */
+function printPosInvoice(sold: {
+  lines: CartItem[];
+  total: number;
+  paid: number;
+  customer: string;
+}): void {
+  const { vatRate } = storeIdentity();
+  const vat = includedVat(sold.total, vatRate);
+  const footer = [
+    `الإجمالي: ${formatCurrency(sold.total)} ج.م`,
+    vat > 0 ? `منها ضريبة ${vatRate}%: ${formatCurrency(vat)} ج.م` : "",
+    `المدفوع: ${formatCurrency(sold.paid)} ج.م`,
+    sold.total - sold.paid > 0 ? `المتبقي: ${formatCurrency(sold.total - sold.paid)} ج.م` : "",
+  ]
+    .filter(Boolean)
+    .join(" — ");
+
+  printTableAsPdf({
+    title: "فاتورة بيع",
+    subtitle: `العميل: ${sold.customer}`,
+    columns: [
+      {
+        label: "الصنف",
+        accessor: (i: CartItem) => (i.variantName ? `${i.productName} - ${i.variantName}` : i.productName),
+      },
+      { label: "الكمية", accessor: (i: CartItem) => i.quantity, align: "center" },
+      { label: "سعر الوحدة", accessor: (i: CartItem) => formatCurrency(i.unitPrice), align: "center" },
+      {
+        label: "الإجمالي",
+        accessor: (i: CartItem) => formatCurrency(i.unitPrice * i.quantity),
+        align: "center",
+      },
+    ],
+    rows: sold.lines,
+    footer,
+  });
+}
 
 function normalizeProduct(p: any, mode: "retail" | "wholesale" = "retail") {
   return {
@@ -109,9 +169,9 @@ export default function CheckoutForm() {
     refresh: refreshWallets,
   } = useBalances("wallet");
 
-  // Stock is summed from the ledger, never read off the product record.
+  // `costOf` still comes from the ledger — the weighted average a sale
+  // snapshots. Quantities on screen come from `sellableStock`.
   const {
-    qtyOf,
     costOf,
     loading: stockLoading,
     error: stockError,
@@ -130,7 +190,16 @@ export default function CheckoutForm() {
   const [customerPhone, setCustomerPhone] = useDraftState("pos:customerPhone", "");
 
   const { promoDiscounts, wholesaleClients, wholesaleInvoices, addWholesaleInvoice } = useBusinessStore();
+  // What the selected تاجر owes us right now. A wholesale return settles
+  // against this before any cash changes hands — see `buildWholesaleReturnLines`.
+  const { amountOf: debtOf, refresh: refreshDebt } = useBalances("receivable_client");
+  // نسبة الضريبة from الإعدادات, read reactively so turning VAT on shows up
+  // without a reload. 0 means the shop does not charge it yet — every tax line
+  // below simply does not render.
+  const vatRate = useSettingsStore((st) => st.vatRate);
   const [discountCodeInput, setDiscountCodeInput] = useDraftState("pos:discountCode", "");
+  /** Cash the تاجر hands over during a return, to pay down what is left. */
+  const [settlePaidInput, setSettlePaidInput] = useDraftState("pos:settlePaid", "");
   const [appliedDiscount, setAppliedDiscount] = useDraftState<PromoDiscount | null>(
     "pos-checkout:appliedDiscount",
     null,
@@ -159,9 +228,33 @@ export default function CheckoutForm() {
     success: boolean;
     message: string;
     profitDistribution?: any;
+    /** Snapshot of what was just sold, kept so the فاتورة can still be
+     * printed after the cart is cleared. */
+    sold?: { lines: CartItem[]; total: number; paid: number; customer: string };
   } | null>(null);
 
   const barcodeRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * The بوكس half of a cart line, for the ledger builders.
+   *
+   * `buildSaleLines` / `buildWholesaleInvoiceLines` already know to charge a
+   * bundle's components instead of the bundle — but only if they are told the
+   * line IS one. POS never told them, so every box booked stock and COGS
+   * against a virtual product that has neither.
+   */
+  const bundleFieldsFor = (productId: string) => {
+    const record: any = rawProducts?.find((p: any) => p.id === productId);
+    if (!record?.isBundle || !record.bundleItems?.length) return {};
+    return {
+      isBundle: true,
+      bundleItems: record.bundleItems.map((c: any) => ({
+        productId: c.productId,
+        quantity: c.quantity,
+        unitCost: costOf(c.productId),
+      })),
+    };
+  };
 
   const handleModeChange = (mode: "retail" | "wholesale") => {
     if (cart.length > 0) {
@@ -198,9 +291,9 @@ export default function CheckoutForm() {
     }
 
     const isReturn = qty < 0;
-    const onHand = variantName && product.metadata?.variants 
-      ? product.metadata.variants.find((v: any) => v.name === variantName)?.stock || 0
-      : qtyOf(String(product?.id ?? ""));
+    // `sellableStock` is bundle-aware; `getVariantStock` was not, which is why
+    // every بوكس reported نفد المخزون and could never reach the basket.
+    const onHand = sellableStock(product, products, variantName);
     
     // For normal sales, block if out of stock
     if (!isReturn && onHand <= 0) {
@@ -259,9 +352,9 @@ export default function CheckoutForm() {
       return;
     }
 
-    // Stock comes from the ledger, so a scan can tell the cashier the shelf is
-    // empty before they promise it to the customer.
-    if (!isReturnMode && qtyOf(String(match.id)) <= 0) {
+    // A scan can tell the cashier the shelf is empty before they promise it
+    // to the customer.
+    if (!isReturnMode && sellableStock(match, products) <= 0) {
       setResult({ success: false, message: `"${String(match.name)}" نفد من المخزون` });
       return;
     }
@@ -299,9 +392,7 @@ export default function CheckoutForm() {
 
   const updateCartQuantity = (productId: string, variantName: string | undefined, newQuantity: number) => {
     const product = products.find((p) => p.id === productId);
-    const maxQty = variantName && product?.metadata?.variants
-      ? product.metadata.variants.find((v: any) => v.name === variantName)?.stock || 0
-      : qtyOf(productId);
+    const maxQty = sellableStock(product, products, variantName);
       
     setCart(
       cart.map((item) =>
@@ -312,15 +403,32 @@ export default function CheckoutForm() {
 
   const subtotal = cart.reduce((total, item) => add(total, multiply(item.unitPrice, item.quantity)), 0);
 
-  const discountAmount = useMemo(() => {
-    if (!appliedDiscount) return 0;
-    if (appliedDiscount.type === "percentage") {
-      return subtotal * (appliedDiscount.value / 100);
-    }
-    return Math.min(appliedDiscount.value, subtotal);
-  }, [appliedDiscount, subtotal]);
+  // Shared with the ledger — see `discountAmountFor`. Capped at the subtotal,
+  // so a 500% code can never drive the total (or the till) negative.
+  const discountAmount = useMemo(
+    () =>
+      appliedDiscount
+        ? discountAmountFor(subtotal, appliedDiscount.type, appliedDiscount.value)
+        : 0,
+    [appliedDiscount, subtotal],
+  );
 
-  const calculateTotal = () => Math.max(0, subtotal - discountAmount);
+  // `subtract` not `-`: this number goes into the ledger, and the discount is
+  // already capped at the subtotal, so the result cannot be negative.
+  const calculateTotal = () => Math.max(0, subtract(subtotal, discountAmount));
+
+  // ── التسوية الذكية: a wholesale return settles against the client's debt ──
+  //
+  // R = what is coming back, D = what they owe, P = cash they hand over today.
+  // The debt absorbs R first; P only exists while something is still owed.
+  const isWholesaleReturn =
+    saleMode === "wholesale" && cart.length > 0 && cart.every((i) => i.quantity < 0);
+  const wholesaleReturnValue = isWholesaleReturn
+    ? round(cart.reduce((sum, i) => sum + Math.abs(i.quantity) * i.unitPrice, 0))
+    : 0;
+  const wholesaleDebt = selectedCustomerId ? debtOf(selectedCustomerId) : 0;
+  const { remainingDebt: wholesaleRemainingDebt, paidNow: settlePaid } =
+    reconcileWholesaleReturn(wholesaleReturnValue, wholesaleDebt, settlePaidInput);
 
   const handleCompleteSale = async () => {
     if (cart.length === 0) {
@@ -328,14 +436,15 @@ export default function CheckoutForm() {
       return;
     }
 
-    // Re-check against the ledger, not against what the screen was rendered
-    // with. The cart may have been sitting open while another device sold the
-    // same stock.
-    const short = cart.find((item) => item.quantity > qtyOf(item.productId));
+    // Re-check against current stock, not against what the screen was
+    // rendered with — the cart may have sat open while the same stock moved.
+    const stockOfLine = (item: (typeof cart)[number]) =>
+      sellableStock(products.find((p) => p.id === item.productId), products, item.variantName);
+    const short = cart.find((item) => item.quantity > stockOfLine(item));
     if (short) {
       setResult({
         success: false,
-        message: `الكمية المطلوبة من "${short.productName}" أكبر من المخزون (${qtyOf(short.productId)})`,
+        message: `الكمية المطلوبة من "${short.productName}" أكبر من المخزون (${stockOfLine(short)})`,
       });
       return;
     }
@@ -349,7 +458,7 @@ export default function CheckoutForm() {
       if (saleMode === "retail") {
         let finalCustomerId = selectedCustomerId;
         if (customerPhone && !finalCustomerId) {
-          finalCustomerId = useCustomerStore.getState().upsertCustomerFromOrder({
+          finalCustomerId = await useCustomerStore.getState().upsertCustomerFromOrder({
             customerName: customerName.trim(),
             customerPhone: customerPhone.trim(),
             address: "",
@@ -365,8 +474,14 @@ export default function CheckoutForm() {
           refType: "pos_sale",
           payload: {
             channel: "pos",
+            walletId: selectedWallet,
             itemCount: cart.length,
             lines: cart.map((i) => ({ name: i.productName, qty: i.quantity, variantName: i.variantName })),
+            customerId: finalCustomerId || undefined,
+            customerName: customerName.trim() || undefined,
+            customerPhone: customerPhone.trim() || undefined,
+            items: cart.map((i) => ({ productId: i.productId, productName: i.productName, unitPrice: i.unitPrice, quantity: i.quantity, variantName: i.variantName })),
+            totalAmount: totalAmount,
           },
           lines: buildSaleLines({
             items: cart.map((item) => ({
@@ -379,6 +494,7 @@ export default function CheckoutForm() {
               // stored cost field can be edited after the fact and would
               // silently re-price history that already happened.
               unitCost: costOf(item.productId),
+              ...bundleFieldsFor(item.productId),
             })),
             wallet: selectedWallet,
             customerId: finalCustomerId || undefined,
@@ -399,6 +515,72 @@ export default function CheckoutForm() {
           return;
         }
         
+        // A cart of returns only. `buildWholesaleInvoiceLines` refuses negative
+        // quantities, so this used to throw and a trader's return could not be
+        // processed at all — see `buildWholesaleReturnLines`.
+        if (isWholesaleReturn) {
+          if (settlePaid > wholesaleRemainingDebt) {
+            setResult({ success: false, message: "المبلغ المدفوع أكبر من المديونية المتبقية" });
+            setIsProcessing(false);
+            return;
+          }
+          await appendEvent({
+            kind: "return_confirmed",
+            actor: "POS جملة",
+            refType: "wholesale_client",
+            refId: selectedCustomerId,
+            payload: {
+              type: "wholesale_return",
+              clientName: client.companyName,
+              channel: "pos_wholesale",
+              previousDebt: wholesaleDebt,
+              returnValue: wholesaleReturnValue,
+              paidNow: settlePaid,
+            },
+            lines: buildWholesaleReturnLines({
+              items: cart.map((item) => ({
+                productId: item.productId,
+                // The cart carries returns as negatives; the builder wants the
+                // count of goods coming back.
+                quantity: Math.abs(item.quantity),
+                unitPrice: item.unitPrice,
+                unitCost: costOf(item.productId),
+                variantName: item.variantName,
+                ...bundleFieldsFor(item.productId),
+              })),
+              clientId: selectedCustomerId,
+              wallet: selectedWallet,
+              currentDebt: wholesaleDebt,
+              paidNow: settlePaid,
+            }),
+          });
+
+          // The goods are back on the shelf. Bundles expand at the choke point.
+          useBusinessStore.getState().applyStockMoves(
+            cart.map((item) => ({
+              productId: item.productId,
+              delta: Math.abs(item.quantity),
+              variantName: item.variantName,
+            })),
+          );
+
+          refreshStock();
+          refreshWallets();
+          refreshDebt();
+          setResult({
+            success: true,
+            message: `تم تسجيل المرتجع. المديونية الجديدة: ${formatCurrency(Math.max(0, wholesaleDebt - wholesaleReturnValue - settlePaid))} ج.م`,
+          });
+          clearDrafts("pos:");
+          setCart([]);
+          setSelectedCustomerId("");
+          setPaidAmountInput("");
+          setSettlePaidInput("");
+          setIsReturnMode(false);
+          setIsProcessing(false);
+          return;
+        }
+
         const paid = paidAmountInput === "" ? totalAmount : Number(paidAmountInput);
         if (isNaN(paid) || paid < 0 || paid > totalAmount) {
           setResult({ success: false, message: "المبلغ المدفوع غير صحيح" });
@@ -414,10 +596,16 @@ export default function CheckoutForm() {
           refType: "wholesale_invoice",
           refId: invNum,
           payload: {
+            type: "wholesale",
             invoiceNumber: invNum,
+            walletId: selectedWallet,
             clientName: client.companyName,
             channel: "pos_wholesale",
             itemCount: cart.length,
+            customerId: client.id,
+            customerPhone: client.phone,
+            customerName: client.name || client.companyName,
+            items: cart.map((i) => ({ productId: i.productId, productName: i.productName, unitPrice: i.unitPrice, quantity: i.quantity, variantName: i.variantName })),
           },
           lines: buildWholesaleInvoiceLines({
             items: cart.map((item) => ({
@@ -426,12 +614,17 @@ export default function CheckoutForm() {
               unitPrice: item.unitPrice,
               unitCost: costOf(item.productId),
               variantName: item.variantName,
+              ...bundleFieldsFor(item.productId),
             })),
             clientId: selectedCustomerId,
             wallet: selectedWallet,
             paidAmount: paid,
             shippingCharge: 0,
             shippingCost: 0,
+            // The invoice document is written with the discounted total below;
+            // without this the ledger would book the full price and leave the
+            // difference sitting on the client as a phantom debt.
+            discountAmount: appliedDiscount ? discountAmount : undefined,
           }),
         });
 
@@ -457,17 +650,85 @@ export default function CheckoutForm() {
         });
       }
 
+      const negativeItems = cart.filter(i => i.quantity < 0);
+      const positiveItems = cart.filter(i => i.quantity > 0);
+      
+      if (negativeItems.length > 0) {
+        const isExchange = positiveItems.length > 0;
+        const exchangeProduct = isExchange ? positiveItems[0] : null;
+        
+        useBusinessStore.getState().addReturnRecord({
+          original_order_id: `pos_${Date.now()}`,
+          type: isExchange ? "exchange" : "return",
+          customer_name: (saleMode === "retail" ? customerName.trim() : wholesaleClients.find((c) => c.id === selectedCustomerId)?.companyName) || "عميل غير مسجل (نقاط البيع)",
+          customer_phone: (saleMode === "retail" ? customerPhone.trim() : wholesaleClients.find((c) => c.id === selectedCustomerId)?.phone) || "",
+          governorate: "POS",
+          returned_items: negativeItems.map(i => ({
+            product_id: i.productId,
+            product_name: i.variantName ? `${i.productName} - ${i.variantName}` : i.productName,
+            quantity: Math.abs(i.quantity),
+            refund_amount: Math.abs(i.quantity * i.unitPrice)
+          })),
+          ...(isExchange && exchangeProduct ? {
+            exchanged_item: {
+              product_id: exchangeProduct.productId,
+              product_name: exchangeProduct.variantName ? `${exchangeProduct.productName} - ${exchangeProduct.variantName}` : exchangeProduct.productName,
+              quantity: exchangeProduct.quantity,
+              price: exchangeProduct.unitPrice,
+            }
+          } : {}),
+          financial_difference: totalAmount,
+          processed_by: "POS",
+          notes: "تم تسجيلها عبر واجهة نقاط البيع (POS)",
+        });
+      }
+
+      // Every line, variant or not. A negative `quantity` is a مرتجع line and
+      // its sign carries through untouched — it puts the goods back.
+      useBusinessStore.getState().applyStockMoves(
+        cart.map((item) => ({
+          productId: item.productId,
+          delta: -item.quantity,
+          variantName: item.variantName,
+        })),
+      );
+
       refreshStock();
       // Re-read the till so the cashier sees this sale land in the wallet they
       // chose, immediately.
       refreshWallets();
-      setResult({ success: true, message: "تمت العملية بنجاح!" });
+      // And the client's debt — a credit sale just changed it, and the very
+      // next action may be a return that has to reconcile against it.
+      refreshDebt();
+      setResult({
+        success: true,
+        message: "تمت العملية بنجاح!",
+        sold: {
+          lines: cart,
+          total: totalAmount,
+          paid:
+            saleMode === "retail"
+              ? totalAmount
+              : paidAmountInput === ""
+                ? totalAmount
+                : Number(paidAmountInput),
+          customer:
+            (saleMode === "retail"
+              ? customerName.trim()
+              : wholesaleClients.find((c) => c.id === selectedCustomerId)?.companyName) ||
+            "عميل نقدي",
+        },
+      });
       // Sold — the basket is in the ledger now, so the draft must not survive.
       clearDrafts("pos:");
       setCart([]);
+      setSelectedCustomerId("");
+      setCustomerName("");
+      setCustomerPhone("");
       setAppliedDiscount(null);
       setDiscountCodeInput("");
       setPaidAmountInput("");
+      setIsReturnMode(false);
     } catch (e) {
       // A rejected append wrote nothing, so the cart is still valid and the
       // cashier can retry. Say that rather than leaving them guessing.
@@ -496,6 +757,11 @@ export default function CheckoutForm() {
               {result.message}
             </p>
           </div>
+          {result.sold && (
+            <Button variant="outline" size="sm" onClick={() => printPosInvoice(result.sold!)}>
+              طباعة الفاتورة
+            </Button>
+          )}
         </div>
       )}
 
@@ -526,88 +792,52 @@ export default function CheckoutForm() {
       {/* Speed lane on the right (RTL: first), the basket pinned beside it.
           Nothing below changes what a sale DOES — same handlers, same one
           `appendEvent`. This is where the cashier looks, not what runs. */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 items-start">
-        <div className="xl:col-span-2 space-y-4">
-          {/* Mode Toggle */}
-          <div className="flex bg-muted/50 p-1 rounded-xl border border-border">
-            <button
-              onClick={() => handleModeChange("retail")}
-              className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all ${
-                saleMode === "retail"
-                  ? "bg-background shadow text-primary"
-                  : "text-muted-foreground hover:bg-muted"
-              }`}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-[calc(100vh-80px)] overflow-hidden items-start">
+        {/* =======================
+            RIGHT COLUMN: Working Area (lg:col-span-8)
+            ======================= */}
+        <div className="lg:col-span-8 space-y-6 overflow-y-auto h-full pr-2 pb-4">
+          
+          {/* Top: Mode Tabs & Return Mode Toggle */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            {/* Mode Toggle */}
+            <Tabs 
+              value={saleMode} 
+              onValueChange={(v) => handleModeChange(v as "retail" | "wholesale")}
+              className="w-full"
             >
-              قطاعي
-            </button>
-            <button
-              onClick={() => handleModeChange("wholesale")}
-              className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all ${
-                saleMode === "wholesale"
-                  ? "bg-background shadow text-primary"
-                  : "text-muted-foreground hover:bg-muted"
-              }`}
-            >
-              جملة
-            </button>
-          </div>
+              <TabsList className="flex w-full h-full p-1 bg-muted/50 rounded-xl border border-border">
+                <TabsTrigger 
+                  value="retail" 
+                  className="flex-1 py-2.5 font-semibold text-gray-700 data-[state=active]:text-gray-900 data-[state=active]:font-bold dark:data-[state=active]:text-white text-lg rounded-lg"
+                >
+                  قطاعي
+                </TabsTrigger>
+                <TabsTrigger 
+                  value="wholesale" 
+                  className="flex-1 py-2.5 font-semibold text-gray-700 data-[state=active]:text-gray-900 data-[state=active]:font-bold dark:data-[state=active]:text-white text-lg rounded-lg"
+                >
+                  جملة
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
 
-          {/* Retail CRM / Walk-in Customer */}
-          {saleMode === "retail" && (
-            <div className="p-4 rounded-xl border border-border bg-card space-y-4">
-              <label className="text-sm font-medium block">تسجيل بيانات العميل (اختياري)</label>
-              
-              {!selectedCustomerId ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <Input
-                    placeholder="رقم الموبايل"
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                    dir="ltr"
-                    className="text-left"
-                  />
-                  <Input
-                    placeholder="اسم العميل"
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                  />
-                </div>
-              ) : null}
-
-              <CustomerPhoneMatch
-                customers={customers}
-                phone={customerPhone}
-                linkedId={selectedCustomerId}
-                onPick={(c) => {
-                  setSelectedCustomerId(c.id);
-                  setCustomerName(c.name);
-                  setCustomerPhone(c.phone);
-                }}
-                onUnlink={() => {
-                  setSelectedCustomerId("");
-                  setCustomerName("");
-                }}
-              />
-            </div>
-          )}
-
-          {/* Return Mode Toggle */}
-          <div className={cn(
-            "flex items-center justify-between p-4 rounded-xl border transition-colors shadow-sm",
-            isReturnMode ? "bg-red-50/50 border-red-200" : "bg-card border-border"
-          )}>
-            <div className="flex flex-col gap-1">
-              <label className="text-base font-bold text-foreground">وضع المرتجع</label>
-              <p className="text-xs text-muted-foreground">عند تفعيل هذا الخيار، سيتم تسجيل المنتجات المضافة كمرتجعات</p>
-            </div>
-            <div className="flex items-center gap-4">
-              <POSReturnModal
-                onReturnItem={(product) => {
-                  if (!isReturnMode) setIsReturnMode(true);
-                  addItemToCart(product, -1);
-                }}
-              />
-              <div className="flex items-center gap-2">
+            {/* Return Mode Toggle */}
+            <div className={cn(
+              "flex items-center justify-between px-4 py-2.5 rounded-xl border transition-colors shadow-sm h-full",
+              isReturnMode ? "bg-red-50/50 border-red-200" : "bg-card border-border"
+            )}>
+              <div className="flex flex-col">
+                <label className="text-base font-bold text-gray-900 dark:text-white">وضع المرتجع</label>
+                <p className="text-[11px] text-muted-foreground mt-0.5">تفعيل لإضافة مرتجعات</p>
+              </div>
+              <div className="flex items-center gap-4">
+                <POSReturnModal
+                  onReturnItem={(product, variantName) => {
+                    if (!isReturnMode) setIsReturnMode(true);
+                    addItemToCart(product, -1, variantName);
+                  }}
+                />
                 <Switch
                   checked={isReturnMode}
                   onCheckedChange={setIsReturnMode}
@@ -617,62 +847,48 @@ export default function CheckoutForm() {
             </div>
           </div>
 
-          {/* Barcode Scanner — Primary Speed Lane */}
-          <div className="p-4 rounded-xl border-2 border-primary/30 bg-primary/5">
-            <label className="text-base font-bold mb-2 flex items-center gap-2">
-              <Barcode className="size-5" />
-              اضرب الباركود أو ابحث عن المنتج
+          {/* Barcode Scanner */}
+          <div className="p-5 rounded-xl border-2 border-primary/30 bg-primary/5 shadow-sm">
+            <label className="text-lg font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+              <Barcode className="size-6 text-primary" />
+              اضرب الباركود أو ابحث
             </label>
-            <div className="flex gap-2">
+            <div className="flex gap-3">
               <input
                 ref={barcodeRef}
                 type="text"
                 value={barcodeInput}
                 onChange={(e) => setBarcodeInput(e.target.value)}
                 onKeyDown={(e) => {
-                  // Scanners type the code then send Enter. Without preventDefault
-                  // that Enter can submit or trigger the default button.
                   if (e.key === "Enter") {
                     e.preventDefault();
                     handleBarcodeScan();
                   }
                 }}
                 onBlur={(e) => {
-                  // Take focus back so the scanner keeps working without a click —
-                  // but only when focus went nowhere. If the cashier clicked
-                  // another field, `relatedTarget` is that field and stealing focus
-                  // would make the rest of the screen unusable.
                   if (!e.relatedTarget) barcodeRef.current?.focus();
                 }}
-                placeholder="امسح الباركود ضوئياً أو اكتب SKU..."
-                className="flex-1 h-12 rounded-lg border-2 border-input bg-background px-4 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary text-center text-lg font-mono tracking-widest"
+                placeholder="امسح الباركود..."
+                className="flex-1 h-16 rounded-xl border-2 border-input bg-background px-4 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary text-center text-2xl font-mono tracking-widest"
                 autoComplete="off"
                 dir="ltr"
               />
-              <Button onClick={handleBarcodeScan} className="h-12 px-6 gap-2">
-                <Plus className="size-5" />
+              <Button onClick={handleBarcodeScan} className="h-16 px-10 text-xl font-bold gap-2 rounded-xl">
+                <Plus className="size-6" />
                 إضافة
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              اضغط Enter للإضافة الفورية — المنتج سيُضاف تلقائياً مع أول باركود مطابق
-            </p>
           </div>
 
-          {/* Manual Product Selection — Fallback */}
+          {/* Manual Search */}
           <div className="p-4 rounded-xl border border-border bg-muted/50">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="md:col-span-2">
-                <label className="text-sm font-medium mb-2 block">
-                  اختر المنتج يدوياً (للمنتجات ذات الباركود التالف)
+            <div className="grid grid-cols-1 gap-6">
+              <div>
+                <label className="text-sm font-bold text-gray-900 dark:text-white mb-2 block">
+                  اختر المنتج يدوياً
                 </label>
-                {/* The same `ProductSearch` الطلبات, المرتجعات and الأصناف pick
-                with — name/SKU/barcode, ledger stock beside each result. It
-                replaced a dropdown of the whole catalogue, which a shop with
-                hundreds of products had to scroll (brief §2). */}
                 <ProductSearch
                   products={rawProducts ?? []}
-                  qtyOf={qtyOf}
                   onSelect={(product) => {
                     setSelectedProductId(product.id);
                     setQuantity(1);
@@ -681,73 +897,242 @@ export default function CheckoutForm() {
                 />
                 {selectedProduct && (
                   <p className="text-xs mt-2">
-                    المختار: <span className="font-medium">{String(selectedProduct.name)}</span> —{" "}
+                    المختار: <span className="font-bold">{String(selectedProduct.name)}</span> —{" "}
                     {Number(selectedProduct.unitPrice ?? 0).toLocaleString("ar-EG")} ج.م
                   </p>
                 )}
-                {selectedProduct && qtyOf(selectedProduct.id) <= 0 && (
-                  <p className="text-xs text-destructive mt-1">هذا المنتج نفد من المخزون</p>
+                {selectedProduct && sellableStock(selectedProduct, products) <= 0 && (
+                  <p className="text-xs text-destructive mt-1 font-bold">هذا المنتج نفد من المخزون</p>
                 )}
               </div>
               <div>
-                <label className="text-sm font-medium mb-2 block">الكمية</label>
+                <label className="text-sm font-bold text-gray-900 dark:text-white mb-2 block">الكمية</label>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => setQuantity(quantity - 1)}
-                    className="size-10 rounded-xl border border-border bg-card flex items-center justify-center hover:bg-muted"
+                    className="size-11 rounded-xl border border-border bg-card flex items-center justify-center hover:bg-muted"
                   >
-                    <Minus className="size-4" />
+                    <Minus className="size-5" />
                   </button>
                   <input
                     type="number"
                     value={quantity}
-                    onChange={(e) =>
-                      setQuantity(
-                        parseInt(e.target.value) || 0
-                      )
-                    }
+                    onChange={(e) => setQuantity(parseInt(e.target.value) || 0)}
                     className={cn(
-                      "w-16 h-10 text-center rounded-xl border border-input bg-background font-medium focus:outline-none focus:ring-2 focus:ring-primary/20",
-                      quantity < 0 && "text-red-600 font-bold"
+                      "flex-1 h-11 text-center rounded-xl border border-input bg-background text-lg font-bold focus:outline-none focus:ring-2 focus:ring-primary/20",
+                      quantity < 0 && "text-red-600"
                     )}
                   />
                   <button
                     type="button"
-                    onClick={() =>
-                      setQuantity(
-                        Math.min(quantity + 1, selectedProduct ? qtyOf(selectedProduct.id) : 1),
-                      )
-                    }
-                    disabled={selectedProduct ? quantity >= qtyOf(selectedProduct.id) : true}
-                    className="size-10 rounded-xl border border-border bg-card flex items-center justify-center hover:bg-muted disabled:opacity-50"
+                    onClick={() => setQuantity(Math.min(quantity + 1, selectedProduct ? sellableStock(selectedProduct, products) : 1))}
+                    disabled={selectedProduct ? quantity >= sellableStock(selectedProduct, products) : true}
+                    className="size-11 rounded-xl border border-border bg-card flex items-center justify-center hover:bg-muted disabled:opacity-50"
                   >
-                    <Plus className="size-4" />
+                    <Plus className="size-5" />
                   </button>
                 </div>
-                {selectedProduct && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    الحد الأقصى: {qtyOf(selectedProduct.id)}
-                  </p>
-                )}
               </div>
             </div>
             
-            {/* ── Discounts ───────────────────────────────────────── */}
-            <div className="pt-4 border-t border-border">
-              <label className="text-sm font-semibold mb-2 block">كود الخصم (إن وجد)</label>
-              <div className="flex gap-2">
+            <Button
+              onClick={addManuallyPicked}
+              className="w-full mt-6 h-14 text-xl font-bold rounded-xl"
+              disabled={!selectedProduct || sellableStock(selectedProduct, products) <= 0}
+            >
+              <Plus className="size-5 ml-2" />
+              إضافة للسلة
+            </Button>
+          </div>
+
+          {/* Manual Customer Entry (Fallback) */}
+          {saleMode === "retail" && !selectedCustomerId && (
+            <div className="p-4 rounded-xl border border-border bg-card">
+              <label className="text-sm font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                <User className="size-4" />
+                تسجيل بيانات العميل (يدوي)
+              </label>
+              <div className="flex flex-col gap-3">
+                <Input
+                  placeholder="رقم الموبايل (اختياري)"
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  dir="ltr"
+                  className="text-left font-mono"
+                />
+                <Input
+                  placeholder="اسم العميل (اختياري)"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* =======================
+            LEFT COLUMN: Ticket / Cart (lg:col-span-4)
+            ======================= */}
+        <div className="col-span-1 lg:col-span-4 flex flex-col h-[calc(100vh-120px)] bg-card border-l border-r border-border shadow-[0_0_15px_rgba(0,0,0,0.05)] rounded-lg">
+          
+          {/* Header: Treasury & CRM */}
+          <div className="p-4 border-b border-border bg-muted/30 shrink-0 space-y-3">
+            <div>
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Wallet className="size-3.5" />
+                الخزينة المستهدفة
+              </label>
+              <select
+                value={selectedWallet}
+                onChange={(e) => setSelectedWallet(e.target.value as WalletType)}
+                className="flex h-9 w-full rounded border-0 bg-background/50 px-2 py-1 text-sm font-semibold shadow-sm ring-1 ring-inset ring-border focus:ring-2 focus:ring-inset focus:ring-primary"
+              >
+                {Object.entries(WALLET_LABELS).map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {label} - {formatCurrency(walletBalance(key))} ج.م
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* CRM Customer Dropdown */}
+            <div>
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <User className="size-3.5" />
+                {saleMode === "retail" ? "العميل (اختياري) — اختيار من قاعدة العملاء" : "بيانات التاجر *"}
+              </label>
+              {saleMode === "retail" ? (
+                <select
+                  value={selectedCustomerId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSelectedCustomerId(id);
+                    if (id) {
+                      const customer = customers.find((c: any) => c.id === id);
+                      if (customer) {
+                        setCustomerName(customer.name || "");
+                        setCustomerPhone(customer.phone || "");
+                      }
+                    } else {
+                      setCustomerName("");
+                      setCustomerPhone("");
+                    }
+                  }}
+                  className="flex h-9 w-full rounded border-0 bg-background/50 px-2 py-1 text-sm font-semibold shadow-sm ring-1 ring-inset ring-border focus:ring-2 focus:ring-inset focus:ring-primary"
+                >
+                  <option value="">-- عميل غير مسجل (Walk-in) --</option>
+                  {customers.map((c: any) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} {c.phone ? `- ${c.phone}` : ""}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <select
+                  value={selectedCustomerId}
+                  onChange={(e) => setSelectedCustomerId(e.target.value)}
+                  className="flex h-9 w-full rounded border-0 bg-background/50 px-2 py-1 text-sm font-semibold shadow-sm ring-1 ring-inset ring-border focus:ring-2 focus:ring-inset focus:ring-primary"
+                >
+                  <option value="">اختر التاجر...</option>
+                  {wholesaleClients.map((c: any) => (
+                    <option key={c.id} value={c.id}>
+                      {String(c.companyName ?? "")}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+
+          {/* Body: Scrollable Cart */}
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1 bg-gray-50/50 dark:bg-zinc-950/50">
+            {cart.length === 0 ? (
+              <div className="text-center py-20 text-muted-foreground flex flex-col items-center justify-center">
+                <ShoppingCart className="size-12 mx-auto mb-3 opacity-20" />
+                <p className="text-sm font-semibold">التذكرة فارغة</p>
+              </div>
+            ) : (
+              cart.map((item) => {
+                const product = products.find((p) => p.id === item.productId);
+                const onHand = sellableStock(product, products, item.variantName);
+
+                return (
+                  <div
+                    key={`${item.productId}-${item.variantName || 'default'}`}
+                    className={cn(
+                      "flex flex-col p-3 rounded-lg border bg-background shadow-sm",
+                      item.quantity < 0 ? "bg-red-50/50 border-red-200" : "border-border"
+                    )}
+                  >
+                    <div className="flex justify-between items-start mb-2">
+                      <h4 className={cn("font-bold text-sm leading-tight", item.quantity < 0 && "text-red-700")}>
+                        {item.productName}
+                        {item.variantName && (
+                          <span className="block mt-1 text-[10px] bg-muted w-max px-1.5 py-0.5 rounded text-muted-foreground border border-border">
+                            {item.variantName}
+                          </span>
+                        )}
+                      </h4>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded shrink-0 -mr-1 -mt-1"
+                        onClick={() => setPendingRemoval(item)}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                    
+                    <div className="flex items-center justify-between mt-auto">
+                      <p className="text-xs text-muted-foreground font-semibold">
+                        {item.unitPrice.toLocaleString("ar-EG")} ج.م
+                      </p>
+                      <div className="flex items-center gap-0.5 bg-muted/60 rounded p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => updateCartQuantity(item.productId, item.variantName, Math.abs(item.quantity) - 1 > 0 ? (item.quantity < 0 ? -(Math.abs(item.quantity) - 1) : item.quantity - 1) : 0)}
+                          className="size-6 rounded-sm bg-background flex items-center justify-center hover:bg-muted shadow-sm border border-border/50"
+                        >
+                          <Minus className="size-3" />
+                        </button>
+                        <span className={cn("w-7 text-center text-xs font-bold", item.quantity < 0 && "text-red-600")}>
+                          {Math.abs(item.quantity)}
+                        </span>
+                        <button
+                          onClick={() => updateCartQuantity(item.productId, item.variantName, item.quantity < 0 ? -(Math.abs(item.quantity) + 1) : item.quantity + 1)}
+                          disabled={!isReturnMode && item.quantity >= onHand}
+                          className="size-6 rounded-sm bg-background flex items-center justify-center hover:bg-muted shadow-sm border border-border/50 disabled:opacity-40"
+                        >
+                          <Plus className="size-3" />
+                        </button>
+                      </div>
+                      <p className="text-sm font-bold">
+                        {(item.unitPrice * Math.abs(item.quantity)).toLocaleString("ar-EG")} ج.م
+                      </p>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Footer: Totals & Checkout Button */}
+          <div className="p-4 bg-muted/30 border-t border-border shrink-0 space-y-3">
+            {/* Discount Code */}
+            <div>
+              <div className="flex gap-1.5">
                 <input
                   type="text"
                   value={discountCodeInput}
                   onChange={(e) => setDiscountCodeInput(e.target.value.toUpperCase())}
-                  placeholder="SAVE10..."
-                  className="flex h-9 flex-1 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring font-mono"
+                  placeholder="كود الخصم..."
+                  className="flex h-8 flex-1 rounded border border-input bg-background px-2 py-1 text-xs shadow-sm font-mono tracking-wider"
                 />
                 <Button
                   type="button"
-                  size="sm"
                   variant="secondary"
+                  className="h-8 px-3 text-xs font-bold"
                   onClick={() => {
                     if (!discountCodeInput.trim()) {
                       setAppliedDiscount(null);
@@ -768,195 +1153,56 @@ export default function CheckoutForm() {
                 </Button>
               </div>
               {appliedDiscount && (
-                <div className="mt-2 text-xs font-semibold text-green-700 bg-green-50 p-2 rounded border border-green-200">
-                  تم تفعيل كود الخصم (
-                  {appliedDiscount.type === "percentage"
-                    ? `${appliedDiscount.value}%`
-                    : `${appliedDiscount.value} ج.م`}
-                  ) — تم خصم: {formatCurrency(discountAmount)}
+                <div className="mt-1.5 text-[10px] font-bold text-green-700 bg-green-50 px-2 py-1 rounded border border-green-200 text-center">
+                  خصم نشط: {formatCurrency(discountAmount)}
                 </div>
               )}
             </div>
-            
-            <Button
-              onClick={addManuallyPicked}
-              className="w-full mt-4"
-              disabled={!selectedProduct || qtyOf(selectedProduct.id) <= 0}
-            >
-              <Plus className="size-4 ml-2" />
-              إضافة للسلة
-            </Button>
-          </div>
-        </div>
 
-        <div className="space-y-4 xl:sticky xl:top-4">
-          {/* Cart — pinned beside the scan lane, with the total always in view so
-          the cashier never has to scroll to read what to charge. */}
-          <div className="rounded-2xl border border-border bg-card p-4">
-            <div className="flex items-center justify-between mb-3 pb-3 border-b border-border">
-              <h4 className="font-semibold flex items-center gap-2">
-                <ShoppingCart className="size-4" />
-                السلة ({cart.length})
-              </h4>
-              <span className="text-xl font-bold">
-                {calculateTotal().toLocaleString("ar-EG")} ج.م
-              </span>
-            </div>
-            {cart.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <ShoppingCart className="size-8 mx-auto mb-2 opacity-50" />
-                <p>السلة فارغة</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {cart.map((item) => {
-                  const product = products.find((p) => p.id === item.productId);
-                  const onHand = item.variantName && product?.metadata?.variants
-                    ? product.metadata.variants.find((v: any) => v.name === item.variantName)?.stock || 0
-                    : qtyOf(item.productId);
-                  
-                  return (
-                    <div
-                      key={`${item.productId}-${item.variantName || 'default'}`}
-                      className={cn(
-                        "flex items-center justify-between p-3 rounded-lg border",
-                        item.quantity < 0 ? "bg-red-50/30 border-red-200" : "bg-background border-border"
-                      )}
-                    >
-                      <div className="flex-1">
-                        <h4 className={cn("font-medium flex items-center gap-2", item.quantity < 0 && "text-red-700")}>
-                          {item.productName}
-                          {item.variantName && (
-                            <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground border border-border">
-                              {item.variantName}
-                            </span>
-                          )}
-                        </h4>
-                        <p className="text-sm text-muted-foreground">
-                          {item.unitPrice.toLocaleString("ar-EG")} ج.م × {Math.abs(item.quantity)}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => updateCartQuantity(item.productId, item.variantName, Math.abs(item.quantity) - 1 > 0 ? (item.quantity < 0 ? -(Math.abs(item.quantity) - 1) : item.quantity - 1) : 0)}
-                            className="size-7 rounded-lg border border-border bg-background flex items-center justify-center hover:bg-muted"
-                          >
-                            <Minus className="size-3" />
-                          </button>
-                          <span className={cn("w-6 text-center text-sm font-medium", item.quantity < 0 && "text-red-600 font-bold")}>
-                            {Math.abs(item.quantity)}
-                          </span>
-                          <button
-                            aria-label="زيادة الكمية"
-                            onClick={() => updateCartQuantity(item.productId, item.variantName, item.quantity < 0 ? -(Math.abs(item.quantity) + 1) : item.quantity + 1)}
-                            disabled={!isReturnMode && item.quantity >= onHand}
-                            className="h-10 w-10 rounded-lg border border-input bg-background flex items-center justify-center hover:bg-accent active:scale-95 transition disabled:opacity-30"
-                          >
-                            <Plus className="size-4" />
-                          </button>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-10 w-10 text-destructive hover:text-destructive hover:bg-destructive/10 text-lg rounded-full"
-                          aria-label="شيل المنتج من السلة"
-                          onClick={() => setPendingRemoval(item)}
-                        >
-                          <Trash2 className="size-5" />
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })}
+            {/* التسوية الذكية — shared with الطلبات and الجملة so all three
+                screens explain the same arithmetic. */}
+            {isWholesaleReturn && (
+              <div className="pt-3 border-t border-border/50">
+                <WholesaleReturnPanel
+                  debt={wholesaleDebt}
+                  returnValue={wholesaleReturnValue}
+                  paidInput={settlePaidInput}
+                  onPaidChange={setSettlePaidInput}
+                  clientMissing={!selectedCustomerId}
+                />
               </div>
             )}
-          </div>
 
-          {/* Payment — wallet, customer, total, and the one button that writes the
-          sale. Same handler as before; only its home on the screen changed. */}
-          <div className="rounded-2xl border border-border bg-card p-4">
-            {/* Wallet Selection */}
-            <div className="mb-4">
-              <label className="text-sm font-medium mb-2 block flex items-center gap-2">
-                <Wallet className="size-4" />
-                الخزينة المستهدفة
-              </label>
-              <select
-                value={selectedWallet}
-                onChange={(e) => setSelectedWallet(e.target.value as WalletType)}
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                {Object.entries(WALLET_LABELS).map(([key, label]) => (
-                  <option key={key} value={key}>
-                    {label} - {formatCurrency(walletBalance(key))} ج.م
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-muted-foreground mt-1">
-                الحساب اللي هيتسجّل فيه كاش البيعة دي. الرقم جنب الاسم هو رصيد الحساب دلوقتي، وبيزيد
-                بقيمة البيعة أول ما تتسجّل — وده اللي بتراجعيه على الدرج أو على الموبايل آخر اليوم.
-              </p>
-            </div>
-
-            {/* Customer */}
-            <div className="mb-4">
-              <label className="text-sm font-medium mb-2 block">
-                {saleMode === "wholesale" ? "العميل (تاجر الجملة) *" : "العميل (اختياري)"}
-              </label>
-              <select
-                value={selectedCustomerId}
-                onChange={(e) => setSelectedCustomerId(e.target.value)}
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                {saleMode === "retail" ? (
-                  <>
-                    <option value="">عميل عابر — بدون تسجيل</option>
-                    {customers.map((c: any) => (
-                      <option key={c.id} value={c.id}>
-                        {String(c.name ?? "")}
-                      </option>
-                    ))}
-                  </>
-                ) : (
-                  <>
-                    <option value="">اختر التاجر...</option>
-                    {wholesaleClients.map((c: any) => (
-                      <option key={c.id} value={c.id}>
-                        {String(c.companyName ?? "")}
-                      </option>
-                    ))}
-                  </>
-                )}
-              </select>
-              <p className="text-xs text-muted-foreground mt-1">
-                {saleMode === "wholesale" 
-                  ? "تسجيل التاجر إجباري لتقييد المديونية والفاتورة في حسابه." 
-                  : "اختيار عميل بيحدّث إجمالي مشترياته (LTV) في قاعدة العملاء"}
-              </p>
-            </div>
-            
-            <div className="p-4 bg-muted/40 rounded-xl space-y-2 mb-4">
-              <div className="flex items-center justify-between text-muted-foreground text-sm">
+            {/* Totals */}
+            <div className={cn("pt-3 border-t border-border/50 space-y-4", isWholesaleReturn && "hidden")}>
+              <div className="flex items-center justify-between text-base font-semibold text-gray-700 dark:text-gray-300">
                 <span>الإجمالي الفرعي</span>
                 <span>{formatCurrency(subtotal)}</span>
               </div>
               {discountAmount > 0 && (
-                <div className="flex items-center justify-between text-green-600 font-medium text-sm">
-                  <span>الخصم المطبق</span>
+                <div className="flex items-center justify-between text-base font-semibold text-green-600">
+                  <span>الخصم</span>
                   <span>− {formatCurrency(discountAmount)}</span>
                 </div>
               )}
-              <div className="flex items-center justify-between pt-2 border-t border-border">
-                <span className="font-bold">الإجمالي النهائي</span>
-                <span className="text-xl font-bold">{formatCurrency(calculateTotal())}</span>
+              {/* الزيرو-VAT: hidden entirely while نسبة الضريبة is 0, which is
+                  where the shop is today. Set a rate in الإعدادات and the line
+                  appears here and on the receipt — the math never changed. */}
+              {includedVat(calculateTotal(), vatRate) > 0 && (
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span>منها ضريبة القيمة المضافة ({vatRate}%)</span>
+                  <span>{formatCurrency(includedVat(calculateTotal(), vatRate))}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between pt-2">
+                <span className="text-xl font-extrabold text-gray-900 dark:text-white">الإجمالي المطلوب</span>
+                <span className="text-3xl font-black text-primary">{formatCurrency(calculateTotal())}</span>
               </div>
               
               {saleMode === "wholesale" && (
-                <div className="pt-2 border-t border-border mt-2 space-y-3">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">المبلغ المدفوع</label>
+                <div className="pt-3 mt-3 space-y-4 border-t border-border/50">
+                  <div className="flex items-center justify-between">
+                    <label className="text-base font-semibold text-gray-700 dark:text-gray-300">المدفوع (الآجل)</label>
                     <input
                       type="number"
                       min="0"
@@ -964,14 +1210,12 @@ export default function CheckoutForm() {
                       value={paidAmountInput}
                       onChange={(e) => setPaidAmountInput(e.target.value)}
                       placeholder={String(calculateTotal())}
-                      className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:ring-2 focus:ring-primary"
+                      className="h-10 w-28 rounded border border-input bg-background px-3 text-base font-bold focus:ring-1 focus:ring-primary text-left"
+                      dir="ltr"
                     />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      لو سيبته فاضي، هيعتبر دفع الإجمالي كامل.
-                    </p>
                   </div>
-                  <div className="flex items-center justify-between text-destructive font-medium text-sm">
-                    <span>المتبقي (آجل)</span>
+                  <div className="flex items-center justify-between text-base font-semibold text-destructive">
+                    <span>المتبقي للديون</span>
                     <span>
                       {formatCurrency(
                         calculateTotal() - (paidAmountInput === "" ? calculateTotal() : Number(paidAmountInput))
@@ -982,14 +1226,37 @@ export default function CheckoutForm() {
               )}
             </div>
 
-            <Button
-              onClick={handleCompleteSale}
-              disabled={cart.length === 0 || isProcessing}
-              className="w-full h-12 text-base"
-              size="lg"
-            >
-              {isProcessing ? "جاري المعالجة..." : "إتمام البيع"}
-            </Button>
+            {/* Action Button */}
+            {(() => {
+              const hasPositive = cart.some(i => i.quantity > 0);
+              const hasNegative = cart.some(i => i.quantity < 0);
+              const isExchange = hasPositive && hasNegative;
+              const isReturnOnly = hasNegative && !hasPositive;
+              
+              let btnText = "إتمام البيع";
+              let btnColor = "bg-green-600 hover:bg-green-700 hover:shadow-green-500/20";
+              
+              if (isExchange) {
+                btnText = "إتمام الاستبدال";
+                btnColor = "bg-indigo-600 hover:bg-indigo-700 hover:shadow-indigo-500/20";
+              } else if (isReturnOnly || isReturnMode) {
+                btnText = "إتمام المرتجع";
+                btnColor = "bg-red-600 hover:bg-red-700 hover:shadow-red-500/20";
+              }
+              
+              return (
+                <Button
+                  onClick={handleCompleteSale}
+                  disabled={cart.length === 0 || isProcessing}
+                  className={cn(
+                    "w-full h-16 text-2xl font-black mt-2 text-white shadow-xl rounded-xl transition-all",
+                    btnColor
+                  )}
+                >
+                  {isProcessing ? "جاري..." : btnText}
+                </Button>
+              );
+            })()}
           </div>
         </div>
       </div>

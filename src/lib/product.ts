@@ -108,3 +108,110 @@ export function activeProducts<T extends Pick<Product, "deleted_at">>(products: 
 export function removalMode(ledgerRows: unknown[]): "delete" | "archive" {
   return ledgerRows.length > 0 ? "archive" : "delete";
 }
+
+// ── Stock, as the product record has it ─────────────────────────────────────
+
+/**
+ * The stock number every selling screen shows: POS, جملة, أونلاين, الجرد.
+ *
+ * The doctrine above ("stock is SUM(qty) over the ledger, read it with
+ * `qtyOf`") is the authority. This reads the MIRROR of it that
+ * `lib/stockMirror` maintains on the product record, which exists so a list of
+ * 200 products can render without 200 ledger aggregations.
+ *
+ * The mirror is derived, never authoritative. `useStock().qtyOf` remains the
+ * number to trust when the two disagree; this one is for rendering at scale.
+ *
+ * One reader, so the screens cannot disagree again. Variants win when a
+ * product has them, because the per-variant `stock` is what الشراء، البيع
+ * and المرتجعات actually keep up to date.
+ *
+ * Non-variant products ARE decremented now: every screen routes its lines
+ * through `applyStockMoves`, and `lib/stockMirror` maintains `totalQuantity`
+ * and the variant array side by side. (The note that used to sit here said the
+ * opposite; it predated the mirror.)
+ *
+ * Floored at zero on READ as well as on write. The mirror already refuses to
+ * store a negative, but a record imported from a spreadsheet or written before
+ * the mirror existed can still hold one, and "−3 على الرف" is not a thing a
+ * screen may ever show. What is genuinely owed lives in تقرير النواقص.
+ */
+export function getActualStock(product: Product | null | undefined): number {
+  const variants = product?.metadata?.variants ?? product?.variants;
+  if (Array.isArray(variants) && variants.length > 0) {
+    return Math.max(
+      0,
+      variants.reduce((sum: number, v: any) => sum + (Number(v?.stock) || 0), 0),
+    );
+  }
+  return Math.max(0, Number(product?.totalQuantity) || Number(product?.quantity) || 0);
+}
+
+/**
+ * How many whole بوكسات you could build right now — the recipe's binding
+ * constraint.
+ *
+ * A bundle owns no stock; its availability is entirely a fact about its
+ * components. Needing 2 of X with 4 of X on the shelf means 2 boxes, and the
+ * SCARCEST component decides — hence `min` over `floor(stock / per)`.
+ *
+ * Returns 0 for a bundle with no recipe: a box that lists nothing is not
+ * infinitely available, it is unbuildable.
+ */
+export function bundleAvailableStock(
+  bundle: Product | null | undefined,
+  products: Product[],
+): number {
+  const recipe = (bundle as any)?.bundleItems as
+    | { productId: string; quantity: number; variantName?: string }[]
+    | undefined;
+  if (!recipe?.length) return 0;
+
+  const byId = new Map(products.map((p) => [p.id, p]));
+  let buildable = Infinity;
+
+  for (const component of recipe) {
+    const per = Number(component.quantity);
+    if (!Number.isFinite(per) || per <= 0) continue;
+    const onHand = component.variantName
+      ? getVariantStock(byId.get(component.productId), component.variantName)
+      : getActualStock(byId.get(component.productId));
+    buildable = Math.min(buildable, Math.floor(onHand / per));
+  }
+
+  return Number.isFinite(buildable) ? Math.max(0, buildable) : 0;
+}
+
+/**
+ * What a selling screen may put in a basket — the ONE reader for that question.
+ *
+ * Three cases, deliberately in one function so they cannot drift:
+ *   - a بوكس has no shelf; its stock is `bundleAvailableStock` of the recipe
+ *   - a named درجة reads that variant
+ *   - anything else reads the product total
+ *
+ * POS blocked at `onHand <= 0` using a reader that knew nothing about bundles,
+ * so every بوكس in the catalogue showed "نفد المخزون" and could not be sold at
+ * all — the components were on the shelf, the box just had no way to say so.
+ */
+export function sellableStock(
+  product: Product | null | undefined,
+  products: Product[],
+  variantName?: string,
+): number {
+  if ((product as any)?.isBundle) return bundleAvailableStock(product, products);
+  return getVariantStock(product, variantName);
+}
+
+/** Stock of one variant by name, falling back to the product total. */
+export function getVariantStock(
+  product: Product | null | undefined,
+  variantName?: string,
+): number {
+  if (!variantName) return getActualStock(product);
+  const variants = product?.metadata?.variants ?? product?.variants;
+  const hit = Array.isArray(variants)
+    ? variants.find((v: any) => v?.name === variantName)
+    : undefined;
+  return Number(hit?.stock) || 0;
+}

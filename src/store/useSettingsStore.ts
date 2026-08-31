@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { getSupabaseClient } from "@/lib/supabase";
-import { safeInvoke, isDesktop } from "@/lib/tauri";
+import { getActiveStoreId } from "@/services/api/storeContext";
 
 export interface StoreSettings {
   storeName: string;
@@ -34,24 +34,26 @@ export const useSettingsStore = create<SettingsState>()(
 
       updateSettings: (settings) => {
         set((state) => ({ ...state, ...settings }));
+        // `pushSettings` existed and worked; nothing called it on an edit, so
+        // the VAT rate, store name and logo changed on one device and on no
+        // other. Fire-and-forget: the settings screen must not wait on the
+        // network, and a failure leaves the local edit intact for the next push.
+        void get().pushSettings().catch((e) =>
+          console.error("Failed to push store settings:", e),
+        );
       },
 
       pushSettings: async () => {
         const sb = getSupabaseClient();
         if (!sb) return;
-        
-        let identity: any = { store_provisional: true };
-        if (isDesktop) {
-          identity = await safeInvoke("ledger_identity", {
-            candidateStoreId: "dummy",
-            candidateDeviceId: "dummy",
-          });
-        }
-        
-        if (identity && identity.store_provisional && isDesktop) return;
+
+        // No session means no store to update. Returning is right: the local
+        // edit stays, and the next push after login carries it.
+        const storeId = await getActiveStoreId();
+        if (!storeId) return;
 
         const state = get();
-        
+
         // Match the stores table snake_case schema
         const payload = {
           name: state.storeName,
@@ -65,7 +67,7 @@ export const useSettingsStore = create<SettingsState>()(
         const { error } = await sb
           .from("stores")
           .update(payload)
-          .eq("id", identity.store_id);
+          .eq("id", storeId);
 
         if (error) {
           console.error("Failed to push store settings:", error);
@@ -76,20 +78,13 @@ export const useSettingsStore = create<SettingsState>()(
         const sb = getSupabaseClient();
         if (!sb) return;
 
-        let identity: any = { store_provisional: true };
-        if (isDesktop) {
-          identity = await safeInvoke("ledger_identity", {
-            candidateStoreId: "dummy",
-            candidateDeviceId: "dummy",
-          });
-        }
-        
-        if (identity && identity.store_provisional && isDesktop) return;
+        const storeId = await getActiveStoreId();
+        if (!storeId) return;
 
         const { data, error } = await sb
           .from("stores")
           .select("name, logo_url, phone, address, tax_number, vat_rate")
-          .eq("id", identity.store_id)
+          .eq("id", storeId)
           .single();
 
         if (error) {

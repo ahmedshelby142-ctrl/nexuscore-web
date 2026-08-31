@@ -1,6 +1,7 @@
 import { format } from "date-fns";
 import { formatMoney } from "@/lib/math";
 import type { WalletType } from "@/types";
+import { useSettingsStore } from "@/store/useSettingsStore";
 
 interface PDFReportData {
   companyName: string;
@@ -82,6 +83,51 @@ function saveReportFile(html: string, fileName: string): void {
   alert("تعذّر فتح نافذة الطباعة، فاتحفظ التقرير كملف. افتحه واطبعه أو احفظه PDF.");
 }
 
+// ── Who the paper says it is ──────────────────────────────────────────────
+
+/**
+ * The shop's identity, as the owner typed it in الإعدادات ← عام.
+ *
+ * `useSettingsStore` used to be write-only: the owner could set اسم المحل,
+ * الهاتف, العنوان, الرقم الضريبي and نسبة الضريبة, and NOTHING in the app ever
+ * read them back — every printed document said "NexusCore" (or, on the
+ * wholesale invoice, a hardcoded "راديانت"). Reading the store here, at the
+ * one place every report is built, is what makes الإعدادات ripple onto paper.
+ *
+ * `getState()` rather than the hook because printing is a one-shot call from
+ * an event handler, not a render. The value is read at print time, so the
+ * document always carries the name the shop has right now.
+ */
+export function storeIdentity(): {
+  name: string;
+  phone: string;
+  address: string;
+  taxNumber: string;
+  vatRate: number;
+} {
+  const s = useSettingsStore.getState();
+  return {
+    // The store's own default is "محلي"; treat a blank name as "not set" and
+    // fall back to the product name so a header is never empty.
+    name: s.storeName?.trim() || "NexusCore",
+    phone: s.phoneNumber?.trim() || "",
+    address: s.address?.trim() || "",
+    taxNumber: s.taxNumber?.trim() || "",
+    vatRate: Number.isFinite(s.vatRate) ? s.vatRate : 0,
+  };
+}
+
+/** The contact line under the shop name — only the fields that are filled. */
+function storeContactLine(): string {
+  const s = storeIdentity();
+  const parts = [
+    s.phone && `هاتف: ${s.phone}`,
+    s.address,
+    s.taxNumber && `الرقم الضريبي: ${s.taxNumber}`,
+  ].filter(Boolean) as string[];
+  return parts.map(escapeHtml).join(" — ");
+}
+
 // ── Generic table-to-PDF (Phase F) ────────────────────────────────────────
 
 export interface TablePdfColumn<T> {
@@ -106,7 +152,7 @@ export interface TablePdfOptions<T> {
   rows: T[];
   /** Optional summary line at the bottom (e.g. "إجمالي: 12,500 ج.م"). */
   footer?: string;
-  /** Company name shown in the header. Defaults to "NexusCore". */
+  /** Company name shown in the header. Defaults to اسم المحل from الإعدادات. */
   companyName?: string;
 }
 
@@ -118,7 +164,8 @@ export interface TablePdfOptions<T> {
  * The print dialog offers "Save as PDF" as a destination.
  */
 export function printTableAsPdf<T>(opts: TablePdfOptions<T>): void {
-  const company = opts.companyName ?? "NexusCore";
+  const company = opts.companyName ?? storeIdentity().name;
+  const contact = storeContactLine();
   const reportDate = format(new Date(), "dd/MM/yyyy HH:mm");
   const thead = opts.columns
     .map((c) => {
@@ -162,6 +209,7 @@ export function printTableAsPdf<T>(opts: TablePdfOptions<T>): void {
 <body>
   <div class="header">
     <div class="logo">${escapeHtml(company)}</div>
+    ${contact ? `<div class="subtitle">${contact}</div>` : ""}
     <div>${escapeHtml(opts.title)}${opts.subtitle ? ` — ${escapeHtml(opts.subtitle)}` : ""}</div>
     <div class="subtitle">تاريخ التقرير: ${reportDate} — عدد السجلات: ${opts.rows.length}</div>
   </div>
@@ -175,7 +223,7 @@ export function printTableAsPdf<T>(opts: TablePdfOptions<T>): void {
   }
   ${opts.footer ? `<div class="footer">${escapeHtml(opts.footer)}</div>` : ""}
   <div style="margin-top:1rem; text-align:center; font-size:11px; color:#94a3b8;">
-    NexusCore — جميع الحقوق محفوظة ${new Date().getFullYear()}
+    ${escapeHtml(company)} — جميع الحقوق محفوظة ${new Date().getFullYear()}
   </div>
 </body>
 </html>`;

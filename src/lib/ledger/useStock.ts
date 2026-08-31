@@ -72,5 +72,16 @@ export function useStock(): StockView {
   const costOf = useCallback((productId: string) => cost.get(productId) ?? 0, [cost]);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
 
+  // Re-aggregate when the ledger gains events from another device.
+  //
+  // Without this the event lands in Supabase and the screen
+  // keeps showing the number it computed before them — the till would look
+  // stale even though the data had already arrived.
+  useEffect(() => {
+    const onPulled = () => setTick((t) => t + 1);
+    window.addEventListener("ledger-sync-pulled", onPulled);
+    return () => window.removeEventListener("ledger-sync-pulled", onPulled);
+  }, []);
+
   return { stock, qtyOf, costOf, loading, error, refresh };
 }

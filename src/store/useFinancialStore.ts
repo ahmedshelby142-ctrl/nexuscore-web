@@ -20,31 +20,6 @@ import type {
 } from "@/types";
 import { SyncService } from "@/services/api/SyncService";
 
-async function pushOrQueue(
-  getSyncQueue: () => SyncAction[],
-  setSyncQueue: (queue: SyncAction[]) => void,
-  table: string,
-  action: "INSERT" | "UPDATE" | "DELETE",
-  payload: any,
-) {
-  const syncAction: SyncAction = {
-    id: crypto.randomUUID(),
-    table,
-    action,
-    payload,
-    timestamp: Date.now(),
-  };
-
-  if (navigator.onLine) {
-    try {
-      await SyncService.pushChanges(table, payload);
-    } catch (e) {
-      setSyncQueue([...getSyncQueue(), syncAction]);
-    }
-  } else {
-    setSyncQueue([...getSyncQueue(), syncAction]);
-  }
-}
 
 import { WALLET_LABELS } from "@/types";
 
@@ -93,9 +68,10 @@ interface FinancialState {
   // ── Actions ────────────────────────────────────────────────────
   addExpense: (
     record: Omit<ExpenseRecord, "id">,
-  ) =>
+  ) => Promise<
     | { success: true }
-    | { success: false; reason: "over_budget"; capAmount: number; currentTotal: number };
+    | { success: false; reason: "over_budget"; capAmount: number; currentTotal: number }
+  >;
   removeExpense: (id: string) => void;
   addPayroll: (record: Omit<PayrollRecord, "id">) => void;
   removePayroll: (id: string) => void;
@@ -146,13 +122,8 @@ export const useFinancialStore = create<FinancialState>()(
   persist(
     (set, get) => ({
       syncQueue: [],
-      flushSyncQueue: async () => {
-        const queue = get().syncQueue;
-        if (queue.length > 0) {
-          await SyncService.processSyncQueue(queue);
-          set({ syncQueue: [] });
-        }
-      },
+      // No-op: nothing queues any more, every write is awaited.
+      flushSyncQueue: async () => {},
       expenses: [],
       payroll: [],
       assets: [],
@@ -228,7 +199,7 @@ export const useFinancialStore = create<FinancialState>()(
       courierReceivables: [],
 
       // ── Expense (with budget-cap enforcement) ──────────────────
-      addExpense: (record) => {
+      addExpense: async (record) => {
         const categoryBudget = get().budgetCaps.find((b) => b.category === record.category);
         if (categoryBudget) {
           const currentTotal = get().getCategorySpending(record.category);
@@ -246,15 +217,13 @@ export const useFinancialStore = create<FinancialState>()(
           ...record,
           id: crypto.randomUUID(),
         };
-        set((state) => ({ expenses: [...state.expenses, expense] }));
 
-        pushOrQueue(
-          () => get().syncQueue,
-          (queue) => set({ syncQueue: queue }),
-          "expenses",
-          "INSERT",
-          expense,
-        );
+        // Awaited, and committed only on success. The queue this replaces held
+        // the expense locally when the push failed and drained it on a later
+        // reconnect — a fallback that has no place in a cloud-native app, and
+        // that made a rejected write look identical to an accepted one.
+        await SyncService.pushChanges("expenses", expense);
+        set((state) => ({ expenses: [...state.expenses, expense] }));
 
         return { success: true as const };
       },

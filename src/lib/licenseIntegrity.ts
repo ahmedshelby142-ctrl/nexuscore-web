@@ -47,15 +47,17 @@
 const DEV_FALLBACK_SECRET = "nexuscore-dev-signing-secret-v1";
 
 /**
- * Read the production signing secret. In a Tauri desktop binary the
- * value is read from the bundle config; in the browser it falls back
- * to the dev constant. The lookup is intentionally cheap (no async)
+ * Read the production signing secret.
+ *
+ * A boot script may set `window.__NEXUSCORE_LICENSE_SECRET__`; otherwise this
+ * falls back to the dev constant. The lookup is intentionally cheap (no async)
  * so the verification path stays synchronous.
+ *
+ * NOTE: anything reaching a browser is public. This signature detects casual
+ * tampering with a stored licence record; it is not a server-side authority.
+ * `LICENSE_SIGNING_SECRET` stays server-side, where the real check belongs.
  */
 export function getSigningSecret(): string {
-  // In Tauri the secret can be injected via `withGlobalTauri` and a
-  // window-level constant set during boot; in the browser there is no
-  // such channel so we always use the dev fallback.
   if (typeof window !== "undefined") {
     const w = window as unknown as { __NEXUSCORE_LICENSE_SECRET__?: string };
     if (w.__NEXUSCORE_LICENSE_SECRET__) return w.__NEXUSCORE_LICENSE_SECRET__;

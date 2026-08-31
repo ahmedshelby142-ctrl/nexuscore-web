@@ -1,7 +1,7 @@
 /**
  * App version — single source of truth.
  *
- * Keep this in sync with `package.json` and `src-tauri/tauri.conf.json`.
+ * Keep this in sync with `package.json`.
  * The build pipeline does not currently inject this automatically; a
  * pre-release script can grep-and-replace it as part of release prep
  * (see docs/RELEASING.md, to be added in Phase C).
@@ -10,9 +10,7 @@
  *   - The build never changes the version mid-runtime.
  *   - Importing `package.json` directly requires resolveJsonModule and
  *     bloats the bundle.
- *   - In the Tauri shell the version is also exposed via
- *     `getAppVersion()` (src/lib/tauri.ts) for the runtime UI; this
- *     constant is the build-time / browser-side fallback.
+ *   - It is what the runtime UI displays.
  */
 
 export const APP_VERSION = "1.0.0";

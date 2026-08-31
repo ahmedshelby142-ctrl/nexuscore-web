@@ -112,3 +112,60 @@ export function formatQty(value: number | null | undefined): string {
 export function percentage(value: number | string, percentage: number | string): number {
   return multiply(value, divide(percentage, 100));
 }
+
+/**
+ * The VAT already contained in a tax-INCLUSIVE amount: `total × r / (100 + r)`.
+ *
+ * Prices in this app are entered as the final selling price, and the total is
+ * in the ledger before any receipt is printed — so a receipt may only break the
+ * tax out of the amount charged, never add to it. Adding `total × r / 100` on
+ * top would print a number the customer never paid.
+ *
+ * Returns 0 for a rate that is zero, negative, or not a finite number, so a
+ * blank نسبة الضريبة in الإعدادات simply prints no tax line.
+ */
+export function includedVat(total: number | string, ratePercent: number): number {
+  if (!Number.isFinite(ratePercent) || ratePercent <= 0) return 0;
+  const t = new Decimal(total);
+  if (!t.isFinite() || t.lte(0)) return 0;
+  return round(t.times(ratePercent).dividedBy(new Decimal(100).plus(ratePercent)).toNumber());
+}
+
+/** What a discount is measured in. Mirrors `PromoDiscount["type"]`. */
+export type DiscountKind = "percentage" | "fixed";
+
+/**
+ * How much a discount takes off a subtotal — the ONE place that decides.
+ *
+ * The cashier's screen and the ledger have to agree to the piastre, so both
+ * read this. They used to compute it separately: the screen did
+ * `subtotal * (value / 100)` in raw floats while everything around it used
+ * Decimal, and `buildSaleLines` re-derived the subtotal with `+`/`*` of its
+ * own. Two answers to one question, differing by float noise, one of them
+ * written permanently into an append-only ledger.
+ *
+ * ## Capped at the subtotal, always
+ *
+ * The discounts screen accepts any positive number, so `SAVE500` at 500% is a
+ * code someone can create. Uncapped, that made the screen show ٠ (it floored
+ * the total) while the ledger booked `revenue - discount` — a NEGATIVE amount
+ * into the till, money flowing out of the drawer for a sale where the cashier
+ * collected nothing. Capping here means the floor and the ledger cannot
+ * disagree, because there is only one number.
+ *
+ * Rounded to two decimals: a discount is money, and money is piastres.
+ */
+export function discountAmountFor(
+  subtotal: number | string,
+  kind: DiscountKind,
+  value: number | string,
+): number {
+  const base = new Decimal(subtotal ?? 0);
+  const raw = new Decimal(value ?? 0);
+  if (!base.isFinite() || base.lte(0)) return 0;
+  if (!raw.isFinite() || raw.lte(0)) return 0;
+
+  const taken = kind === "percentage" ? base.times(raw).dividedBy(100) : raw;
+  // Never more than the goods are worth, never less than nothing.
+  return round(Decimal.min(taken, base).toNumber());
+}

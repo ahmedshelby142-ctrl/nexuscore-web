@@ -29,6 +29,7 @@ import {
   Crown,
   Lock,
   Package,
+  Landmark,
 } from "lucide-react";
 import {
   LineChart,
@@ -44,6 +45,7 @@ import {
   PERIOD_LABELS,
   TREND_DAYS,
   summarise,
+  netWorthOf,
   sumOf,
   trendDays,
   windowFor,
@@ -51,6 +53,7 @@ import {
   type Period,
 } from "@/lib/dashboard";
 import { useStock } from "@/lib/ledger/useStock";
+import { useBalances } from "@/lib/ledger/useBalances";
 import { matchesStockFilter } from "@/components/inventory/StockSummaryCards";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useSubscriptionStore } from "@/store/useSubscriptionStore";
@@ -176,6 +179,23 @@ export function ExecutiveDashboard() {
   const allProducts = useBusinessStore((s) => s.products);
   const products = useMemo(() => activeProducts(allProducts), [allProducts]);
   const { qtyOf } = useStock();
+
+  /**
+   * صافي القيمة is a point-in-time BALANCE, not a period figure, so it does not
+   * come through `useFigures` (which windows everything by date). Four account
+   * sums, read as they stand right now — hence the "دلوقتي" label, the same one
+   * the restock card carries.
+   */
+  const { total: walletsTotal } = useBalances("wallet");
+  const { total: inventoryValue } = useBalances("stock");
+  const { total: receivableClient } = useBalances("receivable_client");
+  const { total: payableSupplier } = useBalances("payable_supplier");
+  const netWorth = netWorthOf({
+    walletsTotal,
+    inventoryValue,
+    receivableClient,
+    payableSupplier,
+  });
   const { isProPlan } = useSubscriptionStore();
 
   // Same predicate the stock cards count with, so this number always equals
@@ -272,6 +292,16 @@ export function ExecutiveDashboard() {
             icon={Undo2}
             tone={(figures?.returns ?? 0) > 0 ? "warn" : "default"}
             onClick={() => navigate("/returns")}
+          />
+          <Kpi
+            label="دلوقتي"
+            value={
+              netWorth >= 0 ? formatMoney(netWorth) : `-${formatMoney(Math.abs(netWorth))}`
+            }
+            hint="صافي القيمة (أصول − ديون الموردين)"
+            icon={Landmark}
+            tone={netWorth < 0 ? "bad" : "good"}
+            onClick={() => navigate("/partners")}
           />
           <Kpi
             label="دلوقتي"

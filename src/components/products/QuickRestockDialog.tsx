@@ -166,19 +166,16 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
         }),
       });
 
-      // Update variant stock in product metadata immediately
-      for (const line of received) {
-        if (line.variantName && line.product.metadata?.variants) {
-          const variants = [...line.product.metadata.variants];
-          const variant = variants.find(v => v.name === line.variantName);
-          if (variant) {
-            variant.stock = (variant.stock || 0) + line.quantity;
-            useBusinessStore.getState().updateProduct(line.product.id, {
-              metadata: { ...line.product.metadata, variants }
-            });
-          }
-        }
-      }
+      // The same movement a توريد makes, and the same hole it used to have:
+      // this loop was gated on `variantName`, so a bulk restock of plain
+      // products moved the ledger and left the record untouched.
+      useBusinessStore.getState().applyStockMoves(
+        received.map((line) => ({
+          productId: line.product.id,
+          delta: line.quantity,
+          variantName: line.variantName,
+        })),
+      );
 
       // The document, only after the event: a supplier invoice with no stock
       // behind it is the drift we delete everywhere else. This is what makes

@@ -55,13 +55,23 @@ export type OrderAction =
   /** Change what is in the order, while it is still in the shop. */
   | "edit"
   /** Call the order off before it ever ships. */
-  | "cancel";
+  | "cancel"
+  /**
+   * The customer sends more money before delivery — a transfer that pays down
+   * what the courier was going to collect.
+   *
+   * Legal while the goods are still in the shop OR already with the courier:
+   * both are moments where money can still arrive ahead of the COD. Not after
+   * `delivered`, because by then the courier has collected and any further
+   * movement is a settlement or a refund, which have their own actions.
+   */
+  | "pay";
 
 const ACTIONS_BY_STATUS: Record<EcommerceOrderStatus, readonly OrderAction[]> = {
   // Still in the shop: hand it over, change it, or call it off.
-  pending: ["ship", "edit", "cancel"],
+  pending: ["ship", "edit", "cancel", "pay"],
   // With the courier: it either reaches the customer or comes back.
-  shipped: ["settle", "deliver", "return"],
+  shipped: ["settle", "deliver", "return", "pay"],
   // Sold. The only way out is a return, which reverses the money too.
   delivered: ["return"],
   // The courier says it is coming back. Nothing has arrived yet.

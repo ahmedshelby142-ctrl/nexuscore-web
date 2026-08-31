@@ -23,7 +23,7 @@ import { useBalances } from "@/lib/ledger/useBalances";
 import { buildWalletOpeningLines, buildWalletTransferLines } from "@/lib/ledger/audit";
 import type { WalletType } from "@/types";
 import { add, subtract, multiply, divide, formatMoney } from "@/lib/math";
-import { generateFinancialPdf } from "@/lib/pdfGenerator";
+import { generateFinancialPdf, storeIdentity } from "@/lib/pdfGenerator";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -262,7 +262,7 @@ export function CapitalEquityPage() {
     }));
     const totalSales = walletsTotal;
     generateFinancialPdf({
-      companyName: "نظام حلقة واحدة",
+      companyName: storeIdentity().name,
       reportDate: new Date(),
       financialSummary: {
         totalSales,

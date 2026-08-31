@@ -1,3 +1,4 @@
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Component, useState, useMemo, useCallback, useEffect, type ReactNode } from "react";
 import {
   ShoppingBag,
@@ -7,6 +8,7 @@ import {
   Trash2,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   MapPin,
   Phone,
   User,
@@ -20,7 +22,7 @@ import { cn } from "@/lib/utils";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useOrderStore, expandStockItems } from "@/store/useOrderStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
-import { rateFor } from "@/lib/shippingRates";
+import { rateFor, shippingFeeFor } from "@/lib/shippingRates";
 import { appendEvent } from "@/lib/ledger";
 import { buildOrderPlacedLines } from "@/lib/ledger/orders";
 import { useStock } from "@/lib/ledger/useStock";
@@ -35,8 +37,8 @@ import { CustomerPhoneMatch } from "@/components/ecommerce/CustomerPhoneMatch";
 import { useCustomerStore } from "@/store/useCustomerStore";
 import { resolveByPhone } from "@/lib/customers";
 import { useBalances } from "@/lib/ledger/useBalances";
-import { productPrice, activeProducts } from "@/lib/product";
-import { formatMoney, formatQty } from "@/lib/math";
+import { productPrice, activeProducts, getVariantStock } from "@/lib/product";
+import { formatMoney, formatQty, discountAmountFor } from "@/lib/math";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import type { EcommerceOrderItem, WalletType } from "@/types";
 import { WALLET_LABELS } from "@/types";
@@ -64,6 +66,14 @@ interface RowItem {
   quantity: number;
   unit_price: number;
   variantName?: string;
+  /** Knowingly sold short — نواقص. Confirmed by the user when it was added. */
+  backorder?: boolean;
+  /**
+   * How many units of this line the shelf could not cover, measured when the
+   * user accepted the نواقص. This — not the line quantity — is what has to be
+   * bought or manufactured, and it is what تقرير النواقص sums.
+   */
+  shortfall?: number;
 }
 
 /**
@@ -134,7 +144,7 @@ function EcommerceOrdersInner() {
   const allOrders = useOrderStore((s) => s.orders);
   const updateCustomer = useCustomerStore((s) => s.updateCustomer);
   // Stock and cost from the ledger — the same numbers POS and جملة sell against.
-  const { qtyOf, costOf, refresh: refreshStock } = useStock();
+  const { costOf, refresh: refreshStock } = useStock();
   const { promoDiscounts } = useBusinessStore();
 
   const bundles = useMemo(() => activeProducts(products).filter((p) => p.isBundle), [products]);
@@ -213,7 +223,7 @@ function EcommerceOrdersInner() {
   const governorateTiers = useMemo(() => {
     const map = new Map<number, { fee: number; names: string[] }>();
     for (const g of governorateFees) {
-      const entry = map.get(g.fee) ?? { fee: g.fee, names: [] };
+      const entry = map.get(g.fee) ?? { fee: g.fee as number, names: [] as string[] };
       entry.names.push(g.name);
       map.set(g.fee, entry);
     }
@@ -222,23 +232,52 @@ function EcommerceOrdersInner() {
       .map(([fee, entry]) => ({ tier: `${fee} ج.م`, names: entry.names, fee }));
   }, [governorateFees]);
 
-  const shipping_fee = useMemo(
+  /**
+   * The customer this order is for, matched on phone, so their history can
+   * price the delivery. `null` until a known number is typed.
+   */
+  const matchedCustomer = useMemo(() => {
+    const key = customer_phone.trim();
+    if (!key) return null;
+    return (
+      useCustomerStore.getState().customers.find((c: any) => c.phone?.trim() === key) ?? null
+    );
+  }, [customer_phone]);
+
+  const baseShippingFee = useMemo(
     () => rateFor(shippingRates, governorate, isExchange ? "exchange" : "delivery"),
     [governorate, shippingRates, isExchange],
   );
+
+  /**
+   * Doubled for a customer who has returned an order before.
+   *
+   * A return costs the shop the trip out AND the trip back while the customer
+   * pays nothing, so the second time they order, the delivery is priced at what
+   * their deliveries actually risk costing. Goods are never marked up — only
+   * the shipping.
+   */
+  const shipping_fee = useMemo(
+    () => shippingFeeFor(baseShippingFee, matchedCustomer),
+    [baseShippingFee, matchedCustomer],
+  );
+
+  const shippingPenaltyApplied = shipping_fee > baseShippingFee;
 
   const subtotal = useMemo(
     () => rows.reduce((s, r) => s + r.quantity * r.unit_price, 0),
     [rows],
   );
 
-  const discountAmount = useMemo(() => {
-    if (!appliedDiscount) return 0;
-    if (appliedDiscount.type === "percentage") {
-      return subtotal * (appliedDiscount.value / 100);
-    }
-    return Math.min(appliedDiscount.value, subtotal);
-  }, [appliedDiscount, subtotal]);
+  // Same shared rule as POS and الجملة — capped at the subtotal and rounded to
+  // piastres, so the screen and the ledger cannot differ by float dust.
+  const discountAmount = useMemo(
+    () =>
+      appliedDiscount
+        ? discountAmountFor(subtotal, appliedDiscount.type, appliedDiscount.value)
+        : 0,
+    [appliedDiscount, subtotal],
+  );
 
   const total_price = useMemo(
     () => Math.max(0, subtotal - discountAmount),
@@ -262,6 +301,30 @@ function EcommerceOrdersInner() {
         return;
       }
 
+      // النواقص. An online order is always a promise for later, so a short
+      // line is a real business choice here — but it is the user's choice to
+      // make, out loud, not something the form does quietly.
+      const available = getVariantStock(product, variantName);
+      const inCart = rows
+        .filter((r) => r.product_id === product.id && r.variantName === variantName)
+        .reduce((sum, r) => sum + r.quantity, 0);
+      // DERIVED from the line's total, never accumulated — the quantity box
+      // can change that total without passing through here.
+      const shortfall = Math.max(0, inCart + 1 - available);
+      let backorder = false;
+      if (shortfall > 0) {
+        // ponytail: native confirm(). Swap in a styled dialog only if this
+        // ever needs more than one yes/no.
+        if (
+          !window.confirm(
+            "هذا المنتج غير متوفر في المخزون حالياً. هل تريد إضافته كطلب نواقص (Backorder)؟",
+          )
+        ) {
+          return;
+        }
+        backorder = true;
+      }
+
       setRows((prev) => {
         if (prev.length >= 50) return prev;
         const existing = prev.find((r) => r.product_id === product.id && r.variantName === variantName);
@@ -269,6 +332,8 @@ function EcommerceOrdersInner() {
           const next = prev.map((r) => ({ ...r }));
           const at = next.findIndex((r) => r.product_id === product.id && r.variantName === variantName);
           next[at].quantity += 1;
+          next[at].backorder = next[at].backorder || backorder;
+          next[at].shortfall = shortfall;
           return next;
         }
         return [
@@ -280,11 +345,13 @@ function EcommerceOrdersInner() {
             quantity: 1,
             unit_price: productPrice(product),
             variantName: variantName,
+            backorder,
+            shortfall,
           },
         ];
       });
     },
-    [setRows],
+    [rows, setRows],
   );
 
   const addBundleRow = useCallback(
@@ -318,11 +385,24 @@ function EcommerceOrdersInner() {
     (idx: number, quantity: number) => {
       setRows((prev) => {
         const next = prev.map((r) => ({ ...r }));
-        next[idx] = { ...next[idx], quantity: quantity };
+        const row = next[idx];
+        // Typing a quantity is the same decision as adding that many, so the
+        // نواقص figure is re-derived rather than left at whatever the
+        // add-to-cart path last measured. Bundles have no single product to
+        // measure against, and a negative row is a مرتجع, not a shortage.
+        const available =
+          row.kind === "product" && row.product_id
+            ? getVariantStock(products.find((p) => p.id === row.product_id), row.variantName)
+            : Infinity;
+        const shortfall = Math.max(0, quantity - available);
+        // `backorder` is NOT set here: that flag means "the user was asked
+        // and said yes". Typing a big number is not an answer, so an
+        // unflagged line that goes short this way is stopped at submit.
+        next[idx] = { ...row, quantity, shortfall };
         return next;
       });
     },
-    [setRows],
+    [products, setRows],
   );
 
   const removeRow = useCallback(
@@ -388,6 +468,7 @@ function EcommerceOrdersInner() {
         quantity: r.quantity,
         unitPrice: r.unit_price,
         variantName: r.variantName,
+        shortfall: r.shortfall,
       };
     });
 
@@ -398,16 +479,23 @@ function EcommerceOrdersInner() {
       unitCost: costOf(line.productId),
     }));
 
+    // Products the user accepted as نواقص are exempt — that confirmation IS
+    // the decision to sell short. Everything else still has to be on the shelf.
+    const backordered = new Set(
+      rows.filter((r) => r.backorder && r.product_id).map((r) => r.product_id as string),
+    );
     const needed = new Map<string, number>();
     for (const line of stockItems) {
       needed.set(line.productId, (needed.get(line.productId) ?? 0) + line.quantity);
     }
     for (const [productId, quantity] of needed) {
-      if (quantity > qtyOf(productId)) {
+      if (backordered.has(productId)) continue;
+      const onHand = getVariantStock(products.find((p) => p.id === productId));
+      if (quantity > onHand) {
         const name = stockItems.find((l) => l.productId === productId)?.productName ?? productId;
         setResult({
           success: false,
-          message: `الكمية المطلوبة من "${name}" أكبر من المخزون (${qtyOf(productId)})`,
+          message: `الكمية المطلوبة من "${name}" أكبر من المخزون (${onHand})`,
         });
         return;
       }
@@ -447,7 +535,18 @@ function EcommerceOrdersInner() {
       return;
     }
 
-    const orderResult = addOrder({
+    // The goods leave the shelf when the order is taken — the same moment the
+    // `order_placed` event above reserves them. Cancel and return put them
+    // back (OrdersPage), so this is the half that makes those symmetric.
+    useBusinessStore.getState().applyStockMoves(
+      stockItems.map((line: any) => ({
+        productId: line.productId,
+        delta: -line.quantity,
+        variantName: line.variantName,
+      })),
+    );
+
+    const orderResult = await addOrder({
       customerId: customerId || undefined,
       customerName: customer_name.trim(),
       customerPhone: customer_phone.trim(),
@@ -461,6 +560,9 @@ function EcommerceOrdersInner() {
       },
       paymentMethod,
       shippingFee: shipping_fee,
+      // Marks this order as the one recovering a previous wasted trip. Delivery
+      // reads it to know the debt is settled — see `clearsShippingDebt`.
+      shippingPenaltyApplied: shippingPenaltyApplied || undefined,
       items,
       stockItems,
       cogsAmount,
@@ -525,7 +627,6 @@ function EcommerceOrdersInner() {
     addOrder,
     bundles,
     products,
-    qtyOf,
     costOf,
     refreshStock,
     courierFee,
@@ -820,10 +921,11 @@ function EcommerceOrdersInner() {
 
         <ProductSearch
           products={products}
-          qtyOf={qtyOf}
           onSelect={addProductRow}
           excludeIds={rows.filter((r) => r.product_id).map((r) => r.product_id as string)}
           placeholder="ابحث باسم المنتج أو الكود لإضافته للطلب..."
+          /* Out-of-stock stays pickable: `addProductRow` asks before it adds. */
+          allowOutOfStock
         />
 
         {bundles.length > 0 && (
@@ -862,11 +964,21 @@ function EcommerceOrdersInner() {
                         {row.variantName}
                       </Badge>
                     )}
+                    {row.backorder && (
+                      <Badge
+                        variant="outline"
+                        className="h-5 gap-1 px-1.5 text-[10px] font-bold border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300"
+                        title="غير متوفر بالمخزون — مسجّل كطلب نواقص"
+                      >
+                        <AlertTriangle className="size-3" />
+                        نواقص
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground">
                     {row.kind === "bundle" ? "بوكس" : "منتج"} — {formatMoney(row.unit_price)} للوحدة
                     {row.kind === "product" && row.product_id
-                      ? ` — متاح ${formatQty(qtyOf(row.product_id))}`
+                      ? ` — متاح ${formatQty(getVariantStock(products.find((p) => p.id === row.product_id), row.variantName))}`
                       : ""}
                   </p>
                 </div>
@@ -1025,9 +1137,25 @@ function EcommerceOrdersInner() {
               <span>{formatMoney(total_price)}</span>
             </div>
           </div>
-          <div className="rounded-xl border border-border bg-muted/40 p-4 space-y-1">
+          <div
+            className={
+              shippingPenaltyApplied
+                ? "rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4 space-y-1"
+                : "rounded-xl border border-border bg-muted/40 p-4 space-y-1"
+            }
+          >
             <p className="text-xs text-muted-foreground">رسوم الشحن</p>
             <p className="text-xl font-bold">{formatMoney(shipping_fee)}</p>
+            {/* A doubled fee must never be silent — the operator will be asked
+                why the number changed, and "the system did it" is not an
+                answer they can give the customer. */}
+            {shippingPenaltyApplied && (
+              <p className="text-[11px] font-medium text-amber-800 dark:text-amber-300 leading-relaxed">
+                شحن مضاعف لتعويض رحلة شحن ضائعة — متبقي{" "}
+                {matchedCustomer?.returned_orders_count} رحلة على العميل
+                (الأساسي {formatMoney(baseShippingFee)})
+              </p>
+            )}
           </div>
           <div className="rounded-xl border border-border bg-muted/40 p-4 space-y-1">
             <p className="text-xs text-muted-foreground">
@@ -1137,9 +1265,9 @@ function EcommerceOrdersInner() {
                   variant="outline"
                   className={cn(
                     "flex flex-col items-center justify-center h-auto py-3 gap-1",
-                    !isAvailable && "opacity-50 cursor-not-allowed"
+                    // Out of stock stays pickable — addProductRow asks first.
+                    !isAvailable && "border-amber-400"
                   )}
-                  disabled={!isAvailable}
                   onClick={() => {
                     if (!pendingVariantSelection) return;
                     const product = pendingVariantSelection.product;

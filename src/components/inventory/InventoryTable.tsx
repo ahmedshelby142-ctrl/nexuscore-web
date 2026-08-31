@@ -33,7 +33,7 @@ import {
 import { printTableAsPdf } from "@/lib/pdfGenerator";
 import { ProductRemovalDialog } from "@/components/products/ProductRemovalDialog";
 import { QuickRestockDialog } from "@/components/products/QuickRestockDialog";
-import { productPrice, productMinLevel, activeProducts } from "@/lib/product";
+import { productPrice, productMinLevel, activeProducts, getActualStock, sellableStock } from "@/lib/product";
 import { searchProducts } from "@/lib/productSearch";
 import { Input } from "@/components/ui/input";
 import { formatMoney } from "@/lib/math";
@@ -56,24 +56,26 @@ export function InventoryTable() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
+
   const lowStockProducts = products.filter(
-    (p) => qtyOf(p.id) > 0 && qtyOf(p.id) <= productMinLevel(p),
+    (p) => sellableStock(p, products) > 0 && sellableStock(p, products) <= (p.minStockLevel || 5),
   );
-  const outOfStockProducts = products.filter((p) => qtyOf(p.id) <= 0);
+  const outOfStockProducts = products.filter((p) => sellableStock(p, products) <= 0);
 
   const visibleProducts = useMemo(() => {
     // The shared matcher again — name/SKU/barcode with Arabic-Indic digits
     // normalised, the same one POS and المنتجات search with.
     const rows = searchProducts(products, searchQuery).filter((p) =>
-      matchesStockFilter(qtyOf(p.id), p, stockFilter),
+      matchesStockFilter(sellableStock(p, products), p, stockFilter),
     );
     if (quantitySort === "none") return rows;
-    // Sorted on the ledger quantity, the same `qtyOf` the row prints — so the
-    // order can never disagree with the numbers beside it.
+    
     return [...rows].sort((a, b) =>
-      quantitySort === "asc" ? qtyOf(a.id) - qtyOf(b.id) : qtyOf(b.id) - qtyOf(a.id),
+      quantitySort === "asc"
+        ? sellableStock(a, products) - sellableStock(b, products)
+        : sellableStock(b, products) - sellableStock(a, products),
     );
-  }, [products, searchQuery, stockFilter, quantitySort, qtyOf]);
+  }, [products, searchQuery, stockFilter, quantitySort]);
 
   /**
    * Ticks SURVIVE searching and filtering.
@@ -106,14 +108,17 @@ export function InventoryTable() {
         { label: "الباركود", accessor: (p) => p.barcode || "—", align: "center" },
         { label: "SKU", accessor: (p) => p.sku, align: "center" },
         { label: "التصنيف", accessor: (p) => p.category, align: "center" },
-        { label: "الكمية", accessor: (p) => String(qtyOf(p.id)), align: "center" },
+        { label: "الكمية", accessor: (p) => String(sellableStock(p, products)), align: "center" },
         { label: "الحد الأدنى", accessor: (p) => String(p.minStockLevel ?? 0), align: "center" },
         { label: "سعر البيع", accessor: (p) => formatMoney(productPrice(p)), align: "center" },
-        { label: "الحالة", accessor: (p) => stockStatusOf(qtyOf(p.id), p).label, align: "center" },
+        { label: "الحالة", accessor: (p) => stockStatusOf(sellableStock(p, products), p).label, align: "center" },
       ],
       // Exports what is on screen, including the active card filter.
       rows: visibleProducts,
-      footer: `إجمالي المنتجات: ${visibleProducts.length} — إجمالي الوحدات: ${visibleProducts.reduce((s, p) => s + qtyOf(p.id), 0)} — نافذ: ${outOfStockProducts.length} — منخفض: ${lowStockProducts.length}`,
+      // `getActualStock`, not `sellableStock`: this is a count of units on the
+      // shelf. A بوكس holds none of its own, so adding its derived
+      // availability here would count its components twice.
+      footer: `إجمالي المنتجات: ${visibleProducts.length} — إجمالي الوحدات: ${visibleProducts.reduce((s, p) => s + getActualStock(p), 0)} — نافذ: ${outOfStockProducts.length} — منخفض: ${lowStockProducts.length}`,
     });
   };
 
@@ -172,7 +177,8 @@ export function InventoryTable() {
           <p className="text-xs tracking-wider text-muted-foreground">المخزون</p>
           <h3 className="font-display text-2xl font-bold mt-1">إدارة المخزون</h3>
           <p className="text-sm text-muted-foreground mt-1">
-            إجمالي {products.length} منتج — {products.reduce((s, p) => s + qtyOf(p.id), 0)} وحدة في
+            {/* Physical units, for the same no-double-counting reason as the PDF footer. */}
+            إجمالي {products.length} منتج — {products.reduce((s, p) => s + getActualStock(p), 0)} وحدة في
             المخزون
           </p>
         </div>
@@ -269,7 +275,7 @@ export function InventoryTable() {
               </TableRow>
             ) : (
               visibleProducts.map((product) => {
-                const qty = qtyOf(product.id);
+                const qty = sellableStock(product, products);
                 const status = stockStatusOf(qty, product);
                 const isLow = status.variant === "secondary";
                 const isOut = status.variant === "destructive";
@@ -308,11 +314,32 @@ export function InventoryTable() {
                       </span>
                     </TableCell>
                     <TableCell className="text-center px-4 whitespace-nowrap">
-                      <span
-                        className={`font-semibold ${isOut ? "text-destructive" : isLow ? "text-amber-600" : ""}`}
-                      >
-                        {qty}
-                      </span>
+                      <div className="relative group flex justify-center items-center gap-1 cursor-pointer">
+                        <span
+                          className={`font-semibold ${isOut ? "text-destructive" : isLow ? "text-amber-600" : ""}`}
+                        >
+                          {qty}
+                        </span>
+                        {product.metadata?.variants && product.metadata.variants.length > 0 && (
+                          <>
+                            <Badge variant="outline" className="text-[10px] h-4 px-1.5 opacity-80 gap-1 flex items-center border-border/60">
+                              <span className="font-medium">{product.metadata.variants.length} أنواع</span>
+                            </Badge>
+                            {/* Hover Popover */}
+                            <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 w-48 bg-popover border border-border shadow-lg rounded-xl p-3 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                              <p className="text-xs font-bold mb-2 border-b border-border pb-1">تفاصيل المخزون (درجات)</p>
+                              <div className="space-y-1">
+                                {product.metadata.variants.map((v: any, idx: number) => (
+                                  <div key={idx} className="flex items-center justify-between text-xs">
+                                    <span className="truncate flex-1 text-right">{v.name}</span>
+                                    <span className="font-mono text-muted-foreground">{v.stock}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-center px-4">
                       <Badge variant={status.variant}>{status.label}</Badge>

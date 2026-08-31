@@ -2,52 +2,31 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { upsertTarget } from "@/lib/customers";
 import type { CustomerProfile, EcommerceOrder } from "@/types";
-import { safeInvoke, isDesktop } from "@/lib/tauri";
-import { pushPendingChanges } from "@/services/ledgerSyncEngine";
-import { SyncService } from "@/services/api/SyncService";
+import { writeThrough, deleteThrough } from "@/services/cloudData";
 
-async function syncCustomerToDb(customer: CustomerProfile) {
-  try {
-    if (isDesktop) {
-      const identity: any = await safeInvoke("ledger_identity", {
-        candidateStoreId: "dummy",
-        candidateDeviceId: "dummy",
-      });
-      if (!identity || identity.store_provisional) return;
-      
-      const Database = (await import("@tauri-apps/plugin-sql")).default;
-      const dbPath = await safeInvoke<string | null>("ledger_db_path");
-      if (!dbPath) return;
-      
-      const db = await Database.load(`sqlite:${dbPath}`);
-      
-      await db.execute(
-        `INSERT INTO customers (id, name, phone, address, deleted_at, store_id, device_id, sync_status) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
-         ON CONFLICT(id) DO UPDATE SET 
-           name = EXCLUDED.name,
-           phone = EXCLUDED.phone,
-           address = EXCLUDED.address,
-           deleted_at = EXCLUDED.deleted_at,
-           sync_status = 'pending'`,
-        [
-          customer.id, 
-          customer.name, 
-          customer.phone, 
-          customer.address || "", 
-          customer.deleted_at,
-          identity.store_id,
-          identity.device_id
-        ]
-      );
-      
-      await pushPendingChanges();
-    } else {
-      await SyncService.pushChanges("customers", customer);
-    }
-  } catch (err) {
-    console.error("Failed to sync customer to DB:", err);
-  }
+/**
+ * Write one customer to Supabase, then commit WHAT SUPABASE STORED.
+ *
+ * The previous version did the opposite — `set` first, `cloudUpsert().catch()`
+ * after — and swallowed the failure with a `console.error`. A customer created
+ * while RLS refused the row therefore appeared in قاعدة العملاء, was attached to
+ * an order, and was gone on the next reload with nothing to explain it.
+ *
+ * Throws on failure, having committed nothing.
+ */
+async function saveCustomer(
+  set: (fn: (state: any) => any) => void,
+  customer: CustomerProfile,
+): Promise<CustomerProfile> {
+  const saved = (await writeThrough("customers", customer)) as CustomerProfile;
+  set((state: any) => {
+    const at = state.customers.findIndex((c: CustomerProfile) => c.id === saved.id);
+    if (at < 0) return { customers: [...state.customers, saved] };
+    const next = state.customers.slice();
+    next[at] = { ...next[at], ...saved };
+    return { customers: next };
+  });
+  return saved;
 }
 
 interface CustomerState {
@@ -58,16 +37,34 @@ interface CustomerState {
       CustomerProfile,
       "id" | "deleted_at"
     >,
-  ) => string;
+  ) => Promise<string>;
   /** Correct a customer's details. Reference write — no ledger event. */
-  updateCustomer: (id: string, updates: Partial<CustomerProfile>) => void;
+  updateCustomer: (id: string, updates: Partial<CustomerProfile>) => Promise<void>;
   /** Hard delete. Only legal when the customer has NO history — see
    *  `customerRemovalMode`; the screen asks the ledger before calling this. */
-  removeCustomer: (id: string) => void;
+  removeCustomer: (id: string) => Promise<void>;
   /** Tombstone, for a customer who DOES have history. */
-  archiveCustomer: (id: string) => void;
+  archiveCustomer: (id: string) => Promise<void>;
+  /**
+   * Record that this person sent an order back.
+   *
+   * Every future order of theirs is then quoted at double shipping. Called once
+   * per confirmed return, from the screens that confirm one.
+   */
+  recordReturn: (id: string) => Promise<void>;
+  /**
+   * ONE wasted trip has been paid for. Decrements the debt by exactly one.
+   *
+   * Called when an order that CHARGED the doubled fee is delivered. Three
+   * returns cost the shop three trips, so they take three doubled deliveries to
+   * settle — the customer pays back what was actually lost, one trip at a time,
+   * and returns to the normal rate the moment the last one is square.
+   *
+   * Not a reset: zeroing the count would recover one trip and forgive the rest.
+   */
+  settleWastedTrip: (id: string) => Promise<void>;
   /** Undo an archive. `null`, never `undefined`, so the field stays present. */
-  restoreCustomer: (id: string) => void;
+  restoreCustomer: (id: string) => Promise<void>;
   /**
    * Find the person this order is for, creating them if this is their first,
    * and return their id.
@@ -81,7 +78,7 @@ interface CustomerState {
    * The `customer_ltv` line is written by `order_delivered`, keyed to the id
    * this returns.
    */
-  upsertCustomerFromOrder: (order: EcommerceOrder) => string;
+  upsertCustomerFromOrder: (order: EcommerceOrder) => Promise<string>;
 }
 
 export const useCustomerStore = create<CustomerState>()(
@@ -89,38 +86,62 @@ export const useCustomerStore = create<CustomerState>()(
     (set, get) => ({
       customers: [],
 
-      addCustomer: (customer) => {
-        const id = crypto.randomUUID();
-        const newCustomer: CustomerProfile = {
-          id,
+      addCustomer: async (customer) => {
+        const draft: CustomerProfile = {
+          id: crypto.randomUUID(),
           name: customer.name,
           phone: customer.phone,
           address: customer.address,
           deleted_at: null,
+          // How many orders this person has sent back. Drives the double-shipping
+          // penalty — see `shippingFeeFor`.
+          returned_orders_count: 0,
+          // Stamped so a realtime echo can tell whose copy is newer. Without it
+          // every remote row looked newer than every local one and clobbered it.
+          updated_at: Date.now(),
         };
-        
-        syncCustomerToDb(newCustomer).catch(console.error);
 
-        set((state) => ({
-          customers: [...state.customers, newCustomer],
-        }));
-        return id;
+        const saved = await saveCustomer(set, draft);
+        return saved.id;
       },
 
-      updateCustomer: (id, updates) => {
-        set((state) => {
-          const newCustomers = state.customers.map((customer) =>
-            customer.id === id ? { ...customer, ...updates } : customer,
-          );
-          const updated = newCustomers.find((c) => c.id === id);
-          if (updated) {
-            syncCustomerToDb(updated).catch(console.error);
-          }
-          return { customers: newCustomers };
+      recordReturn: async (id) => {
+        const current = get().customers.find((c) => c.id === id);
+        if (!current) return;
+        await saveCustomer(set, {
+          ...current,
+          returned_orders_count: (current.returned_orders_count ?? 0) + 1,
+          updated_at: Date.now(),
         });
       },
 
-      removeCustomer: (id) => {
+      settleWastedTrip: async (id) => {
+        const current = get().customers.find((c) => c.id === id);
+        // Nothing owed, nothing to write — and no pointless `updated_at` bump
+        // that would beat a real edit from another device.
+        if (!current || (current.returned_orders_count ?? 0) <= 0) return;
+
+        await saveCustomer(set, {
+          ...current,
+          // `Math.max(0, …)` so a count corrupted below zero can never make the
+          // debt grow by settling it.
+          returned_orders_count: Math.max(0, (current.returned_orders_count ?? 0) - 1),
+          updated_at: Date.now(),
+        });
+      },
+
+      updateCustomer: async (id, updates) => {
+        const current = get().customers.find((c) => c.id === id);
+        if (!current) return;
+        await saveCustomer(set, { ...current, ...updates, updated_at: Date.now() });
+      },
+
+      removeCustomer: async (id) => {
+        // Deleted in the cloud FIRST. Hard delete is only legal for a customer
+        // with no history (the ones with history are archived instead), and
+        // dropping them locally before the server agreed is how they used to
+        // come back on the next read.
+        await deleteThrough("customers", id);
         set((state) => ({
           customers: state.customers.filter((customer) => customer.id !== id),
         }));
@@ -129,73 +150,53 @@ export const useCustomerStore = create<CustomerState>()(
       // Archiving is reference data, exactly like a partner's or a product's:
       // a tombstone, no ledger event, and every past order and `customer_ltv`
       // line keeps pointing at this id and still renders their name.
-      archiveCustomer: (id) => {
-        set((state) => {
-          const newCustomers = state.customers.map((customer) =>
-            customer.id === id ? { ...customer, deleted_at: new Date().toISOString() } : customer,
-          );
-          const updated = newCustomers.find((c) => c.id === id);
-          if (updated) {
-            syncCustomerToDb(updated).catch(console.error);
-          }
-          return { customers: newCustomers };
+      archiveCustomer: async (id) => {
+        const current = get().customers.find((c) => c.id === id);
+        if (!current) return;
+        await saveCustomer(set, {
+          ...current,
+          deleted_at: new Date().toISOString(),
+          updated_at: Date.now(),
         });
       },
 
-      restoreCustomer: (id) => {
-        set((state) => {
-          const newCustomers = state.customers.map((customer) =>
-            // `null`, never `undefined`: the field stays present so a synced
-            // row cannot read as "this device never knew about the tombstone".
-            customer.id === id ? { ...customer, deleted_at: null } : customer,
-          );
-          const updated = newCustomers.find((c) => c.id === id);
-          if (updated) {
-            syncCustomerToDb(updated).catch(console.error);
-          }
-          return { customers: newCustomers };
-        });
+      restoreCustomer: async (id) => {
+        const current = get().customers.find((c) => c.id === id);
+        if (!current) return;
+        // `null`, never `undefined`: the field stays present so a synced row
+        // cannot read as "this device never knew about the tombstone".
+        await saveCustomer(set, { ...current, deleted_at: null, updated_at: Date.now() });
       },
 
-      upsertCustomerFromOrder: (order) => {
+      upsertCustomerFromOrder: async (order) => {
         // Who this order belongs to — `@/lib/customers` owns the decision, so
         // the §1.3 scenario can be tested without a browser.
-        const existing0 = upsertTarget(get().customers, order);
-        const resolvedId = existing0?.id ?? crypto.randomUUID();
+        const existing = upsertTarget(get().customers, order);
 
-        set((state) => {
-          const existing = existing0;
-          if (!existing) {
-            const newCustomer: CustomerProfile = {
-              id: resolvedId,
-              name: order.customerName,
-              phone: order.customerPhone,
-              address: order.address,
-              deleted_at: null,
-            };
-            
-            syncCustomerToDb(newCustomer).catch(console.error);
-            
-            return {
-              customers: [
-                newCustomer,
-                ...state.customers,
-              ],
-            };
-          }
-
+        if (existing) {
           // An order updates this customer's ACTIVITY and nothing about who
-          // they are. It used to spread the order's name / phone / address
-          // over the record, so re-ordering silently renamed a customer whose
+          // they are. It used to spread the order's name / phone / address over
+          // the record, so re-ordering silently renamed a customer whose
           // spelling the owner had just corrected in قاعدة العملاء — an edit
-          // undone by the next order. Identity is hers to set on that screen;
-          // the order only reports what was bought and when.
-          return state;
-        });
+          // undone by the next order. Identity is hers to set on that screen.
+          return existing.id;
+        }
 
-        return resolvedId;
+        const saved = await saveCustomer(set, {
+          id: crypto.randomUUID(),
+          name: order.customerName,
+          phone: order.customerPhone,
+          address: order.address,
+          deleted_at: null,
+          updated_at: Date.now(),
+        });
+        return saved.id;
       },
     }),
-    { name: "customer-storage" },
+    {
+      name: "customer-storage",
+      // Cloud-owned; hydrated on boot.
+      partialize: () => ({}),
+    },
   ),
 );

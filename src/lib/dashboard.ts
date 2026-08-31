@@ -11,6 +11,7 @@
  */
 
 import type { Balance, LedgerEvent } from "@/lib/ledger";
+import { add, subtract, round } from "./math.ts";
 
 export type Period = "today" | "week" | "month" | "thisMonth" | "thisYear" | string;
 
@@ -144,4 +145,43 @@ export function summarise(input: {
     avgOrderValue: orders > 0 ? revenue / orders : 0,
     topProductId: top && top.amount > 0 ? top.subjectId : null,
   };
+}
+
+// ── What the shop owns, and what it is worth ────────────────────────────────
+
+/** The four balances both figures below are built from. */
+export interface NetWorthInput {
+  /** SUM(wallet) — every till. */
+  walletsTotal: number;
+  /** SUM(stock.amount) — inventory at weighted-average cost. */
+  inventoryValue: number;
+  /** SUM(receivable_client) — what traders still owe us. */
+  receivableClient: number;
+  /** SUM(payable_supplier) — what we owe suppliers. */
+  payableSupplier: number;
+}
+
+/**
+ * What the shop OWNS: cash, stock at cost, and money owed to us.
+ *
+ * Deliberately not net of anything — an "أصول" figure that quietly subtracted
+ * liabilities would be mislabelled. `netWorthOf` is the one that nets.
+ */
+export function totalAssetsOf(ls: NetWorthInput): number {
+  return round(add(add(ls.walletsTotal, ls.inventoryValue), ls.receivableClient));
+}
+
+/**
+ * What the shop is actually WORTH: assets minus what we owe suppliers.
+ *
+ * `payable_supplier` is the only liability the ledger tracks, so it is the only
+ * thing subtracted. Derived FROM `totalAssetsOf` rather than re-adding the
+ * three parts, so نظرة عامة and الشركاء والمالية cannot disagree about what an
+ * asset is — the drift that made two screens report two treasury totals.
+ *
+ * Goes negative when the shop owes more than it holds. That is a real state and
+ * the cards show it rather than clamping to zero.
+ */
+export function netWorthOf(ls: NetWorthInput): number {
+  return round(subtract(totalAssetsOf(ls), ls.payableSupplier));
 }

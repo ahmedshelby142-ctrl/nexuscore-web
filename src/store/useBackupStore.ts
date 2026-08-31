@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { BackupRecord, BackupBundle } from "@/types";
-import { isDesktop } from "@/lib/tauri";
 
 /**
  * Backup & restore index.
@@ -196,31 +195,16 @@ export function applyBundle(bundle: BackupBundle): string[] {
   return written;
 }
 
-/** Trigger a browser download of a bundle as a JSON file, or save via native dialog on Desktop. */
+/** Trigger a browser download of a bundle as a JSON file. */
 export async function downloadBundle(bundle: BackupBundle, filename: string) {
   const json = JSON.stringify(bundle, null, 2);
-  
-  if (isDesktop) {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-    
-    const filePath = await save({
-      defaultPath: filename,
-      filters: [{ name: "JSON Backup", extensions: ["json"] }]
-    });
-    
-    if (filePath) {
-      await writeTextFile(filePath, json);
-    }
-  } else {
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

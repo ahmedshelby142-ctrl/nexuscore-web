@@ -19,6 +19,7 @@ export interface ImportRow {
   retail_price: number;
   wholesale_price: number;
   stock_qty: number;
+  variants_raw: string;
 }
 
 /**
@@ -41,9 +42,11 @@ const HEADER_MAP: Record<string, keyof ImportRow> = {
   stock_qty: "stock_qty",
   "الكمية الحالية": "stock_qty",
   الكمية: "stock_qty",
+  "درجات الألوان (الاسم:الكمية,الاسم:الكمية)": "variants_raw",
+  variants_raw: "variants_raw",
 };
 
-const TEXT_FIELDS = ["sku", "name", "category"] as const;
+const TEXT_FIELDS = ["sku", "name", "category", "variants_raw"] as const;
 
 function toNumber(val: unknown): number {
   if (typeof val === "number") return Number.isFinite(val) ? val : 0;
@@ -65,6 +68,7 @@ const emptyRow = (): ImportRow => ({
   retail_price: 0,
   wholesale_price: 0,
   stock_qty: 0,
+  variants_raw: "",
 });
 
 /** Sheet rows (as `XLSX.utils.sheet_to_json` gives them) → typed rows. */

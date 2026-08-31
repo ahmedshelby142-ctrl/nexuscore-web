@@ -50,3 +50,67 @@ export function hasRateFor(rows: ShippingRateRow[], governorate: string | undefi
 export function shippedGovernorates(rows: ShippingRateRow[]): string[] {
   return rows.map((r) => r.governorate);
 }
+
+// ── The repeat-returner penalty ─────────────────────────────────────────────
+
+/**
+ * Doubled shipping is COST RECOVERY, not a punishment.
+ *
+ * When a delivery fails — the customer ignores the courier, or cancels while
+ * the order is already out — the shop still pays for the trip out and the trip
+ * back. The customer pays nothing. Doubling the fee on their NEXT order
+ * recovers that specific wasted trip.
+ *
+ * Which makes `returned_orders_count` a DEBT, not a history: it is the number
+ * of wasted trips still owed. Each doubled delivery that lands pays back one,
+ * so three failed trips take three successful orders to settle, and the normal
+ * rate returns the moment the last one is square — see `clearsShippingDebt`.
+ * A permanent surcharge would stop being recovery and start being a tax on
+ * having had one bad day; a single reset would forgive trips the shop paid for.
+ *
+ * It is the SHIPPING that doubles, never the goods: nobody is charged more for
+ * a shirt because of something they did last month.
+ */
+export const RETURN_PENALTY_MULTIPLIER = 2;
+
+/** Does this customer owe the shop a wasted courier trip? */
+export function isRepeatReturner(customer: { returned_orders_count?: number } | null | undefined): boolean {
+  const count = customer?.returned_orders_count;
+  return Number.isFinite(count) && (count as number) > 0;
+}
+
+/**
+ * Has this delivery settled the customer's shipping debt?
+ *
+ * True only when the order being delivered is the one that actually CHARGED the
+ * doubled fee. Resetting on any delivery would clear the debt without ever
+ * recovering the trip — a customer with an order already in flight at normal
+ * price would have it wiped for free, which is the opposite of cost recovery.
+ *
+ * Orders placed before this flag existed return `false` and leave the debt
+ * standing. That is the safe direction: it costs the shop nothing and settles
+ * itself on the customer's next order, which will carry the flag.
+ */
+export function clearsShippingDebt(
+  order: { shippingPenaltyApplied?: boolean } | null | undefined,
+): boolean {
+  return order?.shippingPenaltyApplied === true;
+}
+
+/**
+ * The delivery fee actually charged, after the repeat-returner penalty.
+ *
+ * One function so نقطة البيع, الطلبات الإلكترونية and الجملة cannot each decide
+ * what "double" means — the same reason `discountAmountFor` and
+ * `reconcileWholesaleReturn` have one home.
+ *
+ * A free delivery stays free: doubling zero is zero, and a shop that chose to
+ * waive the fee did not choose to start charging one.
+ */
+export function shippingFeeFor(
+  baseFee: number,
+  customer?: { returned_orders_count?: number } | null,
+): number {
+  if (!Number.isFinite(baseFee) || baseFee <= 0) return 0;
+  return isRepeatReturner(customer) ? baseFee * RETURN_PENALTY_MULTIPLIER : baseFee;
+}

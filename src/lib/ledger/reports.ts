@@ -131,7 +131,7 @@ export interface Bucket extends ReportWindow {
 
 /**
  * ponytail: capped at 60 rows. Each row costs one `fetchPnl` (five indexed
- * SUMs on a local SQLite file), and past a screenful the table stops being
+ * SUMs in Postgres), and past a screenful the table stops being
  * readable anyway. Raise the cap if a decade-wide yearly view is ever wanted —
  * do not add a cache.
  */

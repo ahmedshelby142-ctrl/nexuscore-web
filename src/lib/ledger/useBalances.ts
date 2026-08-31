@@ -69,5 +69,16 @@ export function useBalances(account: Account, kind?: EventKind): BalancesView {
   const total = [...amounts.values()].reduce((sum, v) => sum + v, 0);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
 
+  // Re-aggregate when the ledger gains events from another device.
+  //
+  // Without this the event lands in Supabase and the screen
+  // keeps showing the number it computed before them — the till would look
+  // stale even though the data had already arrived.
+  useEffect(() => {
+    const onPulled = () => setTick((t) => t + 1);
+    window.addEventListener("ledger-sync-pulled", onPulled);
+    return () => window.removeEventListener("ledger-sync-pulled", onPulled);
+  }, []);
+
   return { amountOf, total, loading, error, refresh };
 }

@@ -93,6 +93,15 @@ export function buildSaleLines(sale: SaleInput): NewLine[] {
   if (discount < 0) {
     throw new Error("sale: discount cannot be negative");
   }
+  // A discount bigger than the goods would push `wallet` and `revenue`
+  // NEGATIVE — cash leaving the drawer for a sale where the cashier collected
+  // nothing. `discountAmountFor` caps it, but this is the trust boundary: the
+  // ledger is append-only, so it refuses the event rather than booking it.
+  if (discount > revenue) {
+    throw new Error(
+      `sale: discount (${discount}) is more than the sale is worth (${revenue})`,
+    );
+  }
   
   // The net amount actually received (or refunded, if negative).
   const netRevenue = revenue - discount;

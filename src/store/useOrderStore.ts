@@ -11,33 +11,8 @@ import type {
   WalletType,
   SyncAction,
 } from "@/types";
-import { SyncService } from "@/services/api/SyncService";
+import { writeThrough } from "@/services/cloudData";
 
-async function pushOrQueue(
-  getSyncQueue: () => SyncAction[],
-  setSyncQueue: (queue: SyncAction[]) => void,
-  table: string,
-  action: "INSERT" | "UPDATE" | "DELETE",
-  payload: any,
-) {
-  const syncAction: SyncAction = {
-    id: crypto.randomUUID(),
-    table,
-    action,
-    payload,
-    timestamp: Date.now(),
-  };
-
-  if (navigator.onLine) {
-    try {
-      await SyncService.pushChanges(table, payload);
-    } catch (e) {
-      setSyncQueue([...getSyncQueue(), syncAction]);
-    }
-  } else {
-    setSyncQueue([...getSyncQueue(), syncAction]);
-  }
-}
 
 /**
  * An order line as the entry screen has it — no `id` yet, and a bundle is
@@ -71,9 +46,9 @@ interface OrderState {
   orders: EcommerceOrder[];
   addOrder: (
     order: CreateEcommerceOrder,
-  ) => { success: true; order: EcommerceOrder } | { success: false; reason: string };
-  updateOrderStatus: (id: string, status: EcommerceOrderStatus) => void;
-  updateOrder: (id: string, updates: Partial<EcommerceOrder>) => void;
+  ) => Promise<{ success: true; order: EcommerceOrder } | { success: false; reason: string }>;
+  updateOrderStatus: (id: string, status: EcommerceOrderStatus) => Promise<void>;
+  updateOrder: (id: string, updates: Partial<EcommerceOrder>) => Promise<void>;
 }
 
 /**
@@ -83,6 +58,30 @@ interface OrderState {
  * Exported because the caller needs these exact rows to build the
  * `order_placed` ledger lines before the order document is recorded.
  */
+/**
+ * Send one order to the cloud and commit what came back.
+ *
+ * The FULL merged record goes out, never the caller's partial patch — upserting
+ * `{id, status}` alone would blank every other column.
+ *
+ * Throws on failure, having committed nothing. That is the point: an order that
+ * did not reach the database must not sit on screen looking as if it did.
+ */
+async function saveOrder(
+  set: (fn: (state: any) => any) => void,
+  order: EcommerceOrder,
+): Promise<EcommerceOrder> {
+  const saved = (await writeThrough("orders", order)) as EcommerceOrder;
+  set((state: any) => {
+    const at = state.orders.findIndex((o: EcommerceOrder) => o.id === saved.id);
+    if (at < 0) return { orders: [saved, ...state.orders] };
+    const next = state.orders.slice();
+    next[at] = { ...next[at], ...saved };
+    return { orders: next };
+  });
+  return saved;
+}
+
 export function expandStockItems(items: OrderItemInput[]) {
   const products = useBusinessStore.getState().products;
   const productMap = new Map(products.map((product) => [product.id, product]));
@@ -100,6 +99,7 @@ export function expandStockItems(items: OrderItemInput[]) {
           sku: product?.sku || "",
           quantity: component.quantity * item.quantity,
           unitPrice: 0,
+          variantName: component.variantName,
           bundleId: bundle.id,
           bundleName: item.bundleName || bundle.name,
         });
@@ -115,6 +115,10 @@ export function expandStockItems(items: OrderItemInput[]) {
       sku: product?.sku || item.sku || "",
       quantity: item.quantity,
       unitPrice: item.unitPrice,
+      // Carried, not dropped: the first is what every restock path keys on,
+      // the second is what تقرير النواقص sums.
+      variantName: item.variantName,
+      shortfall: item.shortfall,
       bundleId: item.bundleId,
       bundleName: item.bundleName,
     });
@@ -127,20 +131,15 @@ export const useOrderStore = create<OrderState>()(
   persist(
     (set, get) => ({
       syncQueue: [],
-      flushSyncQueue: async () => {
-        const queue = get().syncQueue;
-        if (queue.length > 0) {
-          await SyncService.processSyncQueue(queue);
-          set({ syncQueue: [] });
-        }
-      },
+      // No-op: nothing queues any more, every write is awaited.
+      flushSyncQueue: async () => {},
       orders: [],
 
       // Records the order document only. Stock is NOT touched here — the
       // `order_placed` event the caller appends reserves it — and the cost
       // comes in from the ledger's weighted average rather than being guessed
       // at 65% of retail, which is what the old `productCost()` fallback did.
-      addOrder: (orderData) => {
+      addOrder: async (orderData) => {
         const now = new Date();
         const orderId = crypto.randomUUID();
         const order: EcommerceOrder = {
@@ -155,6 +154,9 @@ export const useOrderStore = create<OrderState>()(
           })),
           createdAt: now,
           updatedAt: now,
+          // Epoch-ms sync clock, distinct from `updatedAt` above. What the
+          // inbound pull filters and compares on.
+          updated_at: Date.now(),
           revenueLogged: false,
         };
 
@@ -163,19 +165,20 @@ export const useOrderStore = create<OrderState>()(
         // العملاء filters this order's history by — so a second order from the
         // same phone lands on the same record instead of opening a new one.
         // Reference data: no ledger event, nothing here moves money.
-        order.customerId = useCustomerStore.getState().upsertCustomerFromOrder(order);
+        order.customerId = await useCustomerStore.getState().upsertCustomerFromOrder(order);
 
-        set((state) => ({ orders: [order, ...state.orders] }));
-
-        pushOrQueue(
-          () => get().syncQueue,
-          (queue) => set({ syncQueue: queue }),
-          "orders",
-          "INSERT",
-          order,
-        );
-
-        return { success: true as const, order };
+        // Nothing lands in `orders` until Supabase has the row. `saveOrder`
+        // both writes and commits, so there is no window where the screen shows
+        // an order the database never accepted.
+        try {
+          const saved = await saveOrder(set, order);
+          return { success: true as const, order: saved };
+        } catch (e) {
+          return {
+            success: false as const,
+            reason: e instanceof Error ? e.message : String(e),
+          };
+        }
       },
 
       // Moves the order document between states. It moves NO money and NO
@@ -183,7 +186,7 @@ export const useOrderStore = create<OrderState>()(
       // first (`order_delivered`, `order_returned_pending`). The courier
       // receivable is a ledger line now, not a row in the financial store, so
       // there is one answer to "what does this courier owe us".
-      updateOrderStatus: (id, status) => {
+      updateOrderStatus: async (id, status) => {
         set((state) => {
           const order = state.orders.find((item) => item.id === id);
           if (!order) return state;
@@ -209,6 +212,7 @@ export const useOrderStore = create<OrderState>()(
                     ...item,
                     status,
                     updatedAt: new Date(),
+                    updated_at: Date.now(),
                     revenueLogged:
                       status === "delivered"
                         ? true
@@ -220,16 +224,34 @@ export const useOrderStore = create<OrderState>()(
             ),
           };
         });
+
+        // An order's STATUS is the e-commerce flow. Without this the document
+        // moved to "shipped" on one device and stayed "pending" on every other
+        // one — the local write happened, the push never did.
+        //
+        // The `set` above is kept because a status change also fires the
+        // courier-receivable side effect, and the transition has to be visible
+        // to it. `saveOrder` then reconciles against the row Postgres stored.
+        const order = get().orders.find((o) => o.id === id);
+        if (order) await saveOrder(set, order);
       },
 
-      updateOrder: (id, updates) => {
-        set((state) => ({
-          orders: state.orders.map((order) =>
-            order.id === id ? { ...order, ...updates, updatedAt: new Date() } : order,
-          ),
-        }));
+      updateOrder: async (id, updates) => {
+        const current = get().orders.find((o) => o.id === id);
+        if (!current) return;
+        await saveOrder(set, {
+          ...current,
+          ...updates,
+          updatedAt: new Date(),
+          updated_at: Date.now(),
+        });
       },
     }),
-    { name: "order-storage" },
+    {
+      name: "order-storage",
+      // Orders are owned by Supabase and hydrated from it on boot. Persisting
+      // them would put the stale-cache problem straight back.
+      partialize: () => ({}),
+    },
   ),
 );

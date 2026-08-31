@@ -85,6 +85,10 @@ export async function appendEvent(event: NewEvent): Promise<string> {
     })),
   });
 
+  // No push step. `driver.append` IS the write to Supabase, and it is awaited
+  // above — by the time we get here the event is in the database or this
+  // function has already thrown. The fire-and-forget push that used to live
+  // here existed only to drain a local queue that no longer exists.
   return id;
 }
 

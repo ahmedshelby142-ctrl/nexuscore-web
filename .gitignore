@@ -41,3 +41,6 @@ dist-ssr
 
 # Local only — never publish (see note to the user)
 recovery-codes.txt
+
+# Accidentally committed nested repo (orphan gitlink)
+nexuscore2/

@@ -230,12 +230,33 @@ test("cloud-owned collections are not persisted to localStorage", () => {
   }
 
   const part = business.slice(business.indexOf("partialize:"), business.indexOf("},\n  ),"));
-  for (const cloudOwned of ["products:", "suppliers:", "promoDiscounts:", "returnRecords:"]) {
+  for (const cloudOwned of [
+    "products:", "suppliers:", "promoDiscounts:", "returnRecords:",
+    // `purchase_invoices` now exists as a table, so a local copy would be
+    // exactly the stale cache this whole contract exists to prevent.
+    "purchaseInvoices:",
+  ]) {
     assert.ok(!part.includes(cloudOwned), `${cloudOwned} is cloud-owned and must not be persisted`);
   }
   // …and it MUST keep the ones that exist nowhere else.
-  for (const localOnly of ["partners:", "wholesaleInvoices:", "purchaseInvoices:"]) {
+  for (const localOnly of ["partners:", "wholesaleInvoices:"]) {
     assert.ok(part.includes(localOnly), `${localOnly} has no cloud table — dropping it deletes it`);
+  }
+});
+
+test("every hydrated table is described in the cloud schema", () => {
+  // A sink with no schema entry means `toRemoteRow` passes the row through
+  // verbatim, so a local-only field names a column that does not exist and
+  // PostgREST rejects the WHOLE upsert. That is how `purchase_invoices` would
+  // have failed the moment it was wired up.
+  const schema = read("../src/services/api/cloudSchema.ts");
+  const start = hydrate.indexOf("const SINKS");
+  const sinkBlock = hydrate.slice(start, hydrate.indexOf("};", start));
+  for (const line of sinkBlock.split(NL)) {
+    const hit = /^ {2}([a-z_]+):/.exec(line);
+    if (hit) {
+      assert.ok(schema.includes(hit[1] + ": {"), hit[1] + " has a sink but no CLOUD_SCHEMA entry");
+    }
   }
 });
 

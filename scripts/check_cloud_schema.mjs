@@ -11,7 +11,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   toRemoteRow,
@@ -32,10 +33,15 @@ test.beforeEach(() => {
 test("every declared column really exists in the deployed schema", () => {
   // The whole design rests on this file matching the SQL. If they drift, the
   // whitelist starts dropping real data or sending phantom columns.
-  const sql = readFileSync(
-    new URL("../docs/migrations/000_master_schema.sql", import.meta.url),
-    "utf8",
-  );
+  // EVERY migration, not just the master one. Migrations are additive: a table
+  // added in 010 is just as deployed as one declared in 000, and reading only
+  // the master made a correctly-migrated table look missing.
+  const dir = fileURLToPath(new URL("../docs/migrations/", import.meta.url));
+  const sql = readdirSync(dir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort()
+    .map((f) => readFileSync(dir + f, "utf8"))
+    .join(String.fromCharCode(10));
 
   // Columns the §6 patch loop adds to every synced table.
   const patched = new Set(["store_id", "updated_at"]);

@@ -60,7 +60,16 @@ export async function appendEvent(event: NewEvent): Promise<string> {
   // the ledger is append-only, and a NaN in it is permanent.
   assertFiniteLines(event.kind, event.lines);
 
-  const { storeId, deviceId } = await driver.identity();
+  const { storeId, deviceId, storeProvisional } = await driver.identity();
+
+  // `store_id` and `device_id` are `uuid NOT NULL` on both ledger tables. A
+  // signed-out session resolves to empty strings, which Postgres rejects with
+  // `22P02 invalid input syntax for type uuid` — a stack trace where the user
+  // needed a sentence. Fail here, in their language, before anything is sent.
+  if (storeProvisional || !storeId || !deviceId) {
+    throw new Error("مش متسجل دخول على متجر — سجّل الدخول قبل ما تسجّل أي حركة");
+  }
+
   const now = new Date();
   const id = crypto.randomUUID();
 

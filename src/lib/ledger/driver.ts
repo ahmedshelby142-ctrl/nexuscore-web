@@ -133,9 +133,12 @@ const supabaseDriver: LedgerDriver = {
     const sb = requireClient();
     const { lines, payload, ...header } = event;
 
+    // `payload` is a TEXT column (default `'{}'::text`), not jsonb — again
+    // verified against the live schema rather than the migration file. Sending
+    // the parsed object made Postgres reject the row.
     const { error: evErr } = await sb.from("ledger_events").insert({
       ...header,
-      payload: safeParse(payload),
+      payload,
       sync_status: "synced",
     });
     if (evErr) throw new Error(`[ledger_events] ${evErr.message}`);
@@ -146,6 +149,13 @@ const supabaseDriver: LedgerDriver = {
           id: l.id,
           event_id: event.id,
           store_id: event.store_id,
+          // `ledger_lines.device_id` is `uuid NOT NULL` with NO default —
+          // verified against the live schema. Omitting it made EVERY line
+          // insert fail on the not-null constraint, which took the whole
+          // event down with it (the compensating delete below then removed
+          // the header too). No purchase, sale or stock movement could be
+          // written at all.
+          device_id: event.device_id,
           account: l.account,
           subject_id: l.subject_id,
           // The deployed columns are `qty_delta` / `amount_delta` — the same

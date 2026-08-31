@@ -164,8 +164,8 @@ interface BusinessState {
   // quick توريد dialog) can attach the receipt to it straight away.
   addSupplier: (supplier: Omit<Supplier, "id" | "createdAt" | "updatedAt">) => Promise<Supplier>;
   updateSupplier: (id: string, updates: Partial<Supplier>) => Promise<void>;
-  addPurchaseInvoice: (invoice: Omit<PurchaseInvoice, "id" | "createdAt" | "updatedAt">) => void;
-  recordSupplierPayment: (invoiceId: string, amount: number) => void;
+  addPurchaseInvoice: (invoice: Omit<PurchaseInvoice, "id" | "createdAt" | "updatedAt">) => Promise<PurchaseInvoice>;
+  recordSupplierPayment: (invoiceId: string, amount: number) => Promise<void>;
 
   // Returns & Exchanges actions
   // The field is `created_at`, not `createdAt` — the old signature omitted a
@@ -486,42 +486,37 @@ export const useBusinessStore = create<BusinessState>()(
       // Supplier totals are not touched either. Debt is SUM(payable_supplier)
       // over the ledger; "purchased" and "paid" are summed from these invoice
       // documents on render. A supplier row carries no running total to drift.
-      addPurchaseInvoice: (invoiceData) => {
-        const invoice: PurchaseInvoice = {
+      addPurchaseInvoice: async (invoiceData) => {
+        // Now a cloud row, not a localStorage-only document. Every quick توريد
+        // used to write this invoice to `persist` and nowhere else, so the
+        // receipt existed on exactly one browser: it never showed in the
+        // supplier's account on another device, and a cache clear erased it
+        // while the ledger event it described survived. That mismatch is the
+        // drift this codebase deletes everywhere else.
+        return commitRow(set, 'purchase_invoices', 'purchaseInvoices', {
           ...invoiceData,
           id: crypto.randomUUID(),
           createdAt: new Date(),
           updatedAt: new Date(),
-        };
-        set((state) => ({
-          purchaseInvoices: [...state.purchaseInvoices, invoice],
-        }));
+          updated_at: Date.now(),
+        } as PurchaseInvoice);
       },
 
       // Updates the invoice document only — how much of THIS invoice is still
       // open. The money moved by the `supplier_payment` event the caller
       // appends: wallet down, payable_supplier down.
-      recordSupplierPayment: (invoiceId, amount) => {
-        set((state) => {
-          const invoice = state.purchaseInvoices.find((i) => i.id === invoiceId);
-          if (!invoice) return state;
-          const newPaid = invoice.paidAmount + amount;
-          const newRemaining = Math.max(0, invoice.remainingAmount - amount);
-          const newStatus: "paid" | "partial" | "unpaid" | "overdue" =
-            newRemaining <= 0 ? "paid" : "partial";
-          return {
-            purchaseInvoices: state.purchaseInvoices.map((i) =>
-              i.id === invoiceId
-                ? {
-                    ...i,
-                    paidAmount: newPaid,
-                    remainingAmount: newRemaining,
-                    status: newStatus,
-                    updatedAt: new Date(),
-                  }
-                : i,
-            ),
-          };
+      recordSupplierPayment: async (invoiceId, amount) => {
+        const invoice = get().purchaseInvoices.find((i) => i.id === invoiceId);
+        if (!invoice) return;
+
+        const newRemaining = Math.max(0, invoice.remainingAmount - amount);
+        await commitRow(set, 'purchase_invoices', 'purchaseInvoices', {
+          ...invoice,
+          paidAmount: invoice.paidAmount + amount,
+          remainingAmount: newRemaining,
+          status: newRemaining <= 0 ? "paid" : "partial",
+          updatedAt: new Date(),
+          updated_at: Date.now(),
         });
       },
 
@@ -576,9 +571,13 @@ export const useBusinessStore = create<BusinessState>()(
        * only recreate the stale-cache problem this rewrite removes: a device
        * showing 131 products that no longer exist.
        *
+       * `purchaseInvoices` joined them: it now has a `purchase_invoices`
+       * table, so keeping a local copy would recreate exactly the stale-cache
+       * problem this rewrite removes.
+       *
        * What IS still persisted is the data with NO cloud table — partners,
-       * wholesale, purchase invoices, capital. Dropping those would delete
-       * them outright, since there is nowhere to re-read them from.
+       * wholesale, capital. Dropping those would delete them outright, since
+       * there is nowhere to re-read them from.
        */
       partialize: (state: any) => ({
         businessMode: state.businessMode,
@@ -588,7 +587,6 @@ export const useBusinessStore = create<BusinessState>()(
         transactions: state.transactions,
         wholesaleClients: state.wholesaleClients,
         wholesaleInvoices: state.wholesaleInvoices,
-        purchaseInvoices: state.purchaseInvoices,
         capitalContributions: state.capitalContributions,
       }),
     },

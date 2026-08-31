@@ -33,6 +33,7 @@ const SINKS: Record<string, Sink> = {
   // The local field is `promoDiscounts`; the table is `discount_codes`.
   discount_codes: (rows) => useBusinessStore.setState({ promoDiscounts: rows }),
   return_records: (rows) => useBusinessStore.setState({ returnRecords: rows }),
+  purchase_invoices: (rows) => useBusinessStore.setState({ purchaseInvoices: rows }),
   customers: (rows) => useCustomerStore.setState({ customers: rows }),
   branches: (rows) => useBranchStore.setState({ branches: rows }),
   orders: (rows) => useOrderStore.setState({ orders: rows }),

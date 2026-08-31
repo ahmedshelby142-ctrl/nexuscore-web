@@ -38,3 +38,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local only — never publish (see note to the user)
+recovery-codes.txt

@@ -24,7 +24,7 @@
  * dropping the option.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { PackageCheck, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -42,7 +42,7 @@ import { buildPurchaseLines } from "@/lib/ledger/purchases";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { formatMoney } from "@/lib/math";
 import { WALLET_LABELS } from "@/types";
-import type { Product, WalletType } from "@/types";
+import type { Product, Supplier, WalletType } from "@/types";
 
 /** Sentinel for "this supplier is not registered yet". */
 const NEW_SUPPLIER = "__new__";
@@ -74,6 +74,8 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
   const [newSupplierName, setNewSupplierName] = useState("");
   const [newSupplierPhone, setNewSupplierPhone] = useState("");
   const [saving, setSaving] = useState(false);
+  /** Did `appendEvent` succeed? Decides which failure message is the true one. */
+  const ledgerWritten = useRef(false);
 
   const rows = products ?? [];
   const draftOf = (id: string) => lines[id] ?? { quantity: "", unitCost: "" };
@@ -118,17 +120,40 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
   async function receive() {
     if (!canSave) return;
     setSaving(true);
+
+    // Staged on purpose. Each step depends on the one before it, and the error
+    // the user sees has to say WHICH stage failed — "nothing was saved" and
+    // "the stock is in but the invoice is not" are different facts and lead to
+    // different next actions.
+    let supplier: Supplier | undefined;
     try {
-      // A supplier typed in for the first time is registered before the
-      // receipt, so the invoice below has a real account to belong to.
-      const supplier = registeringNew
-        ? addSupplier({
+      // ── 1. The supplier (parent) ────────────────────────────────────────
+      // AWAITED. This used to be a bare call to an async action, so `supplier`
+      // was a pending Promise: `supplier.id` and `supplier.companyName` were
+      // both `undefined`, and the receipt below was written against a supplier
+      // that had no id. The invoice then never appeared in anyone's account.
+      // TypeScript could not catch it because `Supplier` is `any` — see the
+      // note at the top of src/types/index.ts.
+      supplier = registeringNew
+        ? await addSupplier({
             companyName: newSupplierName.trim(),
             contactPerson: "",
             phone: newSupplierPhone.trim(),
           })
         : suppliers.find((s) => s.id === supplierId);
-      if (!supplier) throw new Error("المورد مش موجود");
+
+      if (!supplier?.id) throw new Error("المورد مش موجود");
+    } catch (e) {
+      toast.error(
+        `المورد متسجّلش، وبالتالي التوريد مااتسجّلش. المخزون زي ما هو. ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      setSaving(false);
+      return;
+    }
+
+    try {
 
       // Same numbering as the invoice screen, off the same list, so the
       // sequence stays continuous however the receipt was entered.
@@ -166,6 +191,9 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
         }),
       });
 
+      // Past this point the ledger HAS the event: stock and cash have moved.
+      ledgerWritten.current = true;
+
       // The same movement a توريد makes, and the same hole it used to have:
       // this loop was gated on `variantName`, so a bulk restock of plain
       // products moved the ledger and left the record untouched.
@@ -177,10 +205,15 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
         })),
       );
 
-      // The document, only after the event: a supplier invoice with no stock
-      // behind it is the drift we delete everywhere else. This is what makes
-      // the receipt show up in that supplier's totals and history.
-      addPurchaseInvoice({
+      // ── 3. The document, only after the event ───────────────────────────
+      // A supplier invoice with no stock behind it is the drift we delete
+      // everywhere else. This is what makes the receipt show up in that
+      // supplier's totals and history.
+      //
+      // Awaited and caught SEPARATELY: by this point the stock and the money
+      // are already in the ledger, so telling the user "nothing was saved"
+      // would be a lie that makes them enter the receipt twice.
+      await addPurchaseInvoice({
         invoiceNumber,
         supplierId: supplier.id,
         supplierName: supplier.companyName,
@@ -201,14 +234,35 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
         notes: "توريد سريع من شاشة المنتجات",
       });
 
+      toast.success(
+        received.length > 1
+          ? `اتسجّل توريد ${received.length} أصناف باسم ${supplier.companyName}`
+          : `اتسجّل التوريد باسم ${supplier.companyName}`,
+      );
+
+      // Re-read the ledger so the rows' quantities move immediately.
       onReceived();
       close();
     } catch (e) {
-      // Nothing was written — the append is atomic — so say exactly that.
-      toast.error(
-        `التوريد متسجّلش، والمخزون زي ما هو. ${e instanceof Error ? e.message : String(e)}`,
-      );
+      const detail = e instanceof Error ? e.message : String(e);
+
+      // `appendEvent` is all-or-nothing, and it runs before the invoice. So a
+      // failure here is one of two different situations, and the user needs to
+      // know which: if the ledger took the event, the stock and the cash HAVE
+      // moved and re-entering the receipt would double it.
+      if (ledgerWritten.current) {
+        toast.error(
+          `المخزون والفلوس اتسجّلوا، لكن فاتورة المورد متسجّلتش. ` +
+            `متعملش التوريد تاني — سجّل الفاتورة من شاشة المشتريات. ${detail}`,
+        );
+        // The stock DID move, so the list must still refresh.
+        onReceived();
+        close();
+      } else {
+        toast.error(`التوريد متسجّلش، والمخزون زي ما هو. ${detail}`);
+      }
     } finally {
+      ledgerWritten.current = false;
       setSaving(false);
     }
   }

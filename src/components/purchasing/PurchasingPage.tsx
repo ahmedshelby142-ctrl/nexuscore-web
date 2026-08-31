@@ -237,14 +237,18 @@ export function PurchasingPage() {
     if (!canSave) return;
     setSaving(true);
     try {
+      // AWAITED. `addSupplier` writes to Supabase and only then returns the
+      // stored row; calling it bare handed back a pending Promise, so
+      // `supplier.id` was `undefined` and the invoice below belonged to nobody.
+      // `Supplier` is `any` (see src/types/index.ts), so nothing caught it.
       const supplier = registeringNew
-        ? addSupplier({
+        ? await addSupplier({
             companyName: newSupplierName.trim(),
             contactPerson: "",
             phone: newSupplierPhone.trim(),
           })
         : suppliers.find((s) => s.id === supplierId);
-      if (!supplier) throw new Error("المورد مش موجود");
+      if (!supplier?.id) throw new Error("المورد مش موجود");
 
       const invoiceNumber = "FM-" + String(purchaseInvoices.length + 1).padStart(4, "0");
 
@@ -283,7 +287,7 @@ export function PurchasingPage() {
         })),
       );
 
-      addPurchaseInvoice({
+      await addPurchaseInvoice({
         invoiceNumber,
         supplierId: supplier.id,
         supplierName: supplier.companyName,

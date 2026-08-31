@@ -172,6 +172,7 @@ export const HYDRATION_ORDER = [
   "suppliers",
   "discount_codes",
   "return_records",
+  "purchase_invoices",
   "branches",
   "orders",
 ] as const;

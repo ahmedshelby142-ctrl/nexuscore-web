@@ -104,6 +104,20 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
     columns: ["id", "name", "code", "address", "phone", "isActive", "createdAt", ...COMMON],
   },
 
+  purchase_invoices: {
+    // Quoted camelCase, matching `suppliers` — see the note above about why
+    // these must NOT be snake_cased.
+    //
+    // `items` is jsonb: a receipt's lines are only ever read back with their
+    // invoice, never queried across invoices, so a child table would buy
+    // nothing but a join. The LEDGER is what aggregate questions are asked of.
+    columns: [
+      "id", "invoiceNumber", "supplierId", "supplierName", "items",
+      "totalAmount", "paidAmount", "remainingAmount", "dueDate", "status",
+      "notes", "createdAt", "updatedAt", ...COMMON,
+    ],
+  },
+
   orders: {
     columns: [
       "id", "orderNumber", "status", "customerId", "customerName",

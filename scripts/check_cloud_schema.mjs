@@ -60,6 +60,43 @@ test("every declared column really exists in the deployed schema", () => {
   }
 });
 
+test("every order status the app writes is allowed by the CHECK constraint", () => {
+  // `cancelled` shipped in the UI but was absent from `orders_status_check`,
+  // so Postgres refused every cancellation. A column whitelist cannot catch
+  // that — the column existed, the VALUE was rejected — so the enum needs its
+  // own guard.
+  const dir = fileURLToPath(new URL("../docs/migrations/", import.meta.url));
+  const sql = readdirSync(dir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort()
+    .map((f) => readFileSync(dir + f, "utf8"))
+    .join(String.fromCharCode(10));
+
+  // The LAST definition wins, the same way the migrations apply in order.
+  const defs = [...sql.matchAll(/orders_status_check"?\s*[\s\S]{0,80}?CHECK\s*\(status = ANY \(ARRAY\[([^\]]+)\]/g)];
+  assert.ok(defs.length > 0, "orders_status_check must be defined in a migration");
+  const allowed = new Set(
+    [...defs[defs.length - 1][1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]),
+  );
+
+  const src = readFileSync(
+    new URL("../src/components/ecommerce/OrdersPage.tsx", import.meta.url),
+    "utf8",
+  );
+  const written = new Set(
+    [...src.matchAll(/updateOrderStatus\([^,]+,\s*"([a-z_]+)"/g)].map((m) => m[1]),
+  );
+  assert.ok(written.size > 0, "no updateOrderStatus calls found — did the file move?");
+
+  for (const status of written) {
+    assert.ok(
+      allowed.has(status),
+      `OrdersPage writes status "${status}" but orders_status_check allows only: ` +
+        [...allowed].join(", "),
+    );
+  }
+});
+
 test("store_id is attached to every payload — RLS refuses it otherwise", () => {
   for (const table of Object.keys(CLOUD_SCHEMA)) {
     const out = toRemoteRow(table, { id: "x" }, { storeId: STORE });

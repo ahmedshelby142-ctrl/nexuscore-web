@@ -426,7 +426,11 @@ export function Returns() {
         // it stays. What must not happen is the replacement being forgotten:
         // record the return WITH the outstanding replacement on it, so the
         // obligation survives this dialog, this screen and this session.
-        addReturnRecord({
+        // AWAITED. The whole point of this branch is that the outstanding
+        // replacement must survive the dialog — an un-awaited write that RLS
+        // refuses would drop the obligation on the floor while the toast below
+        // told the user it had been recorded as pending.
+        await addReturnRecord({
           original_order_id: selectedOrder.id,
           type: "exchange",
           customer_name: selectedOrder.customerName,
@@ -460,7 +464,11 @@ export function Returns() {
       ]);
     }
 
-    addReturnRecord({
+    // AWAITED, and the success toast + form reset below only run if the
+    // record actually landed. Previously a refused write still produced
+    // "تمت عملية الاستبدال بنجاح" and cleared the screen.
+    try {
+      await addReturnRecord({
       original_order_id: selectedOrder.id,
       type: exchangeMode ? "exchange" : "return",
       customer_name: selectedOrder.customerName,
@@ -493,15 +501,25 @@ export function Returns() {
         : `تم إرجاع ${itemsToReturn.length} منتج/منتجات — رجعت للمخزون واتسجّل المسترد`
     );
 
-    setIsWorking(false);
-    setSelectedOrder(null);
-    setSearchQuery("");
-    setReturnEntries([]);
-    setExchangeMode(false);
-    setExchangeProductId("");
-    setExchangeQty(1);
-    setNotes("");
-    
+      setSelectedOrder(null);
+      setSearchQuery("");
+      setReturnEntries([]);
+      setExchangeMode(false);
+      setExchangeProductId("");
+      setExchangeQty(1);
+      setNotes("");
+    } catch (e) {
+      // The ledger already has the return — the goods ARE back on the shelf.
+      // Only the record document failed, so the screen must not claim success
+      // and must not clear what the user entered.
+      toast.error(
+        `المخزون رجع فعلاً، لكن سجل المرتجع متسجّلش. متعملش الإرجاع تاني. ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    } finally {
+      setIsWorking(false);
+    }
   };
 
   // Phase F: PDF export of the return/exchange log.

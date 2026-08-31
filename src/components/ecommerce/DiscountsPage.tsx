@@ -39,22 +39,29 @@ export function DiscountsPage() {
   const [type, setType] = useDraftState<PromoDiscount["type"]>("discount:type", "percentage");
   const [value, setValue] = useDraftState("discount:value", "");
 
-  const addDiscount = () => {
+  const addDiscount = async () => {
     const numericValue = parseFloat(value);
     if (!code.trim() || !numericValue || numericValue <= 0) return;
-    addPromoDiscount({
-      code: code.trim().toUpperCase(),
-      type,
-      value: numericValue,
-      active: true,
-    });
-    setCode("");
-    setValue("");
+    // Awaited: the fields are only cleared once the row is actually stored.
+    try {
+      await addPromoDiscount({
+        code: code.trim().toUpperCase(),
+        type,
+        value: numericValue,
+        active: true,
+      });
+      setCode("");
+      setValue("");
+    } catch {
+      /* the store announced it; the typed code stays so it can be retried */
+    }
   };
 
-  const toggleDiscount = (id: string) => {
+  const toggleDiscount = async (id: string) => {
     const d = discounts.find((x) => x.id === id);
-    if (d) updatePromoDiscount(id, { active: !d.active });
+    // Awaited so a refused toggle surfaces instead of becoming an unhandled
+    // rejection with the switch left showing the wrong state.
+    if (d) await updatePromoDiscount(id, { active: !d.active }).catch(() => {});
   };
 
   const [posSales, setPosSales] = useState<LedgerEvent[]>([]);

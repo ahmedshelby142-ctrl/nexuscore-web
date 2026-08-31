@@ -68,7 +68,7 @@ export function BundlesPage() {
   const selectedStockOk = selectedItems.every((item) => qtyOf(item.productId) >= item.quantity);
   const totalComponentCost = selectedItems.reduce((total, item) => total + (item.cost * item.quantity), 0);
 
-  const saveBundle = () => {
+  const saveBundle = async () => {
     if (!name.trim() || !sku.trim() || !price || selectedItems.length === 0) {
       setMessage("أكمل اسم البوكس، SKU، السعر، وقم باختيار المنتجات");
       return;
@@ -79,7 +79,11 @@ export function BundlesPage() {
       return;
     }
 
-    addProduct({
+    // Awaited, and the form is only cleared once Supabase confirms. It used
+    // to fire the write and immediately announce "تم حفظ البوكس" — so a
+    // rejected write cleared the user's work and told them it was saved.
+    try {
+      await addProduct({
       name: name.trim(),
       sku: sku.trim(),
       category: "بوكسات",
@@ -90,12 +94,16 @@ export function BundlesPage() {
       bundleItems: selectedItems.map(item => ({ productId: item.productId, variantName: item.variantName, quantity: item.quantity }))
     });
 
-    clearDrafts("bundle:");
-    setName("");
-    setSku("");
-    setPrice("");
-    setSelected({});
-    setMessage("تم حفظ البوكس وربطه بالمنتجات الفردية");
+      clearDrafts("bundle:");
+      setName("");
+      setSku("");
+      setPrice("");
+      setSelected({});
+      setMessage("تم حفظ البوكس وربطه بالمنتجات الفردية");
+    } catch {
+      // The store already told the user what went wrong. Keep their input.
+      setMessage("البوكس متسجّلش. راجع الاتصال وجرّب تاني — البيانات زي ما هي.");
+    }
   };
 
   const toggleBundle = (id: string, currentActive: boolean) => {

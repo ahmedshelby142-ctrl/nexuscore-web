@@ -63,17 +63,23 @@ export function BranchesPage() {
   const [isAssignOpen, setIsAssignOpen] = useState(false);
   const [assignForm, setAssignForm] = useState({ username: "", role: "cashier" as UserRole });
 
-  const handleAddBranch = () => {
+  const handleAddBranch = async () => {
     if (!branchForm.name || !branchForm.code) return;
-    addBranch({
-      name: branchForm.name,
-      code: branchForm.code.toUpperCase(),
-      address: branchForm.address || undefined,
-      phone: branchForm.phone || undefined,
-      isActive: true,
-    });
-    setBranchForm({ name: "", code: "", address: "", phone: "" });
-    setIsBranchOpen(false);
+    // Awaited: the dialog stays open, with the values still in it, if the
+    // branch did not reach Supabase.
+    try {
+      await addBranch({
+        name: branchForm.name,
+        code: branchForm.code.toUpperCase(),
+        address: branchForm.address || undefined,
+        phone: branchForm.phone || undefined,
+        isActive: true,
+      });
+      setBranchForm({ name: "", code: "", address: "", phone: "" });
+      setIsBranchOpen(false);
+    } catch {
+      /* the store announced it; leave the form for a retry */
+    }
   };
 
   const handleAssign = () => {

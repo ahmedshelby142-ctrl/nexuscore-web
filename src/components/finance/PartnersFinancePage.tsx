@@ -1113,7 +1113,11 @@ export function PartnersFinancePage() {
                               size="icon"
                               className="size-7 text-muted-foreground hover:text-destructive"
                               onClick={() => {
-                                isPayroll ? removePayroll(entry.id) : removeExpense(entry.id);
+                                // `removeExpense` deletes from Supabase first,
+                                // so it is async. `removePayroll` is local-only
+                                // (payroll has no cloud table yet).
+                                if (isPayroll) removePayroll(entry.id);
+                                else void removeExpense(entry.id).catch(() => {});
                               }}
                             >
                               <Trash2 className="size-3" />

@@ -72,7 +72,7 @@ interface FinancialState {
     | { success: true }
     | { success: false; reason: "over_budget"; capAmount: number; currentTotal: number }
   >;
-  removeExpense: (id: string) => void;
+  removeExpense: (id: string) => Promise<void>;
   addPayroll: (record: Omit<PayrollRecord, "id">) => void;
   removePayroll: (id: string) => void;
   addAsset: (record: Omit<FixedAsset, "id" | "monthlyDepreciation">) => void;
@@ -228,7 +228,12 @@ export const useFinancialStore = create<FinancialState>()(
         return { success: true as const };
       },
 
-      removeExpense: (id) => {
+      removeExpense: async (id) => {
+        // Deleted in the cloud FIRST. This used to drop the expense from local
+        // state only, so the row lived on in Supabase forever and came back the
+        // moment another device (or a boot-time hydrate) read the table.
+        const { deleteThrough } = await import("@/services/cloudData");
+        await deleteThrough("expenses", id);
         set((state) => ({ expenses: state.expenses.filter((e) => e.id !== id) }));
       },
 

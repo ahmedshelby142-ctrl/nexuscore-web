@@ -104,6 +104,21 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
     columns: ["id", "name", "code", "address", "phone", "isActive", "createdAt", ...COMMON],
   },
 
+  // Described so `toRemoteRow` stamps `store_id` on the way out. Without an
+  // entry here it returns the row UNCHANGED (see the isSyncedTable early
+  // return), no store_id is attached, and the store-scoped RLS added in
+  // migration 013 would refuse every write.
+  expenses: {
+    columns: ["id", "category", "amount", "description", "date", ...COMMON],
+  },
+
+  transactions: {
+    columns: [
+      "id", "type", "amount", "timestamp", "partnerId", "category", "description",
+      ...COMMON,
+    ],
+  },
+
   purchase_invoices: {
     // Quoted camelCase, matching `suppliers` — see the note above about why
     // these must NOT be snake_cased.

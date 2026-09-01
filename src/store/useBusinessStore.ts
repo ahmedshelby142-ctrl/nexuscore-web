@@ -571,9 +571,9 @@ export const useBusinessStore = create<BusinessState>()(
        * only recreate the stale-cache problem this rewrite removes: a device
        * showing 131 products that no longer exist.
        *
-       * `purchaseInvoices` joined them: it now has a `purchase_invoices`
-       * table, so keeping a local copy would recreate exactly the stale-cache
-       * problem this rewrite removes.
+       * `purchaseInvoices` and `transactions` joined them: both now have
+       * tables and both are hydrated on boot, so keeping a local copy would
+       * recreate exactly the stale-cache problem this rewrite removes.
        *
        * What IS still persisted is the data with NO cloud table — partners,
        * wholesale, capital. Dropping those would delete them outright, since
@@ -584,7 +584,6 @@ export const useBusinessStore = create<BusinessState>()(
         partnershipEnabled: state.partnershipEnabled,
         partners: state.partners,
         partnerLedger: state.partnerLedger,
-        transactions: state.transactions,
         wholesaleClients: state.wholesaleClients,
         wholesaleInvoices: state.wholesaleInvoices,
         capitalContributions: state.capitalContributions,

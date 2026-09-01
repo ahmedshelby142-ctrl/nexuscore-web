@@ -313,6 +313,38 @@ test("no component fires a cloud mutation without awaiting it", () => {
   assert.deepEqual(offenders, [], "these fire a cloud write and do not wait for it:" + NL + offenders.join(NL));
 });
 
+test("no store persists a collection that has a cloud table", () => {
+  // Generalises the per-store check below. Every table in CLOUD_SCHEMA is
+  // hydrated on boot, so a persisted local copy is a stale cache by
+  // definition — the exact failure this whole contract exists to prevent.
+  // `transactions` and `expenses` were both being persisted after they gained
+  // tables; this catches the next one automatically.
+  const FIELD_FOR_TABLE = {
+    products: "products", suppliers: "suppliers", discount_codes: "promoDiscounts",
+    return_records: "returnRecords", purchase_invoices: "purchaseInvoices",
+    transactions: "transactions", expenses: "expenses", customers: "customers",
+    branches: "branches", orders: "orders",
+  };
+  const STORE_FILES = [
+    ["useBusinessStore", business], ["useOrderStore", orders],
+    ["useCustomerStore", customers], ["useBranchStore", branches],
+    ["useFinancialStore", financial],
+  ];
+  for (const [name, src] of STORE_FILES) {
+    const at = src.indexOf("partialize");
+    if (at < 0) {
+      assert.fail(name + " persists without a partialize — it would store every cloud-owned slice");
+    }
+    const block = code(src).slice(at, at + 900);
+    for (const field of Object.values(FIELD_FOR_TABLE)) {
+      assert.ok(
+        !block.includes(field + ": state." + field),
+        name + " persists `" + field + "`, which is cloud-owned and hydrated on boot",
+      );
+    }
+  }
+});
+
 test("realtime is kept — it is a push, not a poll", () => {
   // Removing it would mean a change on one machine never appears on the other
   // without a manual refresh.

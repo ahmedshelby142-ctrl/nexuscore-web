@@ -477,7 +477,24 @@ export const useFinancialStore = create<FinancialState>()(
         return add(expenseTotal, payrollTotal);
       },
     }),
-    { name: "financial-storage" },
+    {
+      name: "financial-storage",
+      /**
+       * `expenses` is cloud-owned now (it has a table, RLS and a hydration
+       * sink), so persisting it would recreate the stale-cache problem the
+       * rest of this codebase deletes: a device showing rows the database no
+       * longer has, and showing nothing on a browser that never cached them.
+       *
+       * Everything else here has NO cloud table — payroll, assets, budget
+       * caps, courier receivables, wallet transfers. Dropping those would
+       * delete them outright, because there is nowhere to read them back from.
+       * So this is a deny-list of one, not an allow-list.
+       */
+      partialize: (state: any) => {
+        const { expenses: _cloudOwned, syncQueue: _noQueue, ...keep } = state;
+        return keep;
+      },
+    },
   ),
 );
 

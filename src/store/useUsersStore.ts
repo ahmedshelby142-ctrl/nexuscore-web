@@ -58,9 +58,18 @@ export const useUsersStore = create<UsersState>((set, get) => ({
 
     set({ isLoading: true, error: null });
     try {
-      const { data, error } = await sb
-        .from("store_members")
-        .select("user_id, role, created_at, users(email, username)");
+      // An RPC, not a PostgREST select. The select this replaces asked for
+      // `store_members?select=user_id,role,created_at,users(email,username)`
+      // and got a 400 every time, so the screen rendered but listed nobody:
+      //   - `store_members` had no `created_at` column,
+      //   - `public.users` has no `email` column,
+      //   - and store_members.user_id references auth.users, not public.users,
+      //     so the embed could never resolve — `auth` is not exposed over
+      //     PostgREST, and it should not be.
+      // `list_store_members()` is SECURITY DEFINER and filtered by
+      // `is_store_member(store_id)`, so it returns exactly this store's people
+      // and a member of one shop can never enumerate another's.
+      const { data, error } = await sb.rpc("list_store_members");
 
       if (error) throw error;
 
@@ -68,13 +77,13 @@ export const useUsersStore = create<UsersState>((set, get) => ({
         staffMembers: (data ?? []).map((row: any) => ({
           id: row.user_id,
           userId: row.user_id,
-          name: row.users?.username || row.users?.email || "مستخدم",
-          email: row.users?.email || "",
+          name: row.email || "مستخدم",
+          email: row.email || "",
           // Legacy values ('owner', 'CASHIER', …) resolve to the fixed four, so
           // a shop provisioned before this phase still reads correctly.
           role: toAppRole(row.role),
           status: "ACTIVE",
-          joinedAt: row.created_at ? new Date(row.created_at) : undefined,
+          joinedAt: row.joined_at ? new Date(row.joined_at) : undefined,
         })),
         isLoading: false,
       });

@@ -18,9 +18,17 @@ export function SystemOwnerGate() {
 
   useEffect(() => {
     let cancelled = false;
-    void checkSystemOwner().then((ok) => {
-      if (!cancelled) setAllowed(ok);
-    });
+    void checkSystemOwner()
+      .then((ok) => {
+        if (!cancelled) setAllowed(ok);
+      })
+      // FAIL CLOSED. `checkSystemOwner` swallows a Supabase error and returns
+      // false, but a transport-level failure (offline, DNS) rejects — and with
+      // no catch `allowed` stayed `null`, which renders the spinner below
+      // forever. Denying is both the safe answer and a screen that resolves.
+      .catch(() => {
+        if (!cancelled) setAllowed(false);
+      });
     return () => {
       cancelled = true;
     };

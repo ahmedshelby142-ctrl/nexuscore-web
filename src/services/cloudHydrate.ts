@@ -24,6 +24,7 @@ import { useCustomerStore } from "@/store/useCustomerStore";
 import { useBranchStore } from "@/store/useBranchStore";
 import { useOrderStore } from "@/store/useOrderStore";
 import { useFinancialStore } from "@/store/useFinancialStore";
+import { useSettingsStore } from "@/store/useSettingsStore";
 
 type Sink = (rows: any[]) => void;
 
@@ -72,6 +73,23 @@ export async function hydrateAll(): Promise<HydrationResult> {
 
   // Discard whatever survived rehydration before asking the server.
   clearCloudOwnedState();
+
+  // Store settings live in `public.stores`, not in a synced table, so they are
+  // not one of the SINKS above — but they are just as cloud-owned.
+  //
+  // `pullSettings` existed and had NO caller, so the settings screen always
+  // showed either a stale localStorage copy or the hardcoded default
+  // ("محلي"). That is not merely cosmetic: pressing حفظ التغييرات writes the
+  // form back, so opening Settings on a fresh browser and saving silently
+  // replaced the real store name, phone, address and tax number with defaults
+  // and blanks.
+  //
+  // Not awaited with the rest and never fatal: a settings read that fails must
+  // not stop products and orders from loading.
+  void useSettingsStore
+    .getState()
+    .pullSettings()
+    .catch((e) => console.error("[Hydrate] store settings failed:", e));
 
   for (const table of Object.keys(SINKS)) {
     try {

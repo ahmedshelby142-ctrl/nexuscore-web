@@ -345,6 +345,19 @@ test("no store persists a collection that has a cloud table", () => {
   }
 });
 
+test("store settings are pulled from the cloud on boot", () => {
+  // `pullSettings` was defined and had zero callers, so the settings screen
+  // showed a stale localStorage copy or the hardcoded default ("محلي") and
+  // never the row in `public.stores`. Pressing save then wrote that back —
+  // silently replacing the real store name, phone, address and tax number.
+  //
+  // Settings are not one of the SINKS (they live in `stores`, not a synced
+  // table), so the sink-coverage test above cannot catch this. Hence its own.
+  assert.match(hydrate, /pullSettings\(\)/, "hydrateAll must pull store settings");
+  const settings = read("../src/store/useSettingsStore.ts");
+  assert.match(settings, /pullSettings: async/, "the action must still exist");
+});
+
 test("realtime is kept — it is a push, not a poll", () => {
   // Removing it would mean a change on one machine never appears on the other
   // without a manual refresh.

@@ -345,7 +345,7 @@ export function BundlesPage() {
                         <Button variant="outline" size="sm" onClick={() => toggleBundle(bundle.id, bundle.isActive ?? true)}>
                           {bundle.isActive ? "تعطيل" : "تفعيل"}
                         </Button>
-                        <Button
+                        <Button aria-label="حذف البوكس"
                           variant="ghost"
                           size="icon"
                           className="size-8 text-destructive"

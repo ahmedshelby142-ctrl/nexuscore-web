@@ -533,7 +533,7 @@ export function PurchasingPage() {
                     <span className="font-bold w-24 text-left">
                       {formatMoney(item.quantity * item.unitCost)}
                     </span>
-                    <Button
+                    <Button aria-label="حذف سطر الفاتورة"
                       variant="ghost"
                       size="icon"
                       className="size-8 text-destructive"
@@ -653,7 +653,7 @@ export function PurchasingPage() {
                               <Label className="text-[10px] text-muted-foreground mb-1 block">الإجمالي</Label>
                               <p className="font-medium text-sm pt-1">{formatMoney(line.quantity * line.unitCost)}</p>
                             </div>
-                            <Button
+                            <Button aria-label="حذف سطر المرتجع"
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-destructive self-end"

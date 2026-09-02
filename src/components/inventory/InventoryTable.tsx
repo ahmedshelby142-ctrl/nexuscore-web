@@ -346,7 +346,7 @@ export function InventoryTable() {
                     </TableCell>
                     <TableCell className="text-center px-4">
                       <div className="flex items-center justify-center">
-                        <Button
+                        <Button aria-label="حذف المنتج"
                           variant="ghost"
                           size="icon"
                           className="size-8 text-destructive hover:text-destructive"

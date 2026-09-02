@@ -1062,7 +1062,7 @@ export function WholesalePage() {
                             onClick={(e) => e.stopPropagation()}
                           >
                             <div className="flex items-center justify-center">
-                              <Button variant="ghost" size="icon" className="size-8" asChild>
+                              <Button aria-label="اتصال بالعميل" variant="ghost" size="icon" className="size-8" asChild>
                                 <a href={`tel:${client.phone}`}>
                                   <Phone className="size-3.5" />
                                 </a>
@@ -1234,7 +1234,7 @@ export function WholesalePage() {
                       </Command>
                     </PopoverContent>
                   </Popover>
-                  <Button variant="outline" size="icon" className="size-9 shrink-0" onClick={() => setIsNewClientOpen(true)}>
+                  <Button aria-label="إضافة صنف للفاتورة" variant="outline" size="icon" className="size-9 shrink-0" onClick={() => setIsNewClientOpen(true)}>
                     <Plus className="size-4" />
                   </Button>
                 </div>
@@ -1963,7 +1963,7 @@ export function WholesalePage() {
                   <span className="font-bold w-24 text-left">
                     {formatMoney(item.quantity * item.unitPrice)}
                   </span>
-                  <Button
+                  <Button aria-label="حذف سطر الفاتورة"
                     variant="ghost"
                     size="icon"
                     className="size-8 text-destructive"

@@ -229,7 +229,7 @@ export function DiscountsPage() {
                         >
                           {discount.active ? "تعطيل" : "تفعيل"}
                         </Button>
-                        <Button
+                        <Button aria-label="حذف كود الخصم"
                           variant="ghost"
                           size="icon"
                           className="size-8 text-destructive"

@@ -423,7 +423,7 @@ export function BackupsPage() {
                   </TableCell>
                   <TableCell className="text-center text-xs">{formatDate(b.created_at)}</TableCell>
                   <TableCell className="text-center">
-                    <Button
+                    <Button aria-label="حذف النسخة الاحتياطية"
                       variant="ghost"
                       size="icon"
                       onClick={() => remove(b.id)}

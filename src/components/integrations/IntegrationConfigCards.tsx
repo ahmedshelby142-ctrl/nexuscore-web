@@ -71,7 +71,7 @@ function CredentialField({
           dir={mono ? "ltr" : undefined}
         />
         {secret && (
-          <Button
+          <Button aria-label="إظهار أو إخفاء المفتاح"
             type="button"
             variant="outline"
             size="icon"

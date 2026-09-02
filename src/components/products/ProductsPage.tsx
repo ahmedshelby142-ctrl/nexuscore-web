@@ -927,7 +927,7 @@ export function ProductsPage() {
                             onChange={(e) => updateVariant(i, "stock", parseInt(e.target.value) || 0)} 
                             className="w-24"
                           />
-                          <Button type="button" variant="ghost" size="icon" className="text-destructive shrink-0" onClick={() => removeVariant(i)}>
+                          <Button aria-label="مسح أو أرشفة المنتج" type="button" variant="ghost" size="icon" className="text-destructive shrink-0" onClick={() => removeVariant(i)}>
                             <Trash2 className="size-4" />
                           </Button>
                         </div>

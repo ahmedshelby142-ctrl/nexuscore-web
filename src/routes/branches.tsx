@@ -172,7 +172,7 @@ export function BranchesPage() {
                       >
                         {currentBranchId === b.id ? "النطاق الحالي" : "تعيين كنطاق"}
                       </Button>
-                      <Button
+                      <Button aria-label="تفعيل أو إيقاف الفرع"
                         variant="ghost"
                         size="icon"
                         className="size-8"
@@ -180,7 +180,7 @@ export function BranchesPage() {
                       >
                         <Power className="size-4" />
                       </Button>
-                      <Button
+                      <Button aria-label="حذف الفرع"
                         variant="ghost"
                         size="icon"
                         className="size-8 text-destructive"
@@ -226,7 +226,7 @@ export function BranchesPage() {
                       <Badge variant="outline">{describeRole(a.role)}</Badge>
                     </TableCell>
                     <TableCell className="text-center px-4">
-                      <Button
+                      <Button aria-label="إلغاء تعيين المستخدم من الفرع"
                         variant="ghost"
                         size="icon"
                         className="size-8 text-destructive"

@@ -121,7 +121,7 @@ export function ShippingRateMatrix() {
                     </TableCell>
                   ))}
                   <TableCell className="text-center px-4">
-                    <Button
+                    <Button aria-label="حذف تعريفة الشحن"
                       variant="ghost"
                       size="icon"
                       className="size-8 text-destructive"

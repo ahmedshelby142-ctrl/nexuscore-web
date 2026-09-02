@@ -166,7 +166,7 @@ export function UserManagementPanel() {
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center justify-center gap-1">
-                        <Button
+                        <Button aria-label="تعديل صلاحية المستخدم"
                           variant="ghost"
                           size="icon"
                           className="size-8"
@@ -174,7 +174,7 @@ export function UserManagementPanel() {
                         >
                           <Edit2 className="size-4" />
                         </Button>
-                        <Button
+                        <Button aria-label="إزالة المستخدم من المتجر"
                           variant="ghost"
                           size="icon"
                           className="size-8 text-destructive"

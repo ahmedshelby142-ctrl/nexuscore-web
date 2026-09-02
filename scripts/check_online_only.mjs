@@ -391,6 +391,52 @@ test("a Toaster is mounted, or every error message is invisible", () => {
   assert.match(cloudData, /toast\.error/, "announce() must still surface failures");
 });
 
+test("icon-only buttons carry an accessible name", () => {
+  // A `size="icon"` Button renders a glyph and nothing else, so with no
+  // aria-label or title a screen reader announces "button" and a row's delete
+  // and edit actions are indistinguishable. Library primitives under
+  // components/ui own their own semantics and are excluded.
+  //
+  // The opening tag is found by tracking brace depth, NOT by a regex ending at
+  // the first ">". Handlers like `onClick={() => onChange("")}` contain a ">"
+  // inside the arrow, so a naive match ends early and reports buttons whose
+  // aria-label simply sits on a later line — which is exactly what the first
+  // version of this check did.
+  const openingTag = (src, at) => {
+    let depth = 0;
+    for (let i = at; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      else if (ch === ">" && depth === 0) return src.slice(at, i + 1);
+    }
+    return src.slice(at, at + 400);
+  };
+
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = dir + "/" + e.name;
+      if (e.isDirectory()) { if (e.name !== "ui") walk(full); continue; }
+      if (!e.name.endsWith(".tsx")) continue;
+      const src = readFileSync(full, "utf8");
+      let at = src.indexOf("<Button");
+      while (at !== -1) {
+        const tag = openingTag(src, at);
+        if (tag.includes('size="icon"') && !tag.includes("aria-label") && !tag.includes("title=")) {
+          const line = src.slice(0, at).split(NL).length;
+          offenders.push("src" + full.split("src").pop().split(String.fromCharCode(92)).join("/") + ":" + line);
+        }
+        at = src.indexOf("<Button", at + 7);
+      }
+    }
+  };
+  for (const d of ["components", "routes", "pages"]) {
+    walk(fileURLToPath(new URL("../src/" + d, import.meta.url)));
+  }
+  assert.deepEqual(offenders, [], "icon buttons with no accessible name:" + NL + offenders.join(NL));
+});
+
 test("realtime is kept — it is a push, not a poll", () => {
   // Removing it would mean a change on one machine never appears on the other
   // without a manual refresh.

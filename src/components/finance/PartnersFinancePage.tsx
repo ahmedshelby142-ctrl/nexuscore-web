@@ -1108,7 +1108,7 @@ export function PartnersFinancePage() {
                             <span className="font-semibold text-sm text-red-600">
                               -{formatMoney(entry.amount)}
                             </span>
-                            <Button
+                            <Button aria-label="حذف المصروف أو الراتب"
                               variant="ghost"
                               size="icon"
                               className="size-7 text-muted-foreground hover:text-destructive"
@@ -1204,7 +1204,7 @@ export function PartnersFinancePage() {
                       </TableCell>
                       <TableCell className="text-center px-4">
                         <div className="flex items-center justify-center gap-1">
-                          <Button
+                          <Button aria-label="توزيع الأرباح على الشريك"
                             variant="ghost"
                             size="icon"
                             className="size-7"
@@ -1212,7 +1212,7 @@ export function PartnersFinancePage() {
                           >
                             <BadgePercent className="size-3" />
                           </Button>
-                          <Button
+                          <Button aria-label="حذف السجل"
                             variant="ghost"
                             size="icon"
                             className="size-7 text-destructive"

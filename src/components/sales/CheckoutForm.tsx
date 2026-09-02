@@ -1078,7 +1078,7 @@ export default function CheckoutForm() {
                           </span>
                         )}
                       </h4>
-                      <Button
+                      <Button aria-label="حذف الصنف من السلة"
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded shrink-0 -mr-1 -mt-1"

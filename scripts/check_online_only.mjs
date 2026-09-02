@@ -33,11 +33,25 @@ const driver = read("../src/lib/ledger/driver.ts");
 const NL = String.fromCharCode(10);
 
 /** Source lines with comments dropped — a comment naming a bug is not the bug. */
-const codeLines = (src) =>
-  src.split(NL).filter((l) => {
+const codeLines = (src) => {
+  // Also drops JSX `{/* ... */}` comment blocks. Without that, a comment
+  // EXPLAINING why an element must be present satisfies the very assertion
+  // checking for it — which is exactly how the <Toaster/> guard first passed
+  // against a deliberately unmounted Toaster.
+  let inJsxComment = false;
+  return src.split(NL).filter((l) => {
     const t = l.trimStart();
+    if (inJsxComment) {
+      if (t.includes("*/")) inJsxComment = false;
+      return false;
+    }
+    if (t.startsWith("{/*")) {
+      if (!t.includes("*/")) inJsxComment = true;
+      return false;
+    }
     return !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
   });
+};
 
 /**
  * The file with every comment removed.
@@ -356,6 +370,25 @@ test("store settings are pulled from the cloud on boot", () => {
   assert.match(hydrate, /pullSettings\(\)/, "hydrateAll must pull store settings");
   const settings = read("../src/store/useSettingsStore.ts");
   assert.match(settings, /pullSettings: async/, "the action must still exist");
+});
+
+test("a Toaster is mounted, or every error message is invisible", () => {
+  // sonner's `toast()` is a no-op unless a <Toaster /> exists in the tree.
+  // This app had 34 toast calls and no Toaster, so every error and success
+  // message it raised rendered nothing — including `cloudData.announce`, the
+  // single place every failed write reports itself.
+  //
+  // The stores were behaving correctly the whole time (refuse the write, keep
+  // the user's input, call toast.error) and the user still saw nothing. That
+  // is the silent-failure class this file exists to prevent, one layer above
+  // the database.
+  const app = read("../src/App.tsx");
+  // The boundary class matters: a bare /<Toaster/ also matches <ToasterFoo,
+  // so the guard would pass on a renamed or disabled element.
+  assert.match(code(app), /<Toaster[\s/>]/, "App must mount <Toaster /> or toasts are silent");
+
+  // And the reporter every store write funnels through must still raise one.
+  assert.match(cloudData, /toast\.error/, "announce() must still surface failures");
 });
 
 test("realtime is kept — it is a push, not a poll", () => {

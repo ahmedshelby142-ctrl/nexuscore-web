@@ -63,12 +63,26 @@ import { BackupsPage } from "@/routes/backups";
 import { PlaceholderPage } from "@/routes/placeholder";
 
 import { useRealtimeSync } from "@/hooks/useRealtimeSync";
+import { Toaster } from "@/components/ui/sonner";
 
 export function App() {
   useRealtimeSync();
 
   return (
     <BrowserRouter>
+      {/* Sonner's toast() calls are no-ops unless a <Toaster /> is mounted, and
+          this app had 34 of them and no Toaster anywhere — so EVERY error and
+          success message the code raised rendered nothing at all.
+          
+          That is the silent-failure class this codebase has spent its whole
+          history removing, one layer up: the stores correctly refuse to commit
+          a rejected write and correctly call toast.error(), and the user was
+          still shown nothing. Verified by breaking the network and watching a
+          refused write produce no row, no success, and no message either.
+          
+          `dir="rtl"` because the app is Arabic; sonner positions and aligns
+          from this, not from the document. */}
+      <Toaster position="top-center" dir="rtl" richColors closeButton />
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route element={<ProtectedRoute />}>

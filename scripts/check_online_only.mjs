@@ -437,6 +437,18 @@ test("icon-only buttons carry an accessible name", () => {
   assert.deepEqual(offenders, [], "icon buttons with no accessible name:" + NL + offenders.join(NL));
 });
 
+test("a stale code-split chunk recovers instead of killing the route", () => {
+  // Lazy routes (POS and friends) hold hashed chunk names. After a deploy those
+  // files are gone, so a tab still running the old shell fails the dynamic
+  // import and the route dies behind its error boundary. The service worker
+  // makes this MORE likely, because caching a shell is its whole job.
+  const main = read("../src/main.tsx");
+  assert.match(main, /vite:preloadError/, "must handle Vite's preload failure");
+  // And it must not be able to loop: a chunk missing for any reason other than
+  // a deploy would otherwise reload forever.
+  assert.match(main, /sessionStorage/, "the reload must be one-shot per tab");
+});
+
 test("realtime is kept — it is a push, not a poll", () => {
   // Removing it would mean a change on one machine never appears on the other
   // without a manual refresh.

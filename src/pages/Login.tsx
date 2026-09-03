@@ -487,7 +487,15 @@ export function Login() {
                       <button
                         type="button"
                         onClick={() => setShowPassword(!showPassword)}
-                        className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70 transition-colors"
+                        // Icon-only, so it announced as a bare "button" — on the
+                        // first screen every user meets. `aria-pressed` carries
+                        // the state, which the glyph alone cannot.
+                        aria-label={showPassword ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
+                        aria-pressed={showPassword}
+                        // `-m-2 p-2` grows the hit area to 32px without moving the glyph or
+                        // changing its size: the icon was a 16×16 target, which is
+                        // under the 24px minimum and hard to hit on a phone.
+                        className="absolute left-3 top-1/2 -translate-y-1/2 -m-2 p-2 text-white/40 hover:text-white/70 transition-colors"
                       >
                         {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                       </button>
@@ -605,7 +613,12 @@ export function Login() {
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70 transition-colors"
+                      aria-label={showPassword ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
+                      aria-pressed={showPassword}
+                      // `-m-2 p-2` grows the hit area to 32px without moving the glyph or
+                        // changing its size: the icon was a 16×16 target, which is
+                        // under the 24px minimum and hard to hit on a phone.
+                        className="absolute left-3 top-1/2 -translate-y-1/2 -m-2 p-2 text-white/40 hover:text-white/70 transition-colors"
                     >
                       {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                     </button>

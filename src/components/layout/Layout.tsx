@@ -143,6 +143,8 @@ export function Layout() {
               {/* Mobile toggle hint — visible only on small screens */}
               <button
                 onClick={toggleSidebar}
+                aria-label={sidebarCollapsed ? "فتح القائمة" : "طي القائمة"}
+                aria-expanded={!sidebarCollapsed}
                 className="lg:hidden size-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted transition-colors"
               >
                 {sidebarCollapsed ? (

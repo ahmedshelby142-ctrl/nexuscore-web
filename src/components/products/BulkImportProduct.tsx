@@ -285,6 +285,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
           </div>
         </div>
         <button
+          aria-label="إغلاق استيراد المنتجات"
           type="button"
           onClick={onClose}
           className="size-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted transition-colors"

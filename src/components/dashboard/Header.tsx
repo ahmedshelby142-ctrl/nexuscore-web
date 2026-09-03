@@ -45,7 +45,10 @@ export function Header() {
             </div>
           </div>
 
-          <button className="relative size-10 rounded-full hover:bg-muted flex items-center justify-center transition">
+          <button
+            aria-label="الإشعارات"
+            className="relative size-10 rounded-full hover:bg-muted flex items-center justify-center transition"
+          >
             <Bell className="size-4" />
             <span className="absolute top-2 left-2 size-2 rounded-full bg-primary ring-2 ring-background" />
           </button>

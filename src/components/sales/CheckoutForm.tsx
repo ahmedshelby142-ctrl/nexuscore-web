@@ -928,6 +928,7 @@ export default function CheckoutForm() {
                 <label className="text-sm font-bold text-gray-900 dark:text-white mb-2 block">الكمية</label>
                 <div className="flex items-center gap-2">
                   <button
+                    aria-label="إنقاص الكمية"
                     type="button"
                     onClick={() => setQuantity(quantity - 1)}
                     className="size-11 rounded-xl border border-border bg-card flex items-center justify-center hover:bg-muted"
@@ -944,6 +945,7 @@ export default function CheckoutForm() {
                     )}
                   />
                   <button
+                    aria-label="زيادة الكمية"
                     type="button"
                     onClick={() => setQuantity(Math.min(quantity + 1, selectedProduct ? sellableStock(selectedProduct, products) : 1))}
                     disabled={selectedProduct ? quantity >= sellableStock(selectedProduct, products) : true}
@@ -1109,6 +1111,7 @@ export default function CheckoutForm() {
                       </p>
                       <div className="flex items-center gap-0.5 bg-muted/60 rounded p-0.5">
                         <button
+                          aria-label={`إنقاص كمية ${item.productName}`}
                           type="button"
                           onClick={() => updateCartQuantity(item.productId, item.variantName, Math.abs(item.quantity) - 1 > 0 ? (item.quantity < 0 ? -(Math.abs(item.quantity) - 1) : item.quantity - 1) : 0)}
                           className="size-6 rounded-sm bg-background flex items-center justify-center hover:bg-muted shadow-sm border border-border/50"
@@ -1119,6 +1122,7 @@ export default function CheckoutForm() {
                           {Math.abs(item.quantity)}
                         </span>
                         <button
+                          aria-label={`زيادة كمية ${item.productName}`}
                           onClick={() => updateCartQuantity(item.productId, item.variantName, item.quantity < 0 ? -(Math.abs(item.quantity) + 1) : item.quantity + 1)}
                           disabled={!isReturnMode && item.quantity >= onHand}
                           className="size-6 rounded-sm bg-background flex items-center justify-center hover:bg-muted shadow-sm border border-border/50 disabled:opacity-40"

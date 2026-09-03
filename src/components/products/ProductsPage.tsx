@@ -876,6 +876,7 @@ export function ProductsPage() {
                       <div className="relative group">
                         <img src={form.image_url} alt="Preview" className="h-32 object-contain rounded-md" />
                         <button
+                          aria-label="إزالة صورة المنتج"
                           type="button"
                           onClick={(e) => { e.stopPropagation(); updateField("image_url", ""); }}
                           className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"

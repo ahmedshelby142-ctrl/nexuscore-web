@@ -647,3 +647,57 @@ test("document numbers are allocated by the database", () => {
   assert.match(alloc, /next_document_number/, "must call the SECURITY DEFINER function");
   assert.ok(!/\|\|\s*["'`]FJ-/.test(code(alloc)), "no local fallback — a shared number is worse than none");
 });
+
+test("a plain <button> whose only child is an icon has an accessible name", () => {
+  // Third time for this class. The existing guard covers `<Button size="icon">`
+  // from components/ui; it could not see the sixteen collapsed sidebar <Link>s,
+  // and it could not see this: a bare <button> wrapping a single lucide glyph.
+  // The one on /login toggled password visibility and announced as "button" —
+  // on the first screen every user meets.
+  const NAMED = ["aria-label", "aria-labelledby", "title="];
+  const offenders = [];
+
+  const openingTag = (src, at) => {
+    let depth = 0;
+    for (let i = at; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      else if (ch === ">" && depth === 0) return src.slice(at, i + 1);
+    }
+    return src.slice(at, at + 600);
+  };
+
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = dir + "/" + e.name;
+      if (e.isDirectory()) { if (e.name !== "ui") walk(full); continue; }
+      if (!e.name.endsWith(".tsx")) continue;
+      const src = readFileSync(full, "utf8");
+      let at = src.indexOf("<button");
+      while (at !== -1) {
+        const tag = openingTag(src, at);
+        const close = src.indexOf("</button>", at);
+        const body = close > at ? src.slice(at + tag.length, close) : "";
+        // Text content = anything outside JSX tags and expressions. An icon-only
+        // button's body is just <Icon … /> and whitespace.
+        const text = body.replace(/<[^>]*>/g, "").replace(/\{[^}]*\}/g, "").trim();
+        const named = NAMED.some((n) => tag.includes(n));
+        // The length ceiling is what keeps this honest. Stripping `{...}` also
+        // erases a label rendered as `{item.label}`, so a big content-bearing
+        // button (a dashboard card, a profile picker) looks textless. An
+        // icon-only button's body is a glyph and nothing else — short.
+        const iconOnly = body.trim().length < 240 && /<[A-Z]\w*|<svg/.test(body);
+        if (!named && !text && iconOnly) {
+          offenders.push("src" + full.split("src").pop().split(String.fromCharCode(92)).join("/")
+            + ":" + src.slice(0, at).split(NL).length);
+        }
+        at = src.indexOf("<button", at + 7);
+      }
+    }
+  };
+  for (const d of ["components", "routes", "pages"]) {
+    walk(fileURLToPath(new URL("../src/" + d, import.meta.url)));
+  }
+  assert.deepEqual(offenders, [], "icon-only <button>s with no accessible name:" + NL + offenders.join(NL));
+});

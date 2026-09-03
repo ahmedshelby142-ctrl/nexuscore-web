@@ -97,7 +97,15 @@ export function buildSaleLines(sale: SaleInput): NewLine[] {
   // NEGATIVE — cash leaving the drawer for a sale where the cashier collected
   // nothing. `discountAmountFor` caps it, but this is the trust boundary: the
   // ledger is append-only, so it refuses the event rather than booking it.
-  if (discount > revenue) {
+  //
+  // `discount > 0 &&` is what makes this survive a RETURN. This builder is
+  // deliberately signed — see `netRevenue` below, "or refunded, if negative" —
+  // so a till refund arrives with `revenue` negative and no discount at all.
+  // The bare comparison then read `0 > -100` as true and threw
+  // "discount (0) is more than the sale is worth (-100)", which refused every
+  // refund taken at the POS. A discount of zero is not a discount, and a
+  // nonzero one on a refund is still refused by the same line.
+  if (discount > 0 && discount > revenue) {
     throw new Error(
       `sale: discount (${discount}) is more than the sale is worth (${revenue})`,
     );

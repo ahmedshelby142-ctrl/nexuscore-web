@@ -860,6 +860,12 @@ export default function CheckoutForm() {
                 <Switch
                   checked={isReturnMode}
                   onCheckedChange={setIsReturnMode}
+                  // The visible "وضع المرتجع" text is a bare <label> with no
+                  // `htmlFor`, so it named nothing: this announced as an
+                  // anonymous switch. It flips the till between SELLING and
+                  // REFUNDING, so a user who cannot tell which one it is can
+                  // refund a customer while trying to charge them.
+                  aria-label="وضع المرتجع"
                   className="data-[state=checked]:bg-red-500"
                 />
               </div>
@@ -937,6 +943,9 @@ export default function CheckoutForm() {
                   </button>
                   <input
                     type="number"
+                    // Sits between the − and + buttons with no label of its
+                    // own, so it announced as just "spin button".
+                    aria-label="الكمية"
                     value={quantity}
                     onChange={(e) => setQuantity(parseInt(e.target.value) || 0)}
                     className={cn(

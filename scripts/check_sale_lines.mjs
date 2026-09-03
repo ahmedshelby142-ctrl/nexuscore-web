@@ -98,3 +98,43 @@ test("a zero-cost product still sells, and books no COGS line", () => {
   assert.equal(lines.filter((l) => l.account === "cogs").length, 0);
   assert.equal(qtyOn(lines, "stock"), -1);
 });
+
+// ── Returns ────────────────────────────────────────────────────────────────
+//
+// The POS books a refund through this same builder with negative quantities —
+// `netRevenue` is documented as "the net amount actually received (or
+// refunded, if negative)". Reproduced live at the till: every refund was
+// refused with
+//
+//     sale: discount (0) is more than the sale is worth (-100)
+//
+// because the discount ceiling compared a zero discount against a negative
+// revenue and `0 > -100` is true. A discount of zero is not a discount.
+
+const RETURN_CART = [{ productId: "p-shoe", quantity: -1, unitPrice: 100, unitCost: 50 }];
+
+test("a till refund with no discount is not refused", () => {
+  const lines = buildSaleLines({ items: RETURN_CART, wallet: "inStoreSafe" });
+  assert.equal(amountOn(lines, "revenue"), -100, "revenue reverses");
+  assert.equal(amountOn(lines, "wallet"), -100, "cash leaves the drawer");
+  assert.equal(qtyOn(lines, "stock"), 1, "the unit comes back to the shelf");
+  assert.equal(amountOn(lines, "cogs"), -50, "the cost of the returned unit reverses");
+});
+
+test("a refund with an explicit discount is still refused", () => {
+  // The ceiling must keep working: you cannot discount a refund.
+  assert.throws(
+    () => buildSaleLines({ items: RETURN_CART, wallet: "inStoreSafe", discountAmount: 50 }),
+    /more than the sale is worth/,
+  );
+});
+
+test("the discount ceiling still holds on a real sale", () => {
+  assert.throws(
+    () => buildSaleLines({ items: CART, wallet: "inStoreSafe", discountAmount: 99999 }),
+    /more than the sale is worth/,
+  );
+  // …and a legitimate discount passes through untouched.
+  const ok = buildSaleLines({ items: CART, wallet: "inStoreSafe", discountAmount: 600 });
+  assert.equal(amountOn(ok, "wallet"), 2000, "2600 − 600");
+});

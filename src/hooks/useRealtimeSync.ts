@@ -1,3 +1,5 @@
+import { useAuthStore } from "@/store/useAuthStore";
+import { toAppRole } from "@/lib/roles";
 import { useEffect } from 'react';
 import { useBusinessStore } from '../store/useBusinessStore';
 import { useOrderStore } from '../store/useOrderStore';
@@ -126,6 +128,91 @@ const TABLE_HANDLERS: Record<string, {
  * Mount this once in the root App.tsx
  */
 export const useRealtimeSync = () => {
+  // ── 0a. Reconcile the local auth flag with the REAL session ───────────────
+  //
+  // `ProtectedRoute` gates on `useAuthStore.isAuthenticated`, a boolean in
+  // localStorage. Nothing in the app ever asked Supabase whether that boolean
+  // is still true, so the two could disagree in both directions:
+  //
+  //   flag true / no session  — every screen renders and every read and write
+  //     then fails 401 against a session that expired hours ago. Seen live.
+  //   flag false / session ok — the user is bounced to /login holding a
+  //     perfectly good refresh token.
+  //
+  // This only ever REMOVES a false "signed in". It cannot grant access: the
+  // sole action is a local logout when Supabase says there is no session, so
+  // the failure direction is closed.
+  useEffect(() => {
+    if (!isCloudSyncMode()) return;
+    let cancelled = false;
+    let unsub: (() => void) | undefined;
+
+    void (async () => {
+      const { getSupabaseClient } = await import("@/lib/supabase");
+      const sb = getSupabaseClient();
+      if (!sb || cancelled) return;
+
+      const { data } = await sb.auth.getSession();
+      if (cancelled) return;
+
+      if (!data.session) {
+        if (useAuthStore.getState().isAuthenticated) {
+          console.warn("[Auth] local session flag with no Supabase session — signing out");
+          useAuthStore.getState().logout();
+        }
+      } else if (!useAuthStore.getState().isAuthenticated) {
+        // The mirror image, and just as real: Supabase holds a VALID session
+        // but the local flag is gone — an evicted localStorage entry, a
+        // partial "clear site data", a second tab that signed in. The user was
+        // being bounced to /login holding a working refresh token.
+        //
+        // The role is the SERVER's answer, exactly as the login screen does
+        // it: `store_members.role` is the same column the RLS policies read,
+        // and `toAppRole(null)` lands on the least privileged role rather than
+        // assuming the best case. Nothing here is trusted from the client.
+        const uid = data.session.user.id;
+        const { data: membership } = await sb
+          .from("store_members")
+          .select("role")
+          .eq("user_id", uid)
+          .maybeSingle();
+        if (cancelled) return;
+        useAuthStore.getState().setSession({
+          token: data.session.access_token,
+          expires_at: new Date(
+            data.session.expires_at ? data.session.expires_at * 1000 : Date.now() + 3600000,
+          ) as never,
+          machine_id: "cloud-device",
+          user: {
+            id: uid,
+            username: data.session.user.email ?? "",
+            role: toAppRole(membership?.role),
+            is_active: true,
+            created_at: new Date() as never,
+          },
+        } as never);
+        console.info("[Auth] restored a valid Supabase session the local store had lost");
+      }
+
+      // A token refresh that fails, a sign-out in another tab, or a revoked
+      // session all arrive here. Without this the app keeps rendering business
+      // screens against a session the server has already forgotten.
+      const { data: sub } = sb.auth.onAuthStateChange((event, session) => {
+        if (!session && (event === "SIGNED_OUT" || event === "TOKEN_REFRESHED")) {
+          if (useAuthStore.getState().isAuthenticated) {
+            useAuthStore.getState().logout();
+          }
+        }
+      });
+      unsub = () => sub.subscription.unsubscribe();
+    })();
+
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
+  }, []);
+
   // ── 0. Boot hydration ─────────────────────────────────────────────────────
   // The stores start empty and are filled from Supabase, so what a screen shows
   // is what the database holds. This is the ONE unconditional hydrate.

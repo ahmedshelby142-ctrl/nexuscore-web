@@ -717,3 +717,15 @@ test("signup sends the confirmation link back to the origin it came from", () =>
   assert.ok(!/تم إنشاء الحساب[^"]*المحاولة مجدداً/.test(login),
     "the confirmation notice must not invite a duplicate signup");
 });
+
+test("the local auth flag is reconciled against the real Supabase session", () => {
+  // `ProtectedRoute` gates on `useAuthStore.isAuthenticated`, a boolean in
+  // localStorage. Nothing ever asked Supabase whether it was still true, so a
+  // session that expired hours ago left every business screen rendering while
+  // every read and write failed 401 — observed live in this project.
+  //
+  // The reconciliation may only ever sign the user OUT, never in.
+  assert.match(boot, /auth\.getSession\(\)/, "boot must ask Supabase for the real session");
+  assert.match(boot, /onAuthStateChange/, "a revoked or unrefreshable session must be noticed");
+  assert.match(boot, /logout\(\)/, "the only action taken is a local sign-out");
+});

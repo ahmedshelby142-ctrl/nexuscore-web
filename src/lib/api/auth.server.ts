@@ -42,8 +42,13 @@ export function getAuthConfig() {
     // In production, set INTERNAL_API_KEY in the env and require it as
     // a Bearer token on every server function call.
     internalApiKey: process.env.INTERNAL_API_KEY ?? "",
-    // JWT secret used to sign session tokens (placeholder).
-    jwtSecret: process.env.AUTH_JWT_SECRET ?? "dev-secret-change-me",
+    // JWT secret used to sign session tokens.
+    //
+    // No fallback. It used to default to the literal "dev-secret-change-me",
+    // which is a signing key an attacker can read in this very file — every
+    // token it signed would be forgeable. An empty string cannot be mistaken
+    // for a working secret by whatever eventually consumes it.
+    jwtSecret: process.env.AUTH_JWT_SECRET ?? "",
   };
 }
 

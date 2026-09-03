@@ -156,10 +156,18 @@ interface BusinessState {
   addTransaction: (transaction: Transaction) => void;
   addProfitDistribution: (distribution: ProfitDistribution) => void;
   getPartnerLedger: () => ProfitDistribution[];
-  addWholesaleClient: (client: Omit<WholesaleClient, "id" | "createdAt" | "updatedAt">) => void;
-  updateWholesaleClient: (id: string, updates: Partial<WholesaleClient>) => void;
-  addWholesaleInvoice: (invoice: Omit<WholesaleInvoice, "id" | "createdAt" | "updatedAt">) => void;
-  recordWholesalePayment: (invoiceId: string, amount: number) => void;
+  // All four write to Supabase and resolve only once it confirms — see
+  // migration 016. They were synchronous local writes until Phase 6.
+  addWholesaleClient: (
+    client: Omit<WholesaleClient, "id" | "createdAt" | "updatedAt">,
+  ) => Promise<WholesaleClient>;
+  updateWholesaleClient: (id: string, updates: Partial<WholesaleClient>) => Promise<void>;
+  addWholesaleInvoice: (
+    invoice: Omit<WholesaleInvoice, "id" | "createdAt" | "updatedAt">,
+  ) => Promise<WholesaleInvoice>;
+  recordWholesalePayment: (invoiceId: string, amount: number) => Promise<void>;
+  /** Soft-hide (tombstone). What a client WITH invoice history gets. */
+  archiveWholesaleClient: (id: string) => Promise<void>;
   // Returns the created supplier so a caller that registered one inline (the
   // quick توريد dialog) can attach the receipt to it straight away.
   addSupplier: (supplier: Omit<Supplier, "id" | "createdAt" | "updatedAt">) => Promise<Supplier>;
@@ -388,68 +396,80 @@ export const useBusinessStore = create<BusinessState>()(
         return get().partnerLedger;
       },
 
-      // Wholesale management actions
-      addWholesaleClient: (clientData) => {
-        const newClient: WholesaleClient = {
+      // ── Wholesale ────────────────────────────────────────────────────────
+      //
+      // Cloud rows since migration 016. All four used to be synchronous
+      // `set()` calls into a persisted slice, so a wholesale client added on
+      // the till did not exist in the office — and since an invoice cannot be
+      // raised without one, شاشة الجملة was unusable on any browser that had
+      // not typed them in by hand. The money was never wrong (it is the
+      // ledger's), but the documents were on exactly one machine.
+      addWholesaleClient: async (clientData) => {
+        return commitRow(set, "wholesale_clients", "wholesaleClients", {
           ...clientData,
           id: crypto.randomUUID(),
           createdAt: new Date(),
           updatedAt: new Date(),
-        };
-        set((state) => ({
-          wholesaleClients: [...state.wholesaleClients, newClient],
-        }));
+          updated_at: Date.now(),
+        } as WholesaleClient);
       },
 
-      updateWholesaleClient: (id, updates) => {
-        set((state) => ({
-          wholesaleClients: state.wholesaleClients.map((c) =>
-            c.id === id ? { ...c, ...updates, updatedAt: new Date() } : c,
-          ),
-        }));
+      updateWholesaleClient: async (id, updates) => {
+        const current = get().wholesaleClients.find((c) => c.id === id);
+        if (!current) return;
+        await commitRow(set, "wholesale_clients", "wholesaleClients", {
+          ...current,
+          ...updates,
+          id,
+          updatedAt: new Date(),
+          updated_at: Date.now(),
+        } as WholesaleClient);
       },
 
-      // Records the invoice document only. Stock is NOT touched here — the
+      // Records the invoice DOCUMENT only. Stock is NOT touched here — the
       // `sale` event the caller appends moves it — and neither are the client
       // totals: debt is SUM(receivable_client) over the ledger, invoiced and
       // paid are summed from these invoice documents on render.
-      addWholesaleInvoice: (invoiceData) => {
-        const invoice: WholesaleInvoice = {
+      addWholesaleInvoice: async (invoiceData) => {
+        return commitRow(set, "wholesale_invoices", "wholesaleInvoices", {
           ...invoiceData,
           id: crypto.randomUUID(),
           createdAt: new Date(),
           updatedAt: new Date(),
-        };
-        set((state) => ({
-          wholesaleInvoices: [...state.wholesaleInvoices, invoice],
-        }));
+          updated_at: Date.now(),
+        } as WholesaleInvoice);
       },
 
       // Updates the invoice document only — how much of THIS invoice is still
-      // open. The money moved by the `client_payment` event the caller
+      // open. The money moved on the `client_payment` event the caller
       // appends: wallet up, receivable_client down.
-      recordWholesalePayment: (invoiceId, amount) => {
-        set((state) => {
-          const invoice = state.wholesaleInvoices.find((i) => i.id === invoiceId);
-          if (!invoice) return state;
-          const newPaid = invoice.paidAmount + amount;
-          const newRemaining = Math.max(0, invoice.remainingAmount - amount);
-          const newStatus: "paid" | "partial" | "unpaid" | "overdue" =
-            newRemaining <= 0 ? "paid" : "partial";
-          return {
-            wholesaleInvoices: state.wholesaleInvoices.map((i) =>
-              i.id === invoiceId
-                ? {
-                    ...i,
-                    paidAmount: newPaid,
-                    remainingAmount: newRemaining,
-                    status: newStatus,
-                    updatedAt: new Date(),
-                  }
-                : i,
-            ),
-          };
+      recordWholesalePayment: async (invoiceId, amount) => {
+        const invoice = get().wholesaleInvoices.find((i) => i.id === invoiceId);
+        if (!invoice) return;
+        const paidAmount = invoice.paidAmount + amount;
+        const remainingAmount = Math.max(0, invoice.remainingAmount - amount);
+        await commitRow(set, "wholesale_invoices", "wholesaleInvoices", {
+          ...invoice,
+          paidAmount,
+          remainingAmount,
+          status: remainingAmount <= 0 ? "paid" : "partial",
+          updatedAt: new Date(),
+          updated_at: Date.now(),
+        } as WholesaleInvoice);
+      },
+
+      /** Soft-hide. A document with ledger history is never hard-deleted. */
+      archiveWholesaleClient: async (id) => {
+        const current = get().wholesaleClients.find((c) => c.id === id);
+        if (!current) return;
+        await writeThrough("wholesale_clients", {
+          ...current,
+          deleted_at: new Date().toISOString(),
+          updated_at: Date.now(),
         });
+        set((state: any) => ({
+          wholesaleClients: state.wholesaleClients.filter((c: any) => c.id !== id),
+        }));
       },
 
       // Purchasing & Suppliers actions
@@ -584,8 +604,11 @@ export const useBusinessStore = create<BusinessState>()(
         partnershipEnabled: state.partnershipEnabled,
         partners: state.partners,
         partnerLedger: state.partnerLedger,
-        wholesaleClients: state.wholesaleClients,
-        wholesaleInvoices: state.wholesaleInvoices,
+        // wholesaleClients / wholesaleInvoices are NOT persisted any more.
+        // Both are cloud tables now (migration 016) and are hydrated on boot,
+        // so a local copy would be exactly the stale cache this contract
+        // exists to prevent — and it is what made these documents device-local
+        // in the first place.
         capitalContributions: state.capitalContributions,
       }),
     },

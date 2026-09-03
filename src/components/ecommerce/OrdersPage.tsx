@@ -24,6 +24,7 @@ import {
   MessageCircle,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { nextDocumentNumber } from "@/services/documentNumber";
 import { cn } from "@/lib/utils";
 import { useOrderStore } from "@/store/useOrderStore";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -1001,8 +1002,12 @@ export function OrdersPage() {
         const dueDate = new Date();
         dueDate.setDate(dueDate.getDate() + 30); // Default to 30 days
 
-        addWholesaleInvoice({
-          invoiceNumber: `FJ-${Date.now().toString().slice(-4)}`,
+        // Was `FJ-${Date.now().slice(-4)}` — a SECOND numbering scheme for the
+        // same store, incompatible with شاشة الجملة's counter and colliding
+        // with it roughly once every ten thousand milliseconds. One allocator
+        // now, in Postgres.
+        await addWholesaleInvoice({
+          invoiceNumber: await nextDocumentNumber("wholesale_invoice", "FJ-"),
           clientId: wholesaleClient,
           clientName: wholesaleClients.find((c) => c.id === wholesaleClient)?.companyName || "عميل جملة",
           items: wholesaleItems.map((i) => {

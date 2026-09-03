@@ -133,6 +133,27 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
     ],
   },
 
+  // Wholesale documents. Same split `purchase_invoices` had before migration
+  // 010: the MONEY was always in the ledger, the DOCUMENT was in localStorage
+  // and nowhere else — so a client added on the till did not exist in the
+  // office, and a cache clear erased invoices whose ledger events survived.
+  wholesale_clients: {
+    columns: [
+      "id", "companyName", "contactPerson", "phone", "email", "notes",
+      "createdAt", "updatedAt", ...COMMON,
+    ],
+  },
+
+  wholesale_invoices: {
+    // `items` is jsonb for the reason given on purchase_invoices.
+    columns: [
+      "id", "invoiceNumber", "clientId", "clientName", "items",
+      "goodsTotal", "discountAmount", "totalAmount", "paidAmount",
+      "remainingAmount", "dueDate", "status", "notes",
+      "createdAt", "updatedAt", ...COMMON,
+    ],
+  },
+
   orders: {
     columns: [
       "id", "orderNumber", "status", "customerId", "customerName",

@@ -11,11 +11,17 @@ import type {
  * Secure-by-default configuration store for external integrations.
  *
  * Design notes:
- * - Paymob / Shipping / Online-Order keys are stored in the same
- *   localStorage as other app state. In production deploys, the server
- *   should override these via env vars (PAYMOB_API_KEY, SHIPPING_API_KEY,
- *   ONLINE_ORDER_API_KEY) — see src/lib/api/integrations.server.ts and
- *   the README for the precedence order.
+ * - NO SECRET IS STORED. `apiKey`, `apiSecret`, `hmacSecret` and
+ *   `webhookSecret` are blanked by `partialize` on the way to localStorage
+ *   and by `merge` on the way back, so a key typed into the form lives only
+ *   in memory for that tab and is gone on reload.
+ *
+ *   The header that used to sit here said the server overrides these via
+ *   env vars "in production deploys — see integrations.server.ts". That was
+ *   not true of any deployment this app has: `createServerFn` is a shim that
+ *   runs so-called server functions in the BROWSER, and those functions have
+ *   no call sites. There is no server, so there was no override and no
+ *   isolation — only clear-text keys on disk.
  * - "Secret" fields are *masked* in the UI before being shown, so this
  *   module never logs the raw key to the console or to PDF reports.
  * - The store exposes `markVerified()` so the UI can show a verified
@@ -108,6 +114,75 @@ export function maskSecret(value: string): string {
   return `${value.slice(0, 4)}${"•".repeat(Math.max(4, value.length - 6))}${value.slice(-2)}`;
 }
 
+/**
+ * The fields that must never reach disk.
+ *
+ * `publicKey` and `integrationId` are not here on purpose: Paymob's public key
+ * is designed to ship to the browser, and the integration id is an account
+ * identifier, not a credential. Blanking those would break the form for no
+ * security gain.
+ */
+const PAYMOB_SECRETS = ["apiKey", "hmacSecret"] as const;
+const SHIPPING_SECRETS = ["apiKey", "webhookSecret"] as const;
+const ONLINE_ORDER_SECRETS = ["apiKey", "apiSecret", "webhookSecret"] as const;
+
+/**
+ * Blank the secrets an EARLIER build already wrote to disk.
+ *
+ * `partialize` stops new ones being written and `merge` keeps them out of
+ * memory, but neither rewrites what is already there: zustand only persists on
+ * the next state change, so a key stored by a previous version would sit in
+ * localStorage until someone happened to touch the integrations form again.
+ *
+ * Called once at boot from `main.tsx` — not from this module's import — so the
+ * cleanup happens on every load, including the screens that never open the
+ * integrations store at all.
+ */
+export function purgeStoredIntegrationSecrets(): void {
+  const KEY = "integrations-storage";
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const state = parsed?.state;
+    if (!state) return;
+
+    let touched = false;
+    const scrub = (section: string, keys: readonly string[]) => {
+      const cfg = state[section];
+      if (!cfg || typeof cfg !== "object") return;
+      for (const k of keys) {
+        if (cfg[k]) {
+          cfg[k] = "";
+          touched = true;
+        }
+      }
+    };
+    scrub("paymob", PAYMOB_SECRETS);
+    scrub("shipping", SHIPPING_SECRETS);
+    scrub("onlineOrderIntake", ONLINE_ORDER_SECRETS);
+
+    if (touched) {
+      localStorage.setItem(KEY, JSON.stringify(parsed));
+      // Deliberately loud, and deliberately without the value: whoever ran
+      // this build should know a credential WAS on this disk and needs
+      // rotating, and no log line may carry the key itself.
+      console.warn(
+        "[integrations] cleared integration secrets that a previous build had " +
+          "stored in localStorage. Rotate those credentials with the provider.",
+      );
+    }
+  } catch {
+    // A corrupt or blocked store is not worth crashing the boot for.
+  }
+}
+
+function stripSecrets<T extends object>(config: T, keys: readonly string[]): T {
+  const out = { ...config } as Record<string, unknown>;
+  for (const k of keys) if (k in out) out[k] = "";
+  return out as T;
+}
+
 export const useIntegrationsStore = create<IntegrationsState>()(
   persist(
     (set, get) => ({
@@ -180,13 +255,44 @@ export const useIntegrationsStore = create<IntegrationsState>()(
     }),
     {
       name: "integrations-storage",
+      // Secrets are stripped on the way OUT and on the way BACK IN.
+      //
+      // Every field named here was previously written to localStorage in
+      // clear text — a Paymob live secret key, the HMAC key that authenticates
+      // its webhooks, and the courier's API secret, all readable by any script
+      // that ever runs on this origin, and by anyone with the machine.
+      //
+      // There is nowhere safe to put them in this deployment: `createServerFn`
+      // is a shim that runs "server" functions in the BROWSER, so
+      // `integrations.server.ts` and its `process.env` reads provide no
+      // isolation whatever. And nothing needs them — every provider client in
+      // `lib/api/integrations/` is a scaffold that makes no network call at
+      // all. So the safe amount of secret material to keep on the client is
+      // none, and losing it costs no working feature.
+      //
+      // `merge` also scrubs what a previous version already wrote, so the
+      // exposure clears itself on the next load rather than waiting for the
+      // user to press إعادة التعيين.
       partialize: (state) => ({
-        paymob: state.paymob,
-        shipping: state.shipping,
-        onlineOrderIntake: state.onlineOrderIntake,
+        paymob: stripSecrets(state.paymob, PAYMOB_SECRETS),
+        shipping: stripSecrets(state.shipping, SHIPPING_SECRETS),
+        onlineOrderIntake: stripSecrets(state.onlineOrderIntake, ONLINE_ORDER_SECRETS),
         // recentIntakePayloads is intentionally NOT persisted; it is
         // rebuilt on next session from the audit log.
       }),
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Record<string, unknown>;
+        return {
+          ...current,
+          ...p,
+          paymob: stripSecrets({ ...current.paymob, ...(p.paymob as object) }, PAYMOB_SECRETS),
+          shipping: stripSecrets({ ...current.shipping, ...(p.shipping as object) }, SHIPPING_SECRETS),
+          onlineOrderIntake: stripSecrets(
+            { ...current.onlineOrderIntake, ...(p.onlineOrderIntake as object) },
+            ONLINE_ORDER_SECRETS,
+          ),
+        };
+      },
     },
   ),
 );

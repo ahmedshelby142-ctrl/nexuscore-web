@@ -622,6 +622,19 @@ function EcommerceOrdersInner() {
     customer_phone,
     customerId,
     governorate,
+    // `city`, `detailedAddress`, `isExchange`, `originalOrderId`,
+    // `shippingPenaltyApplied` and `updateCustomer` are READ in the body and
+    // were missing here, so the callback kept whatever they held the last time
+    // one of the other dependencies changed. Typing the city and the address
+    // changes no dependency, so filling the الحافظة → المدينة → العنوان fields
+    // in that order and pressing حفظ الطلب filed the order with the city and
+    // address as they were BEFORE they were typed — usually empty.
+    city,
+    detailedAddress,
+    isExchange,
+    originalOrderId,
+    shippingPenaltyApplied,
+    updateCustomer,
     shipping_fee,
     total_price,
     depositVal,

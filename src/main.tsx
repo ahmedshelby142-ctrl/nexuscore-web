@@ -1,3 +1,4 @@
+import { purgeStoredIntegrationSecrets } from "@/store/useIntegrationsStore";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
@@ -30,6 +31,10 @@ registerWipeCommand();
  * One attempt per tab, then the error is allowed through to the boundary so the
  * user sees an honest failure instead of a reload cycle.
  */
+// Before anything renders: clear any integration secret an earlier build
+// left in localStorage. See `purgeStoredIntegrationSecrets`.
+purgeStoredIntegrationSecrets();
+
 window.addEventListener("vite:preloadError", (event) => {
   const RELOAD_ONCE = "nexus-chunk-reload";
   if (sessionStorage.getItem(RELOAD_ONCE)) return;

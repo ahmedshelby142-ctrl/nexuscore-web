@@ -18,6 +18,7 @@
  * asserts no store reaches for it.
  */
 
+import { clearStockSnapshot } from "@/lib/ledger/stockSnapshot";
 import { cloudList } from "./cloudData";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
@@ -36,6 +37,8 @@ const SINKS: Record<string, Sink> = {
   discount_codes: (rows) => useBusinessStore.setState({ promoDiscounts: rows }),
   return_records: (rows) => useBusinessStore.setState({ returnRecords: rows }),
   purchase_invoices: (rows) => useBusinessStore.setState({ purchaseInvoices: rows }),
+  wholesale_clients: (rows) => useBusinessStore.setState({ wholesaleClients: rows }),
+  wholesale_invoices: (rows) => useBusinessStore.setState({ wholesaleInvoices: rows }),
   transactions: (rows) => useBusinessStore.setState({ transactions: rows }),
   expenses: (rows) => useFinancialStore.setState({ expenses: rows }),
   customers: (rows) => useCustomerStore.setState({ customers: rows }),
@@ -53,6 +56,9 @@ const SINKS: Record<string, Sink> = {
  * session, or you see nothing and an error, which is the online-only contract.
  */
 export function clearCloudOwnedState(): void {
+  // The ledger aggregation belongs to the store that was signed in. Carrying
+  // it across a store switch would price and count another shop's shelf.
+  clearStockSnapshot();
   for (const sink of Object.values(SINKS)) sink([]);
 }
 

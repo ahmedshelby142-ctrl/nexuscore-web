@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { balances } from "./index";
 import { averageCost } from "./purchases";
+import { setStockSnapshot } from "./stockSnapshot";
 
 export interface StockView {
   /** productId → quantity on hand. Absent means zero. */
@@ -49,8 +50,13 @@ export function useStock(): StockView {
         if (cancelled) return;
         // Stock lines carry qty AND value, so both numbers come from the same
         // aggregation — the cost can never drift from the quantity it prices.
-        setStock(new Map(rows.map((r) => [r.subjectId, r.qty])));
+        const next = new Map(rows.map((r) => [r.subjectId, r.qty]));
+        setStock(next);
         setCost(new Map(rows.map((r) => [r.subjectId, averageCost(r)])));
+        // Publish it where the synchronous readers can see it, so
+        // `getActualStock` answers with this same SUM instead of the mirror.
+        // Without this line the two disagree — see `stockSnapshot`.
+        setStockSnapshot(next);
         setError(null);
       } catch (e) {
         if (cancelled) return;

@@ -28,6 +28,12 @@
  * the same shape of bug, one indirection further away.
  */
 
+// Relative and extension-bearing, because the node:test guards import this
+// module directly and resolve neither the `@/` alias nor an extensionless
+// specifier. `@/types` next to it survives only because it is a type-only
+// import, erased before it ever runs. tsconfig sets
+// `allowImportingTsExtensions`, so this is valid to the compiler too.
+import { ledgerQty } from "./ledger/stockSnapshot.ts";
 import type { Product } from "@/types";
 
 /**
@@ -137,6 +143,21 @@ export function removalMode(ledgerRows: unknown[]): "delete" | "archive" {
  * screen may ever show. What is genuinely owed lives in تقرير النواقص.
  */
 export function getActualStock(product: Product | null | undefined): number {
+  // THE LEDGER WINS. `products.quantity` and the variant array are a mirror
+  // that `applyStockMoves` keeps in step; the ledger's SUM is the number the
+  // architecture calls stock (see `addProduct`, `useStock`, `stockSnapshot`).
+  // Reading the mirror here is what let /bundles show "المخزون: ٥٠" and
+  // "نفد المخزون" for one product in one screen.
+  //
+  // A bundle owns no stock of its own and has no ledger lines, so it keeps
+  // the recipe-derived answer `bundleAvailableStock` computes for it.
+  if (product?.id && !(product as any).isBundle) {
+    const fromLedger = ledgerQty(product.id);
+    // `null` means no aggregation has landed yet — NOT zero. Fall through to
+    // the mirror for that one moment rather than painting a sold-out shop.
+    if (fromLedger !== null) return Math.max(0, fromLedger);
+  }
+
   const variants = product?.metadata?.variants ?? product?.variants;
   if (Array.isArray(variants) && variants.length > 0) {
     return Math.max(
@@ -213,5 +234,12 @@ export function getVariantStock(
   const hit = Array.isArray(variants)
     ? variants.find((v: any) => v?.name === variantName)
     : undefined;
-  return Number(hit?.stock) || 0;
+  const fromMirror = Math.max(0, Number(hit?.stock) || 0);
+
+  // The ledger keeps ONE quantity per product — there are no per-درجة lines —
+  // so the split between درجات can only come from the mirror. It is still
+  // clamped to the product's authoritative total: a درجة must never offer
+  // units the product as a whole does not have, which is exactly how the
+  // fondation showed "احمر — المتاح: 30" against a ledger holding zero.
+  return Math.min(fromMirror, getActualStock(product));
 }

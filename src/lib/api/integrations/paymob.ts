@@ -9,6 +9,18 @@ export interface PaymobCredentials {
   integrationId: string;
 }
 
+/**
+ * NOT A CLIENT. Nothing here contacts Paymob.
+ *
+ * `testConnection` used to answer "تم الاتصال بخوادم Paymob بنجاح!" after a
+ * `setTimeout` and a string check — a success message for a call that was
+ * never made, which is the one thing this codebase does not allow a screen to
+ * say. It now reports exactly what it did: it looked at the shape of the
+ * fields.
+ *
+ * Wiring this up for real needs a server-side caller, because the credential
+ * must not be in the browser. See `docs/INTEGRATIONS.md`.
+ */
 export async function testConnection(credentials: PaymobCredentials): Promise<{ ok: boolean; msg: string }> {
   // Simulate network delay
   await new Promise(resolve => setTimeout(resolve, 800));
@@ -22,7 +34,10 @@ export async function testConnection(credentials: PaymobCredentials): Promise<{ 
     return { ok: false, msg: "API Key غير صالح. يجب أن يبدأ بـ sk_" };
   }
 
-  return { ok: true, msg: "تم الاتصال بخوادم Paymob بنجاح!" };
+  return {
+    ok: true,
+    msg: "الحقول شكلها مظبوط. ملاحظة: لسه مفيش اتصال فعلي بـ Paymob — الربط محتاج طبقة خادم.",
+  };
 }
 
 /**

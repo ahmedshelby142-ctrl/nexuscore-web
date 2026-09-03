@@ -250,11 +250,15 @@ test("cloud-owned collections are not persisted to localStorage", () => {
     // `purchase_invoices` now exists as a table, so a local copy would be
     // exactly the stale cache this whole contract exists to prevent.
     "purchaseInvoices:",
+    // Migration 016. Both were localStorage-only, which is why a wholesale
+    // client added on the till did not exist in the office — and an invoice
+    // cannot be raised without one, so شاشة الجملة was unusable there.
+    "wholesaleClients:", "wholesaleInvoices:",
   ]) {
     assert.ok(!part.includes(cloudOwned), `${cloudOwned} is cloud-owned and must not be persisted`);
   }
   // …and it MUST keep the ones that exist nowhere else.
-  for (const localOnly of ["partners:", "wholesaleInvoices:"]) {
+  for (const localOnly of ["partners:"]) {
     assert.ok(part.includes(localOnly), `${localOnly} has no cloud table — dropping it deletes it`);
   }
 });
@@ -289,6 +293,10 @@ test("no component fires a cloud mutation without awaiting it", () => {
     "recordReturn", "settleWastedTrip",
     "addOrder", "updateOrder", "updateOrderStatus",
     "addSupplier", "addPurchaseInvoice", "recordSupplierPayment",
+    // Cloud rows since migration 016. All four were synchronous local
+    // writes, and all five call sites fired them without waiting.
+    "addWholesaleClient", "updateWholesaleClient", "addWholesaleInvoice",
+    "recordWholesalePayment", "archiveWholesaleClient",
     "addBranch", "updateBranch", "removeBranch",
     "addPromoDiscount", "updatePromoDiscount", "removePromoDiscount",
     "addReturnRecord",
@@ -570,4 +578,72 @@ test("the integrations card does not claim a verification it never did", () => {
     !code(card).includes("تم التحقق"),
     "the badge must not claim the provider verified anything",
   );
+});
+
+test("no integration secret is written to localStorage", () => {
+  // Paymob's live secret key, the HMAC key that authenticates its webhooks and
+  // the courier's API secret were all persisted in clear text under
+  // `integrations-storage` — readable by any script that ever runs on this
+  // origin, and by anyone with the machine.
+  //
+  // There is nowhere safe to put them in this deployment: `createServerFn` is
+  // a shim that runs "server" functions in the BROWSER. And nothing needs
+  // them — every provider client in lib/api/integrations is a scaffold with no
+  // network call — so the right amount to keep is none.
+  // Offsets must be taken on the SAME string the slice comes from — `code()`
+  // drops comment lines, so indexing the raw source and slicing the stripped
+  // one lands in a different place entirely.
+  const store = code(read("../src/store/useIntegrationsStore.ts"));
+  const at = store.indexOf("partialize");
+  assert.ok(at > 0, "the integrations store must declare partialize");
+  const block = store.slice(at, at + 700);
+  for (const secret of ["stripSecrets"]) {
+    assert.ok(block.includes(secret), "partialize must strip secrets before persisting");
+  }
+  // …and scrub what an older build already wrote, rather than waiting for the
+  // user to press إعادة التعيين.
+  assert.match(store, /merge:/, "merge must scrub secrets already on disk");
+  for (const field of ["apiKey", "hmacSecret", "apiSecret", "webhookSecret"]) {
+    assert.ok(
+      store.includes(`"${field}"`),
+      `${field} must be named in a secret list so it is stripped`,
+    );
+  }
+});
+
+test("no integration claims a connection it never made", () => {
+  // `testConnection` answered "تم الاتصال بخوادم Paymob بنجاح!" after a
+  // setTimeout and a string check. None of the three clients contains a single
+  // fetch; announcing a successful connection is a fake success.
+  for (const provider of ["paymob", "bosta", "shopify"]) {
+    const src = read(`../src/lib/api/integrations/${provider}.ts`);
+    assert.ok(
+      !/تم الاتصال[^"]*بنجاح/.test(code(src)),
+      `${provider} must not report a successful connection — it makes no request`,
+    );
+  }
+});
+
+test("document numbers are allocated by the database", () => {
+  // Three different client-side schemes issued FJ- numbers for one store:
+  // `wholesaleInvoices.length + 1` in شاشة الجملة, the same in the POS, and
+  // `Date.now().slice(-4)` in الطلبات. Two tills billing at once reached the
+  // same number, and a browser that had not hydrated started again at 0001.
+  const OFFENDERS = [
+    "../src/components/wholesale/WholesalePage.tsx",
+    "../src/components/sales/CheckoutForm.tsx",
+    "../src/components/ecommerce/OrdersPage.tsx",
+  ];
+  for (const f of OFFENDERS) {
+    const src = code(read(f));
+    assert.ok(
+      !/"FJ-" \+ String\(/.test(src) && !/`FJ-\$\{Date\.now/.test(src),
+      `${f} must not mint its own invoice number`,
+    );
+    assert.match(src, /nextDocumentNumber\(/, `${f} must draw its number from the database`);
+  }
+  // And the allocator must be atomic, not a read-then-write.
+  const alloc = read("../src/services/documentNumber.ts");
+  assert.match(alloc, /next_document_number/, "must call the SECURITY DEFINER function");
+  assert.ok(!/\|\|\s*["'`]FJ-/.test(code(alloc)), "no local fallback — a shared number is worse than none");
 });

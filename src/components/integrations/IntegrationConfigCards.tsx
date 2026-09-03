@@ -83,6 +83,17 @@ function CredentialField({
         )}
       </div>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {/* A secret typed here is never written to disk — `useIntegrationsStore`
+          strips it before persisting — so it lives for this tab only. Say so,
+          rather than letting the field imply it was saved. The real home for
+          these is a Supabase Edge Function's secrets; the functions are
+          already written in supabase/functions/. */}
+      {secret && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-500">
+          لا يتم حفظ المفاتيح السرّية في المتصفح. مكانها الآمن هو أسرار دوال
+          Supabase — راجع دليل التفعيل بالأسفل.
+        </p>
+      )}
       {value && secret && !show && (
         <p className="text-[10px] text-muted-foreground/70 font-mono" dir="ltr">
           {maskSecret(value)}

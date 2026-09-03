@@ -11,10 +11,21 @@ import type {
 } from "@/types";
 
 /**
- * Integrations server functions.
+ * Integrations server functions — A BLUEPRINT, NOT A SERVER.
  *
- * These endpoints are the source of truth for any third-party service
- * that needs to talk to the system (Paymob, shipping carriers, online
+ * ⚠ Nothing in this file runs on a server today, and nothing calls it.
+ * `createServerFn` (src/lib/createServerFn.ts) is a browser shim that invokes
+ * the handler in the page, so `readEnv` reads a `process` that does not exist
+ * in the bundle and `requirePermission` is a check the caller could skip. Any
+ * secret passed through here would be a secret in the browser.
+ *
+ * Keep it as the shape the real endpoints should take when a server exists —
+ * a Supabase Edge Function or a Vercel serverless route — but do NOT read it
+ * as a description of how the app behaves now. Until then the client stores no
+ * secret at all: see `useIntegrationsStore`.
+ *
+ * These endpoints are intended to be the source of truth for any third-party
+ * service that needs to talk to the system (Paymob, shipping carriers, online
  * storefronts). Keys are never echoed back over the wire — only masked
  * previews are returned.
  *

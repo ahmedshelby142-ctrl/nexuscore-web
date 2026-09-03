@@ -75,7 +75,12 @@ export const updateWalletBalance = createServerFn({ method: "POST" })
 
     if (fetchErr) return { success: false, error: fetchErr.message };
 
-    const currentBalance = Number(wallet.balance) ?? 0;
+    // `??` never fires here: Number() returns NaN, not null, for a
+    // non-numeric balance — and NaN would propagate straight into the balance
+    // written back. `||` catches it. (This file targets the pre-ledger
+    // `wallets` table, which 000_master_schema deliberately does not create,
+    // so the path is unreachable today — but the trap should not survive.)
+    const currentBalance = Number(wallet.balance) || 0;
     const newBalance =
       data.operation === "add"
         ? currentBalance + data.amount

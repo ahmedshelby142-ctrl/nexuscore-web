@@ -60,6 +60,7 @@ import {
 import { useOrderStore } from "@/store/useOrderStore";
 import { printTableAsPdf } from "@/lib/pdfGenerator";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
+import { nextDocumentNumber } from "@/services/documentNumber";
 import { appendEvent } from "@/lib/ledger";
 import { buildWholesaleInvoiceLines, buildClientPaymentLines } from "@/lib/ledger/wholesale";
 import { useStock } from "@/lib/ledger/useStock";
@@ -184,6 +185,7 @@ export function WholesalePage() {
   const invoiceGate = useSubmitGate();
   const returnGate = useSubmitGate();
   const paymentGate = useSubmitGate();
+  const clientGate = useSubmitGate();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [invoiceToPrint, setInvoiceToPrint] = useState<any | null>(null);
@@ -505,7 +507,6 @@ export function WholesalePage() {
     }
     const client = wholesaleClients.find((c) => c.id === invoiceForm.clientId);
     if (!client) return;
-    const invNum = "FJ-" + String(wholesaleInvoices.length + 1).padStart(4, "0");
 
     // A line the user knowingly accepted as نواقص is allowed through short —
     // that is the whole point of the confirmation. Everything else is not.
@@ -521,6 +522,20 @@ export function WholesalePage() {
 
     if (!invoiceGate.enter()) return;
     setIsSubmitting(true);
+
+    // Allocated by Postgres, not by this browser's array length — see
+    // `nextDocumentNumber`. Drawn AFTER every check that can still refuse the
+    // invoice, so a rejected attempt does not burn a number, and inside the
+    // gate so a double click cannot draw two.
+    let invNum: string;
+    try {
+      invNum = await nextDocumentNumber("wholesale_invoice", "FJ-");
+    } catch (e) {
+      toast.error(`الفاتورة متسجلتش. ${e instanceof Error ? e.message : String(e)}`);
+      setIsSubmitting(false);
+      invoiceGate.exit();
+      return;
+    }
 
     try {
       await appendEvent({
@@ -568,7 +583,7 @@ export function WholesalePage() {
       })),
     );
 
-    addWholesaleInvoice({
+    await addWholesaleInvoice({
       invoiceNumber: invNum,
       clientId: invoiceForm.clientId,
       clientName: client.companyName,
@@ -690,7 +705,7 @@ export function WholesalePage() {
       return;
     }
 
-    recordWholesalePayment(paymentInvoiceId, paymentAmount);
+    await recordWholesalePayment(paymentInvoiceId, paymentAmount);
     refreshDebt();
     setIsPaying(false);
     paymentGate.exit();
@@ -1691,17 +1706,30 @@ export function WholesalePage() {
               إلغاء
             </Button>
             <Button
-              onClick={() => {
+              onClick={async () => {
                 if (!newClientForm.companyName.trim() || !newClientForm.phone.trim()) return;
-                addWholesaleClient({
+                if (!clientGate.enter()) return;
+                // Awaited, and the form is only cleared once Supabase
+                // confirms. Firing and closing was how a client could look
+                // added on screen and be absent from every other device.
+                try {
+                await addWholesaleClient({
                   companyName: newClientForm.companyName.trim(),
                   contactPerson:
                     newClientForm.contactPerson.trim() || newClientForm.companyName.trim(),
                   phone: newClientForm.phone.trim(),
                   email: newClientForm.email.trim() || undefined,
                 });
-                setNewClientForm({ companyName: "", contactPerson: "", phone: "", email: "" });
-                setIsNewClientOpen(false);
+                  setNewClientForm({ companyName: "", contactPerson: "", phone: "", email: "" });
+                  setIsNewClientOpen(false);
+                } catch (e) {
+                  // Dialog stays open with the typed values intact.
+                  toast.error(
+                    `العميل متسجّلش. ${e instanceof Error ? e.message : String(e)}`,
+                  );
+                } finally {
+                  clientGate.exit();
+                }
               }}
               disabled={!newClientForm.companyName.trim() || !newClientForm.phone.trim()}
             >

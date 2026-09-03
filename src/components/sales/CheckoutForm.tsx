@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
+import { nextDocumentNumber } from "@/services/documentNumber";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { cn } from "@/lib/utils";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
@@ -598,7 +599,10 @@ export default function CheckoutForm() {
           return;
         }
 
-        const invNum = "FJ-" + String(wholesaleInvoices.length + 1).padStart(4, "0");
+        // A THIRD numbering scheme for the same store lived here: this
+        // browser's array length, which collides with شاشة الجملة's and with
+        // OrdersPage's. One allocator now, in Postgres.
+        const invNum = await nextDocumentNumber("wholesale_invoice", "FJ-");
 
         await appendEvent({
           kind: "sale",
@@ -638,7 +642,7 @@ export default function CheckoutForm() {
           }),
         });
 
-        addWholesaleInvoice({
+        await addWholesaleInvoice({
           invoiceNumber: invNum,
           clientId: selectedCustomerId,
           clientName: client.companyName,

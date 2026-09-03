@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -340,6 +341,8 @@ function LicenseDialog({
     return cur && cur.getTime() > Date.now() ? toDateInput(cur) : plusMonths(12);
   });
   const [saving, setSaving] = useState(false);
+  // One submit at a time; `saving` state cannot close the same-tick window.
+  const gate = useSubmitGate();
 
   const handleSave = async () => {
     if (!key.trim()) return toast.error("مفتاح الترخيص مطلوب");
@@ -352,6 +355,7 @@ function LicenseDialog({
       return toast.error("تاريخ الانتهاء يجب أن يكون في المستقبل");
     }
 
+    if (!gate.enter()) return;
     setSaving(true);
     try {
       await setLicense({
@@ -367,6 +371,7 @@ function LicenseDialog({
       toast.error(e instanceof Error ? e.message : "تعذّر حفظ الترخيص");
     } finally {
       setSaving(false);
+      gate.exit();
     }
   };
 

@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useStock } from "@/lib/ledger/useStock";
 import { appendEvent } from "@/lib/ledger";
@@ -88,6 +89,11 @@ export function PurchasingPage() {
     const totalVolume = invs.reduce((sum, i) => sum + i.totalAmount, 0);
     return { invs, totalVolume };
   })() : null;
+
+  // One submit at a time. See `useSubmitGate` — `saving`/`returning` state
+  // cannot do this on its own.
+  const receiveGate = useSubmitGate();
+  const returnGate = useSubmitGate();
 
   const registeringNew = supplierId === NEW_SUPPLIER;
   const supplierReady = registeringNew ? newSupplierName.trim().length > 0 : supplierId !== "";
@@ -180,6 +186,7 @@ export function PurchasingPage() {
       return;
     }
 
+    if (!returnGate.enter()) return;
     setReturning(true);
     setReturnError(null);
     try {
@@ -230,11 +237,12 @@ export function PurchasingPage() {
       );
     } finally {
       setReturning(false);
+      returnGate.exit();
     }
   }
 
   async function receive() {
-    if (!canSave) return;
+    if (!canSave || !receiveGate.enter()) return;
     setSaving(true);
     try {
       // AWAITED. `addSupplier` writes to Supabase and only then returns the
@@ -321,6 +329,7 @@ export function PurchasingPage() {
       toast.error(`خطأ: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSaving(false);
+      receiveGate.exit();
     }
   }
 
@@ -523,7 +532,7 @@ export function PurchasingPage() {
                         setReturnItems((prev) =>
                           prev.map((i) =>
                             i.productId === item.productId
-                              ? { ...i, quantity: Math.max(1, parseInt(e.target.value) || 1) }
+                              ? { ...i, quantity: parseInt(e.target.value) || 0 }
                               : i,
                           ),
                         )
@@ -572,7 +581,12 @@ export function PurchasingPage() {
             </Button>
             <Button
               onClick={() => void submitReturn()}
-              disabled={returning || !returnSupplierId || returnItems.length === 0}
+              disabled={
+                returning ||
+                !returnSupplierId ||
+                returnItems.length === 0 ||
+                returnItems.some((i) => i.quantity <= 0)
+              }
             >
               {returning ? "جاري التسجيل..." : "تأكيد المرتجع وتسوية الحساب"}
             </Button>
@@ -634,7 +648,13 @@ export function PurchasingPage() {
                                 type="number"
                                 min="1"
                                 value={line.quantity}
-                                onChange={(e) => setDraft(prev => prev.map((l, i) => i === idx ? { ...l, quantity: parseInt(e.target.value) || 1 } : l))}
+                                // `|| 1`, not `|| 0`, was the bug: `parseInt("0") || 1`
+                                // is 1, so typing a quantity of zero silently
+                                // received ONE unit and billed for it, and the
+                                // field could not be cleared to retype — it
+                                // snapped back to 1 mid-edit. 0 is now kept, and
+                                // `canSave` (quantity > 0) refuses to save it.
+                                onChange={(e) => setDraft(prev => prev.map((l, i) => i === idx ? { ...l, quantity: parseInt(e.target.value) || 0 } : l))}
                                 className="h-8"
                               />
                             </div>

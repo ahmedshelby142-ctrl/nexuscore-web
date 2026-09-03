@@ -775,7 +775,7 @@ export function Returns() {
                       type="number"
                       min="1"
                       value={exchangeQty}
-                      onChange={(e) => setExchangeQty(Math.max(1, parseInt(e.target.value) || 1))}
+                      onChange={(e) => setExchangeQty(parseInt(e.target.value) || 0)}
                       className="w-16 h-8 text-center rounded border border-input bg-background text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                     <button

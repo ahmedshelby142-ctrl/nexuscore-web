@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { cn } from "@/lib/utils";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import {
@@ -224,6 +225,9 @@ export default function CheckoutForm() {
   const [quantity, setQuantity] = useState(1);
   const [barcodeInput, setBarcodeInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  // One sale at a time. `isProcessing` state cannot close the same-tick
+  // window — two clicks on تأكيد البيع would ring the sale twice.
+  const gate = useSubmitGate();
   const [result, setResult] = useState<{
     success: boolean;
     message: string;
@@ -449,6 +453,7 @@ export default function CheckoutForm() {
       return;
     }
 
+    if (!gate.enter()) return;
     setIsProcessing(true);
     setResult(null);
 
@@ -506,12 +511,14 @@ export default function CheckoutForm() {
         if (!selectedCustomerId) {
           setResult({ success: false, message: "يجب اختيار العميل (التاجر) عند البيع بالجملة" });
           setIsProcessing(false);
+      gate.exit();
           return;
         }
         const client = wholesaleClients.find((c) => c.id === selectedCustomerId);
         if (!client) {
           setResult({ success: false, message: "العميل غير موجود" });
           setIsProcessing(false);
+      gate.exit();
           return;
         }
         
@@ -522,6 +529,7 @@ export default function CheckoutForm() {
           if (settlePaid > wholesaleRemainingDebt) {
             setResult({ success: false, message: "المبلغ المدفوع أكبر من المديونية المتبقية" });
             setIsProcessing(false);
+      gate.exit();
             return;
           }
           await appendEvent({
@@ -578,6 +586,7 @@ export default function CheckoutForm() {
           setSettlePaidInput("");
           setIsReturnMode(false);
           setIsProcessing(false);
+      gate.exit();
           return;
         }
 
@@ -585,6 +594,7 @@ export default function CheckoutForm() {
         if (isNaN(paid) || paid < 0 || paid > totalAmount) {
           setResult({ success: false, message: "المبلغ المدفوع غير صحيح" });
           setIsProcessing(false);
+      gate.exit();
           return;
         }
 
@@ -742,6 +752,7 @@ export default function CheckoutForm() {
       });
     } finally {
       setIsProcessing(false);
+      gate.exit();
     }
   };
 

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useSettingsStore } from "@/store/useSettingsStore";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,9 +19,12 @@ export function GeneralSettingsPanel() {
   } = useSettingsStore();
 
   const [isSaving, setIsSaving] = useState(false);
+  // One submit at a time; state cannot close the same-tick window.
+  const gate = useSubmitGate();
   const [saveMessage, setSaveMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const handleSave = async () => {
+    if (!gate.enter()) return;
     setIsSaving(true);
     setSaveMessage(null);
     try {
@@ -31,6 +35,7 @@ export function GeneralSettingsPanel() {
       setSaveMessage({ type: "error", text: "حدث خطأ أثناء حفظ التغييرات" });
     } finally {
       setIsSaving(false);
+      gate.exit();
     }
   };
 

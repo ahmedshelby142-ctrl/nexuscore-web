@@ -183,6 +183,11 @@ function NavLink({
   const link = (
     <Link
       to={item.path}
+      // Collapsed, the label span is not rendered and the tooltip is the only
+      // thing naming this link — but a tooltip is painted, not announced, and
+      // it does not exist in the DOM until it opens. Without this the entire
+      // primary navigation announces as sixteen anonymous "link"s.
+      aria-label={collapsed ? item.label : undefined}
       className={cn(
         "w-full flex items-center rounded-lg text-sm font-medium transition-all duration-200",
         collapsed ? "justify-center px-0 py-3" : "gap-3 px-3 py-2.5",
@@ -365,6 +370,7 @@ export function Sidebar() {
                   logout();
                   navigate("/login", { replace: true });
                 }}
+                aria-label={collapsed ? "تسجيل الخروج" : undefined}
                 className={cn(
                   "flex items-center rounded-lg text-sm font-medium text-red-500/70 hover:text-red-500 hover:bg-red-500/10 transition-all duration-200",
                   collapsed ? "justify-center w-full p-2.5" : "w-full gap-3 px-3 py-2.5",

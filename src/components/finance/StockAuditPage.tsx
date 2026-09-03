@@ -12,6 +12,7 @@ import {
   auditNetValue,
   isCounted,
 } from "@/lib/ledger/audit";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useStock } from "@/lib/ledger/useStock";
 import { getActualStock } from "@/lib/product";
 import { useBalances } from "@/lib/ledger/useBalances";
@@ -56,6 +57,8 @@ export function StockAuditPage() {
   // What the ledger says is on the shelf, and what each unit really cost.
   const { qtyOf, costOf, refresh: refreshStock } = useStock();
   const [isSaving, setIsSaving] = useState(false);
+  // One submit at a time; `isSaving` state cannot close the same-tick window.
+  const gate = useSubmitGate();
   const [auditError, setAuditError] = useState<string | null>(null);
   // Nothing is written until the auditor has seen a summary of what will
   // change and confirmed it. "تأكيد المراجعة" used to commit on the first click.
@@ -63,6 +66,14 @@ export function StockAuditPage() {
   
   // Ledger-based audit history
   const [auditEvents, setAuditEvents] = useState<any[]>([]);
+  /**
+   * "We could not look" and "there is nothing here" are different answers.
+   * This read used to only `console.error`, so a failed fetch rendered as the
+   * same empty state as a shop that has simply never done a جرد — the reader
+   * had no way to tell. `CourierLedgerPage` already keeps these apart; this is
+   * the same guard.
+   */
+  const [auditFetchError, setAuditFetchError] = useState<string | null>(null);
 
   // رصيد المخزن — SUM(stock.amount), the weighted-average value actually on the
   // shelf. This card used to show SUM(wallet), the TILL total, on a screen about
@@ -103,8 +114,10 @@ export function StockAuditPage() {
     try {
       const rows = await fetchLedgerEvents({ refType: "stock_audit" });
       setAuditEvents(rows);
+      setAuditFetchError(null);
     } catch (e) {
       console.error(e);
+      setAuditFetchError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -237,6 +250,7 @@ export function StockAuditPage() {
       return;
     }
 
+    if (!gate.enter()) return;
     setIsSaving(true);
     setAuditError(null);
 
@@ -260,6 +274,7 @@ export function StockAuditPage() {
         `لم يُسجَّل الجرد ولم يتغيّر المخزون. ${e instanceof Error ? e.message : String(e)}`,
       );
       setIsSaving(false);
+      gate.exit();
       return;
     }
 
@@ -290,6 +305,7 @@ export function StockAuditPage() {
     refreshInventoryValue();
     fetchAudits();
     setIsSaving(false);
+    gate.exit();
     setIsAuditOpen(false);
     setAuditResults([]);
     setIsReviewing(false);
@@ -378,7 +394,11 @@ export function StockAuditPage() {
       {/* Stock Logs Table */}
       <div className="rounded-2xl border border-border bg-card p-6">
         <h3 className="font-display text-xl font-bold mb-4">سجل حركة المخزون</h3>
-        {auditsByDate.length === 0 ? (
+        {auditFetchError ? (
+          <div className="py-8 text-center text-sm text-destructive">
+            تعذّر تحميل سجل الجرد — القائمة تحت غير مكتملة. {auditFetchError}
+          </div>
+        ) : auditsByDate.length === 0 ? (
           <div className="py-8">
             <EmptyState icon={Inbox} title="لا توجد حركات مخزون مسجلة" />
           </div>

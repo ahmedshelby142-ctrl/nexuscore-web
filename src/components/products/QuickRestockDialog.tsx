@@ -39,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { appendEvent } from "@/lib/ledger";
 import { buildPurchaseLines } from "@/lib/ledger/purchases";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { formatMoney } from "@/lib/math";
 import { WALLET_LABELS } from "@/types";
@@ -74,6 +75,8 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
   const [newSupplierName, setNewSupplierName] = useState("");
   const [newSupplierPhone, setNewSupplierPhone] = useState("");
   const [saving, setSaving] = useState(false);
+  // One submit at a time; `saving` state cannot close the same-tick window.
+  const gate = useSubmitGate();
   /** Did `appendEvent` succeed? Decides which failure message is the true one. */
   const ledgerWritten = useRef(false);
 
@@ -118,7 +121,7 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
   }
 
   async function receive() {
-    if (!canSave) return;
+    if (!canSave || !gate.enter()) return;
     setSaving(true);
 
     // Staged on purpose. Each step depends on the one before it, and the error
@@ -150,6 +153,7 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
         }`,
       );
       setSaving(false);
+      gate.exit();
       return;
     }
 
@@ -264,6 +268,7 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
     } finally {
       ledgerWritten.current = false;
       setSaving(false);
+      gate.exit();
     }
   }
 

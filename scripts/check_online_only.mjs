@@ -468,3 +468,106 @@ test("realtime skips this client's own echoes by a column that exists", () => {
   assert.ok(!code(boot).includes("_client_id"), "_client_id is not a real column");
   assert.match(code(boot), /device_id/, "the echo check must use device_id");
 });
+
+test("every cloud submit is gated against a double click", () => {
+  // `if (saving) return; setSaving(true)` does not stop two clicks in the same
+  // tick: React state updates asynchronously, so both handlers read
+  // `saving === false` and both fire the write. Proven live on شاشة المشتريات
+  // — three presses of "حفظ الفاتورة" produced three POSTs to `ledger_events`,
+  // i.e. three purchases, three stock receipts, three debits of the till. It
+  // is almost certainly what put the duplicate FM-0001 in this database.
+  //
+  // Login is exempt (signing in twice costs nothing and the server rate-limits
+  // it) and so is `routes/backups.tsx`, which writes no cloud row.
+  const EXEMPT = ["Login.tsx", "backups.tsx"];
+  const BUSY = /set(?:Is)?(?:Saving|Submitting|Returning|Paying|Busy|Processing)\(true\)/;
+
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = dir + "/" + e.name;
+      if (e.isDirectory()) { if (e.name !== "ui") walk(full); continue; }
+      if (!e.name.endsWith(".tsx") || EXEMPT.includes(e.name)) continue;
+      const src = readFileSync(full, "utf8");
+      const lines = codeLines(src);
+      for (let i = 0; i < lines.length; i++) {
+        if (!BUSY.test(lines[i])) continue;
+        // The gate must be claimed on one of the few lines above the flag.
+        const near = lines.slice(Math.max(0, i - 6), i + 1).join(NL);
+        if (!near.includes(".enter()")) {
+          offenders.push(e.name + ":" + lines[i].trim());
+        }
+      }
+    }
+  };
+  for (const d of ["components", "routes", "pages"]) {
+    walk(fileURLToPath(new URL("../src/" + d, import.meta.url)));
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "these submits can fire twice from two clicks in one tick:" + NL + offenders.join(NL),
+  );
+});
+
+test("the submit gate is a ref, not state", () => {
+  // A gate built on useState would have exactly the bug it exists to fix.
+  const gate = read("../src/hooks/useSubmitGate.ts");
+  assert.match(gate, /useRef/, "the gate must flip synchronously");
+  assert.ok(!code(gate).includes("useState"), "state cannot close a same-tick window");
+});
+
+test("a collapsed sidebar link still has a name", () => {
+  // Collapsed, the label span is not rendered and a Radix tooltip is the only
+  // thing naming each link — but a tooltip is painted, not announced, and does
+  // not exist in the DOM until it opens. Found live: sixteen nav links and the
+  // logout button all announced as bare "link"/"button", i.e. the whole primary
+  // navigation was unusable without sight of it.
+  const sidebar = read("../src/components/dashboard/Sidebar.tsx");
+  assert.match(
+    code(sidebar),
+    /aria-label=\{collapsed \? item\.label : undefined\}/,
+    "collapsed nav links need an aria-label",
+  );
+  assert.match(
+    code(sidebar),
+    /aria-label=\{collapsed \? "تسجيل الخروج" : undefined\}/,
+    "the collapsed logout button needs an aria-label",
+  );
+});
+
+test("a typed quantity of zero is never coerced to one", () => {
+  // `parseInt(e.target.value) || 1` reads 0 as 1, so typing a quantity of zero
+  // silently received ONE unit and billed for it — and the field could not be
+  // cleared to retype, it snapped back to 1 mid-edit. Validation, not
+  // coercion, is what refuses a zero.
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = dir + "/" + e.name;
+      if (e.isDirectory()) { if (e.name !== "ui") walk(full); continue; }
+      if (!e.name.endsWith(".tsx")) continue;
+      for (const l of codeLines(readFileSync(full, "utf8"))) {
+        if (/parse(?:Int|Float)\([^)]*\)\s*\|\|\s*1\b/.test(l) && /quantity|qty/i.test(l)) {
+          offenders.push(e.name + ":" + l.trim().slice(0, 110));
+        }
+      }
+    }
+  };
+  for (const d of ["components", "routes", "pages"]) {
+    walk(fileURLToPath(new URL("../src/" + d, import.meta.url)));
+  }
+  assert.deepEqual(offenders, [], "these read a typed 0 as 1:" + NL + offenders.join(NL));
+});
+
+test("the integrations card does not claim a verification it never did", () => {
+  // The button is "حفظ وتحقق من اكتمال الحقول" — it checks the fields are
+  // non-empty and nothing else. Nothing contacts Paymob or the courier. The
+  // badge said "تم التحقق" with a green check, which a reader takes as "the
+  // provider confirmed these credentials".
+  const card = read("../src/components/integrations/IntegrationConfigCards.tsx");
+  assert.ok(
+    !code(card).includes("تم التحقق"),
+    "the badge must not claim the provider verified anything",
+  );
+});

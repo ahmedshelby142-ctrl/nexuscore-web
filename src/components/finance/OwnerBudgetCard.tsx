@@ -33,6 +33,7 @@ import {
   type BudgetPeriod,
 } from "@/lib/ledger/ownerDraw";
 import { useFinancialStore } from "@/store/useFinancialStore";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { activePartners } from "@/lib/partners";
 import { useBalances } from "@/lib/ledger/useBalances";
@@ -86,6 +87,8 @@ export function OwnerBudgetCard() {
   const [breakdown, setBreakdown] = useState<{ category: string | null; amount: number }[]>([]);
   const [drawError, setDrawError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // One submit at a time; `saving` state cannot close the same-tick window.
+  const gate = useSubmitGate();
 
   // Working partners can draw too — as an advance on their dividend (7.2).
   // Their draws are keyed to them, so they never touch this budget.
@@ -121,7 +124,7 @@ export function OwnerBudgetCard() {
 
   async function recordDraw() {
     const amount = parseFloat(drawForm.amount);
-    if (!(amount > 0) || saving) return;
+    if (!(amount > 0) || saving || !gate.enter()) return;
     setSaving(true);
     setDrawError(null);
     try {
@@ -154,6 +157,7 @@ export function OwnerBudgetCard() {
       );
     } finally {
       setSaving(false);
+      gate.exit();
     }
   }
 

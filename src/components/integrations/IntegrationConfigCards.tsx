@@ -155,21 +155,26 @@ function IntegrationCard({
                   variant="outline"
                   className="text-[10px] gap-1 text-green-600 border-green-300"
                 >
-                  <CheckCircle2 className="size-3" /> تم التحقق
+                  {/* "تم التحقق" claimed the provider had confirmed these
+                      credentials. Nothing contacts the provider — the button
+                      is "حفظ وتحقق من اكتمال الحقول" and it only checks the
+                      fields are non-empty, then sets this flag. The badge now
+                      says what actually happened. */}
+                  <CheckCircle2 className="size-3" /> البيانات مكتملة
                 </Badge>
               ) : enabled ? (
                 <Badge
                   variant="outline"
                   className="text-[10px] gap-1 text-amber-600 border-amber-300"
                 >
-                  <AlertCircle className="size-3" /> يحتاج تحقق
+                  <AlertCircle className="size-3" /> بيانات ناقصة
                 </Badge>
               ) : null}
             </div>
             <p className="text-sm text-muted-foreground mt-0.5">{description}</p>
             {lastVerifiedAt && (
               <p className="text-[10px] text-muted-foreground/70 mt-1">
-                آخر تحقق: {new Date(lastVerifiedAt).toLocaleString("ar-EG")}
+                آخر حفظ: {new Date(lastVerifiedAt).toLocaleString("ar-EG")}
               </p>
             )}
           </div>

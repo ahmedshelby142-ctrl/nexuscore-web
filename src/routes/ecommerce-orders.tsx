@@ -996,7 +996,7 @@ function EcommerceOrdersInner() {
                   <input
                     type="number"
                     value={row.quantity}
-                    onChange={(e) => setRowQty(i, parseInt(e.target.value) || 1)}
+                    onChange={(e) => setRowQty(i, parseInt(e.target.value) || 0)}
                     className={cn(
                       "w-14 h-8 text-center rounded border border-input bg-background text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring",
                       row.quantity < 0 && "text-red-600 font-bold"

@@ -59,6 +59,7 @@ import {
 } from "@/components/ui/table";
 import { useOrderStore } from "@/store/useOrderStore";
 import { printTableAsPdf } from "@/lib/pdfGenerator";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { appendEvent } from "@/lib/ledger";
 import { buildWholesaleInvoiceLines, buildClientPaymentLines } from "@/lib/ledger/wholesale";
 import { useStock } from "@/lib/ledger/useStock";
@@ -178,6 +179,11 @@ export function WholesalePage() {
   const [paymentAmount, setPaymentAmount] = useState(0);
   const [paymentWallet, setPaymentWallet] = useState<WalletType>("inStoreSafe");
   const [isPaying, setIsPaying] = useState(false);
+  // One submit at a time — `isSubmitting`/`isReturning`/`isPaying` state
+  // cannot close the same-tick window. See `useSubmitGate`.
+  const invoiceGate = useSubmitGate();
+  const returnGate = useSubmitGate();
+  const paymentGate = useSubmitGate();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [invoiceToPrint, setInvoiceToPrint] = useState<any | null>(null);
@@ -302,7 +308,12 @@ export function WholesalePage() {
       setReturnError("أضف منتج واحد على الأقل للمرتجع");
       return;
     }
+    if (returnItems.some((i) => i.quantity <= 0)) {
+      setReturnError("كل سطر لازم يكون كميته أكبر من صفر");
+      return;
+    }
 
+    if (!returnGate.enter()) return;
     setIsReturning(true);
     setReturnError(null);
     try {
@@ -348,6 +359,7 @@ export function WholesalePage() {
       );
     } finally {
       setIsReturning(false);
+      returnGate.exit();
     }
   }
 
@@ -485,6 +497,12 @@ export function WholesalePage() {
 
   async function submitInvoice() {
     if (!invoiceForm.clientId || invoiceItems.length === 0) return;
+    // A zero-quantity line used to be impossible because the input coerced it
+    // to 1. Now it is possible to type, so it has to be refused here.
+    if (invoiceItems.some((i: any) => i.quantity <= 0)) {
+      toast.error("كل سطر لازم يكون كميته أكبر من صفر");
+      return;
+    }
     const client = wholesaleClients.find((c) => c.id === invoiceForm.clientId);
     if (!client) return;
     const invNum = "FJ-" + String(wholesaleInvoices.length + 1).padStart(4, "0");
@@ -501,6 +519,7 @@ export function WholesalePage() {
       return;
     }
 
+    if (!invoiceGate.enter()) return;
     setIsSubmitting(true);
 
     try {
@@ -533,6 +552,7 @@ export function WholesalePage() {
     } catch (e) {
       toast.error(`الفاتورة متسجلتش والمخزون زي ما هو. ${e instanceof Error ? e.message : String(e)}`);
       setIsSubmitting(false);
+    invoiceGate.exit();
       return;
     }
 
@@ -625,6 +645,7 @@ export function WholesalePage() {
     }
 
     setIsSubmitting(false);
+    invoiceGate.exit();
     setIsInvoiceOpen(false);
     resetInvoiceForm();
   }
@@ -641,6 +662,7 @@ export function WholesalePage() {
     const invoice = wholesaleInvoices.find((i) => i.id === paymentInvoiceId);
     if (!invoice) return;
 
+    if (!paymentGate.enter()) return;
     setIsPaying(true);
 
     try {
@@ -664,12 +686,14 @@ export function WholesalePage() {
         `لم تُسجَّل الدفعة ولم يتغيّر أي رصيد. ${e instanceof Error ? e.message : String(e)}`,
       );
       setIsPaying(false);
+    paymentGate.exit();
       return;
     }
 
     recordWholesalePayment(paymentInvoiceId, paymentAmount);
     refreshDebt();
     setIsPaying(false);
+    paymentGate.exit();
     setIsPaymentOpen(false);
     setPaymentInvoiceId(null);
   }
@@ -1330,7 +1354,8 @@ export function WholesalePage() {
                               type="number" 
                               min="1" 
                               value={item.quantity} 
-                              onChange={(e) => updateInvoiceItem(item.productId, item.variantName, "quantity", parseInt(e.target.value) || 1)}
+                              // `|| 1` read a typed 0 as 1; validation, not coercion, refuses a zero.
+                              onChange={(e) => updateInvoiceItem(item.productId, item.variantName, "quantity", parseInt(e.target.value) || 0)}
                               className="h-8 text-center"
                             />
                           </TableCell>
@@ -1953,7 +1978,7 @@ export function WholesalePage() {
                       setReturnItems((prev) =>
                         prev.map((i) =>
                           i.productId === item.productId
-                            ? { ...i, quantity: Math.max(1, parseInt(e.target.value) || 1) }
+                            ? { ...i, quantity: parseInt(e.target.value) || 0 }
                             : i,
                         ),
                       )

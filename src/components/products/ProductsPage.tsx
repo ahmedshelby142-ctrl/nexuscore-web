@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef } from "react";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { formatMoney } from "@/lib/math";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import {
@@ -136,6 +137,8 @@ export function ProductsPage() {
   const [openingQty, setOpeningQty] = useDraftState("product:openingQty", "");
   const [openingCost, setOpeningCost] = useDraftState("product:openingCost", "");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // One submit at a time; state cannot close the same-tick window.
+  const gate = useSubmitGate();
   const [stockStatusFilter, setStockStatusFilter] = useState<StockFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
 
@@ -224,7 +227,7 @@ export function ProductsPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!validate()) return;
+    if (!validate() || !gate.enter()) return;
     setIsSubmitting(true);
 
     try {
@@ -321,6 +324,7 @@ export function ProductsPage() {
       );
     } finally {
       setIsSubmitting(false);
+      gate.exit();
     }
   }
 

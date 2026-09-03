@@ -1,3 +1,4 @@
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useState, useMemo } from "react";
 import {
   DollarSign,
@@ -606,9 +607,19 @@ export function PartnersFinancePage() {
   const terms = PERSONA_TERMINOLOGY[persona];
 
   // ── Handlers ──
+  // One submit at a time. These three write money — an expense, a salary and a
+  // fixed asset — and had NO busy flag of any kind, so three clicks booked
+  // three ledger events and three documents. Reproduced on the QA tenant:
+  // 3 presses of تسجيل filed 3 × 75 EGP.
+  const expenseGate = useSubmitGate();
+  const payrollGate = useSubmitGate();
+  const assetGate = useSubmitGate();
+
   const handleAddExpense = async () => {
     const amount = parseFloat(expenseForm.amount);
     if (!amount || amount <= 0 || !expenseForm.category) return;
+    // After validation, so a refused submit does not leave the gate held.
+    if (!expenseGate.enter()) return;
 
     // ONE event first: the cost and the cash that paid it, together. Recording
     // the document without this is what let the till keep the rent money.
@@ -636,6 +647,7 @@ export function PartnersFinancePage() {
       setSpendError(
         `المصروف متسجّلش، ومفيش فلوس اتحركت. ${e instanceof Error ? e.message : String(e)}`,
       );
+      expenseGate.exit();
       return;
     }
     refreshWallets();
@@ -662,11 +674,13 @@ export function PartnersFinancePage() {
       date: new Date().toISOString().slice(0, 10),
     });
     setIsExpenseOpen(false);
+    expenseGate.exit();
   };
 
   const handleAddPayroll = async () => {
     const amount = parseFloat(payrollForm.amount);
     if (!amount || amount <= 0 || !payrollForm.employeeName) return;
+    if (!payrollGate.enter()) return;
 
     // A salary is an operating expense with a name on it: same two lines,
     // different event kind.
@@ -688,6 +702,7 @@ export function PartnersFinancePage() {
       setSpendError(
         `المرتب متسجّلش، ومفيش فلوس اتحركت. ${e instanceof Error ? e.message : String(e)}`,
       );
+      payrollGate.exit();
       return;
     }
     refreshWallets();
@@ -708,6 +723,7 @@ export function PartnersFinancePage() {
       date: new Date().toISOString().slice(0, 10),
     });
     setIsExpenseOpen(false);
+    payrollGate.exit();
   };
 
   const handleAddPartner = () => {
@@ -750,6 +766,7 @@ export function PartnersFinancePage() {
     const life = parseFloat(assetForm.usefulLifeYears);
     const pDate = new Date(assetForm.purchaseDate);
     if (!assetForm.name || !pv || pv <= 0 || !life || life <= 0 || isNaN(pDate.getTime())) return;
+    if (!assetGate.enter()) return;
     
     if (assetForm.paymentSource !== "prepaid") {
       setSpendError(null);
@@ -774,6 +791,7 @@ export function PartnersFinancePage() {
         setSpendError(
           `فشلت عملية شراء الأصل، لم يتم خصم المبلغ من الخزينة. ${e instanceof Error ? e.message : String(e)}`,
         );
+        assetGate.exit();
         return;
       }
       refreshWallets();
@@ -797,6 +815,7 @@ export function PartnersFinancePage() {
       paymentSource: "prepaid" 
     });
     setIsAssetOpen(false);
+    assetGate.exit();
   };
 
   const handleSetBudget = () => {

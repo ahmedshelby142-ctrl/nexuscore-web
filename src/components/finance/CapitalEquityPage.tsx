@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useMemo, useEffect } from "react";
 import {
   Landmark,
@@ -107,7 +108,10 @@ export function CapitalEquityPage() {
    * What the shop already has in a wallet on day one. Entered by the owner,
    * recorded as an event — never a number the code assumed.
    */
-  const handleWalletOpening = async () => {
+  // One in-flight write at a time; see `useRunOnce`.
+  const runOnce = useRunOnce();
+
+  const handleWalletOpening = async () => runOnce(async () => {
     const amount = parseFloat(openingAmount);
     if (!amount) return;
 
@@ -132,9 +136,9 @@ export function CapitalEquityPage() {
     } finally {
       setWalletBusy(false);
     }
-  };
+  });
 
-  const handleTransfer = async () => {
+  const handleTransfer = async () => runOnce(async () => {
     const amount = parseFloat(transferForm.amount);
     if (!amount || amount <= 0 || transferForm.fromWallet === transferForm.toWallet) return;
 
@@ -185,7 +189,7 @@ export function CapitalEquityPage() {
     } finally {
       setWalletBusy(false);
     }
-  };
+  });
 
   /**
    * What each part-owner is owed for the period — gross, advance, net.

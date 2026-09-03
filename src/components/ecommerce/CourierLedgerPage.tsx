@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Fragment } from "react";
 import { formatMoney } from "@/lib/math";
@@ -218,7 +219,10 @@ export function CourierLedgerPage() {
     setBatchError(null);
   };
 
-  const confirmBatch = async () => {
+  // One in-flight write at a time; see `useRunOnce`.
+  const runOnce = useRunOnce();
+
+  const confirmBatch = async () => runOnce(async () => {
     if (!batchCourier || writing.current) return;
     // Re-read from the store: this dialog can sit open while an order is
     // settled elsewhere, and a stale list would clear a receivable twice.
@@ -294,7 +298,7 @@ export function CourierLedgerPage() {
       writing.current = false;
       setIsWorking(false);
     }
-  };
+  });
 
   const handleExportPdf = () => {
     generateCourierPdf({

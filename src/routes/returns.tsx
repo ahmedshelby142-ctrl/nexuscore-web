@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useMemo } from "react";
 import { format } from "date-fns";
 import {
@@ -99,7 +100,10 @@ export function Returns() {
   const [confirmName, setConfirmName] = useState("");
   
 
-  const handleConfirmCourierReturn = async () => {
+  // One in-flight write at a time; see `useRunOnce`.
+  const runOnce = useRunOnce();
+
+  const handleConfirmCourierReturn = async () => runOnce(async () => {
     const order = orders.find(o => o.id === confirmDialog.orderId);
     if (!order) return;
 
@@ -230,7 +234,7 @@ export function Returns() {
       setIsWorking(false);
       releaseOrder(order.id);
     }
-  };
+  });
 
   // Results follow the query — no "بحث" button to press, and no mode to pick.
   // Blank shows nothing rather than every delivered order, because this screen
@@ -295,7 +299,7 @@ export function Returns() {
   const exchangeTotal = exchangeProduct ? productPrice(exchangeProduct) * exchangeQty : 0;
   const priceDiff = exchangeTotal - totalReturnValue;
 
-  const handleReturn = async () => {
+  const handleReturn = async () => runOnce(async () => {
     if (!selectedOrder) return;
     const itemsToReturn = returnEntries.filter((e) => e.quantity > 0);
     if (itemsToReturn.length === 0) {
@@ -520,7 +524,7 @@ export function Returns() {
     } finally {
       setIsWorking(false);
     }
-  };
+  });
 
   // Phase F: PDF export of the return/exchange log.
   const handleExportPdf = () => {

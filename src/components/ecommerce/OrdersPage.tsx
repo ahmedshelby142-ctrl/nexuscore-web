@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useMemo, useState } from "react";
 import {
   ShoppingBag,
@@ -328,7 +329,10 @@ export function OrdersPage() {
 
   const draftTotal = subtract(draftGoods, draftDiscount);
 
-  const saveEdit = async () => {
+  // One in-flight write at a time; see `useRunOnce`.
+  const runOnce = useRunOnce();
+
+  const saveEdit = async () => runOnce(async () => {
     // `editingOrder` is the render value the dialog draws from; the SAVE reads
     // the store, so it cannot act on a status this render has not seen yet.
     const order = currentOrder(editOrderId ?? "");
@@ -447,14 +451,14 @@ export function OrdersPage() {
       releaseOrder(order.id);
       setIsWorking(false);
     }
-  };
+  });
 
   /**
    * Cancelling a pending order. The stock reserved by `order_placed` has to
    * come back — without this event the units are gone from the shelf with
    * nothing pointing at them, and no screen would ever notice.
    */
-  const cancelOrder = async (orderId: string) => {
+  const cancelOrder = async (orderId: string) => runOnce(async () => {
     const order = currentOrder(orderId);
     if (!order) return;
     const claim = claimOrder(order.id, order.status, "cancel");
@@ -512,7 +516,7 @@ export function OrdersPage() {
       releaseOrder(order.id);
       setIsWorking(false);
     }
-  };
+  });
 
   /**
    * §3.9: the operator confirms, BY CUSTOMER NAME, that the returned goods
@@ -520,7 +524,7 @@ export function OrdersPage() {
    * The typed name must match the order's — this is the human check the whole
    * pending/confirmed split exists for.
    */
-  const confirmReturn = async () => {
+  const confirmReturn = async () => runOnce(async () => {
     const order = currentOrder(confirmDialog.orderId);
     if (!order) return;
 
@@ -721,7 +725,7 @@ export function OrdersPage() {
       releaseOrder(order.id);
       setIsWorking(false);
     }
-  };
+  });
 
   /**
    * The courier says the order came back. This writes an event with ZERO
@@ -729,7 +733,7 @@ export function OrdersPage() {
    * human confirms the goods physically arrived, and that confirmation is
    * what writes `return_confirmed`.
    */
-  const markReturnPending = async (orderId: string, type: "rto" | "refund") => {
+  const markReturnPending = async (orderId: string, type: "rto" | "refund") => runOnce(async () => {
     const order = currentOrder(orderId);
     if (!order) return;
     // This had no status check at all: the button was rendered on every row, so
@@ -773,7 +777,7 @@ export function OrdersPage() {
       releaseOrder(order.id);
       setIsWorking(false);
     }
-  };
+  });
 
   // Phase F: PDF export for the current filter view.
   // Uses the central generateOrdersPdf in src/lib/pdfGenerator.ts so
@@ -831,7 +835,7 @@ export function OrdersPage() {
    * balances later. The ledger gets a wallet line for the till actually chosen,
    * so the Treasury shows the cash under the account it really arrived in.
    */
-  const confirmPayment = async () => {
+  const confirmPayment = async () => runOnce(async () => {
     const order = currentOrder(payOrderId ?? "");
     if (!order) return;
 
@@ -883,9 +887,9 @@ export function OrdersPage() {
     } finally {
       setIsWorking(false);
     }
-  };
+  });
 
-  const confirmDeliver = async () => {
+  const confirmDeliver = async () => runOnce(async () => {
     const order = currentOrder(reconcileDialog.orderId);
     if (!order) return;
     // Delivery is only legal once the goods are with the courier. Re-checked
@@ -1082,7 +1086,7 @@ export function OrdersPage() {
       releaseOrder(order.id);
       setIsWorking(false);
     }
-  };
+  });
 
   return (
     <div className="space-y-6">

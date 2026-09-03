@@ -729,3 +729,50 @@ test("the local auth flag is reconciled against the real Supabase session", () =
   assert.match(boot, /onAuthStateChange/, "a revoked or unrefreshable session must be noticed");
   assert.match(boot, /logout\(\)/, "the only action taken is a local sign-out");
 });
+
+test("an async handler that appends a ledger event is gated", () => {
+  // The earlier duplicate-submit guard only looked at handlers that SET a busy
+  // flag (`setSaving(true)` and friends). A handler with no busy flag at all is
+  // strictly worse and was invisible to it — which is how the expense, payroll
+  // and fixed-asset handlers in PartnersFinancePage kept booking one ledger
+  // event per click. Reproduced on the QA tenant: three presses of تسجيل filed
+  // 3 × 75 EGP, three `expenses` rows and three events.
+  //
+  // Any `async` handler that calls `appendEvent` must claim a submit gate.
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = dir + "/" + e.name;
+      if (e.isDirectory()) { if (e.name !== "ui") walk(full); continue; }
+      if (!e.name.endsWith(".tsx")) continue;
+      const src = readFileSync(full, "utf8");
+      if (!src.includes("appendEvent")) continue;
+      const lines = code(src).split(NL);
+      for (let i = 0; i < lines.length; i++) {
+        // an async arrow/function handler declaration
+        if (!/(const|function)\s+\w+\s*(=\s*async\s*\(|\().*=>?\s*\{?\s*$/.test(lines[i])
+            && !/=\s*async\s*\(\s*\)\s*=>\s*\{/.test(lines[i])) continue;
+        // its body, to the next top-level `};`
+        let body = "";
+        for (let j = i + 1; j < lines.length && j < i + 140; j++) {
+          if (/^\s{0,2}\};?\s*$/.test(lines[j])) break;
+          body += lines[j] + NL;
+        }
+        // `runOnce(` wraps the whole body and releases in a finally;
+        // `.enter()` is the explicit pair. Either counts.
+        const gated = body.includes(".enter()") || lines[i].includes("runOnce(");
+        if (body.includes("appendEvent(") && !gated) {
+          offenders.push(e.name + ":" + (i + 1) + "  " + lines[i].trim().slice(0, 60));
+        }
+      }
+    }
+  };
+  for (const d of ["components", "routes", "pages"]) {
+    walk(fileURLToPath(new URL("../src/" + d, import.meta.url)));
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "these write a ledger event once per click, with no gate:" + NL + offenders.join(NL),
+  );
+});

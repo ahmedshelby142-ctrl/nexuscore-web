@@ -28,3 +28,32 @@ export function useSubmitGate() {
     },
   };
 }
+
+/**
+ * Run an async handler at most once at a time, whatever way it returns.
+ *
+ * `useSubmitGate` needs an `enter()` and a matching `exit()` on every path, and
+ * these handlers have many: a validation `return`, a `catch` that returns, and
+ * the success tail. Miss one and the button is dead for the rest of the
+ * session — a worse bug than the one being fixed.
+ *
+ * This takes the whole body instead, so the release is in a `finally` and no
+ * path can skip it:
+ *
+ *     const confirmDeliver = async () => runOnce(async () => { …body… });
+ *
+ * Re-entry is dropped, not queued. A second click during an in-flight write is
+ * a mistake, not an instruction to do it twice.
+ */
+export function useRunOnce() {
+  const busy = useRef(false);
+  return async function runOnce<T>(fn: () => Promise<T>): Promise<T | undefined> {
+    if (busy.current) return undefined;
+    busy.current = true;
+    try {
+      return await fn();
+    } finally {
+      busy.current = false;
+    }
+  };
+}

@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import {
@@ -126,7 +127,10 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
     return `NX-${Math.floor(100000 + Math.random() * 900000)}`;
   }
 
-  const handleImport = async () => {
+  // One in-flight write at a time; see `useRunOnce`.
+  const runOnce = useRunOnce();
+
+  const handleImport = async () => runOnce(async () => {
     if (rowErrors.size > 0) return;
     if (rows.length === 0) return;
 
@@ -249,7 +253,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
     setSkippedCount(skipped);
     onImported?.();
     setStatus("done");
-  };
+  });
 
   const downloadTemplate = () => {
     const buf = generateTemplateBuffer();

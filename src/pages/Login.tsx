@@ -193,6 +193,19 @@ export function Login() {
           const { data, error } = await sb.auth.signUp({
             email: username.trim(),
             password: password.trim(),
+            options: {
+              // Without this, the confirmation link goes to whatever Site URL
+              // the Supabase project happens to hold — one fixed origin. Sign
+              // up from localhost, from a preview deployment, or from the
+              // production domain and the link lands on the wrong one, so the
+              // account is created, the mail arrives, and clicking it strands
+              // the user somewhere that is not the app they were using.
+              //
+              // The origin they signed up from is the origin they should come
+              // back to. It still has to be listed under Redirect URLs in the
+              // dashboard; Supabase refuses anything that is not.
+              emailRedirectTo: window.location.origin,
+            },
           });
           if (error) {
             setLocalError(error.message);
@@ -214,7 +227,16 @@ export function Login() {
         }
 
         if (!userSession) {
-          setLocalError("يرجى التحقق من بريدك الإلكتروني لتفعيل الحساب أو المحاولة مجدداً.");
+          // `signUp` returns no session when the project requires email
+          // confirmation (`mailer_autoconfirm: false`). The account EXISTS at
+          // this point — it is simply unconfirmed — so telling the user to
+          // "try again" invites a second signup that will fail as
+          // already-registered. Name the address and say what to do.
+          setLocalError(
+            authMode === "signup"
+              ? `تم إنشاء الحساب. ابعتنالك رسالة تأكيد على ${username.trim()} — افتحها واضغط الرابط، وبعدين سجّل دخول من هنا. لو الرسالة مجتش، بصّ في الـ Spam.`
+              : "يرجى التحقق من بريدك الإلكتروني لتفعيل الحساب أو المحاولة مجدداً.",
+          );
           return;
         }
 

@@ -701,3 +701,19 @@ test("a plain <button> whose only child is an icon has an accessible name", () =
   }
   assert.deepEqual(offenders, [], "icon-only <button>s with no accessible name:" + NL + offenders.join(NL));
 });
+
+test("signup sends the confirmation link back to the origin it came from", () => {
+  // The project requires email confirmation (`mailer_autoconfirm: false`), so
+  // `signUp` returns no session and the account is created unconfirmed. The
+  // confirmation link's destination comes from the project's single Site URL
+  // unless the call names one — so signing up from localhost, a preview
+  // deployment or production sends everyone to the same fixed origin, and two
+  // of those three land the user somewhere that is not the app they used.
+  const login = code(read("../src/pages/Login.tsx"));
+  assert.match(login, /emailRedirectTo: window\.location\.origin/,
+    "signUp must return the user to the origin they signed up from");
+  // And the "no session" branch must not tell the user to try again — the
+  // account already exists, so a retry fails as already-registered.
+  assert.ok(!/تم إنشاء الحساب[^"]*المحاولة مجدداً/.test(login),
+    "the confirmation notice must not invite a duplicate signup");
+});

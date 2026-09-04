@@ -804,3 +804,21 @@ test("an async handler that appends a ledger event is gated", () => {
     "these write a ledger event once per click, with no gate:" + NL + offenders.join(NL),
   );
 });
+
+test("a shop that was never licensed is not told its licence expired", () => {
+  // `LicenseVerdict` has carried `unlicensed` separately from `expired` all
+  // along, but the screen collapsed the two and told every brand-new signup
+  // "انتهت صلاحية الترخيص". `claim_store` creates a store with no licence row,
+  // so that is what EVERY new customer saw — and an owner told their licence
+  // expired reasonably reaches for a reinstall or a backup restore to get
+  // their data "back", when nothing was lost and nothing ran out.
+  const page = code(read("../src/pages/LicenseExpired.tsx"));
+  assert.match(page, /verdict === "unlicensed"/, "the screen must read the unlicensed verdict");
+  // The expiry wording must be reachable ONLY when it is not the unlicensed case.
+  const at = page.indexOf("انتهت صلاحية الترخيص");
+  assert.ok(at > 0, "the expiry wording should still exist for a real expiry");
+  assert.ok(
+    page.slice(Math.max(0, at - 260), at).includes("unlicensed"),
+    "the expiry wording must sit behind an unlicensed check",
+  );
+});

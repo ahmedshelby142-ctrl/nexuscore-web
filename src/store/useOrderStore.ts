@@ -127,6 +127,15 @@ export function expandStockItems(items: OrderItemInput[]) {
   return stockItems;
 }
 
+/**
+ * Transitions already on the wire.
+ *
+ * Module-level, not per-component: the same order row is rendered by several
+ * screens and each holds its own React state, so a component-scoped flag would
+ * not see a duplicate raised from anywhere else.
+ */
+const statusInFlight = new Set<string>();
+
 export const useOrderStore = create<OrderState>()(
   persist(
     (set, get) => ({
@@ -187,6 +196,17 @@ export const useOrderStore = create<OrderState>()(
       // receivable is a ledger line now, not a row in the financial store, so
       // there is one answer to "what does this courier owe us".
       updateOrderStatus: async (id, status) => {
+        // `updateOrderStatus` is called BARE from onClick — `onClick={() =>
+        // updateOrderStatus(order.id, "shipped")}` — so there is no handler for
+        // a submit gate to sit on. Three clicks on تسليم للمندوب sent three
+        // PATCHes. The guard therefore lives here, where all four call sites
+        // share it, keyed by the transition rather than the order: the same
+        // order legitimately moves shipped → delivered later, and only a
+        // REPEAT of the identical move is dropped.
+        const key = id + ":" + status;
+        if (statusInFlight.has(key)) return;
+        statusInFlight.add(key);
+        try {
         set((state) => {
           const order = state.orders.find((item) => item.id === id);
           if (!order) return state;
@@ -234,6 +254,9 @@ export const useOrderStore = create<OrderState>()(
         // to it. `saveOrder` then reconciles against the row Postgres stored.
         const order = get().orders.find((o) => o.id === id);
         if (order) await saveOrder(set, order);
+        } finally {
+          statusInFlight.delete(key);
+        }
       },
 
       updateOrder: async (id, updates) => {

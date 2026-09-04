@@ -24,6 +24,21 @@ export function LicenseExpired() {
   const [retried, setRetried] = useState(false);
 
   const unverified = decision?.verdict === "unverified";
+  /**
+   * A shop that has NEVER been licensed is not a shop whose licence expired.
+   *
+   * `LicenseVerdict` has carried `unlicensed` separately from `expired` all
+   * along; this screen collapsed the two and told every brand-new signup
+   * "انتهت صلاحية الترخيص". That is false, and it is the specific falsehood
+   * this file's own header warns about — an owner told their licence expired
+   * reasonably reaches for a reinstall or a backup restore to "get their data
+   * back", when in fact nothing was ever lost and nothing has run out.
+   *
+   * No policy is invented here: whether a new shop gets a trial or waits for
+   * manual activation is a business decision this screen does not make. It
+   * only stops claiming an expiry that never happened.
+   */
+  const unlicensed = decision?.verdict === "unlicensed";
 
   const handleRetry = async () => {
     await refresh();
@@ -64,11 +79,11 @@ export function LicenseExpired() {
           <div className="flex flex-col items-center text-center gap-4 pt-2">
             <div
               className={`size-16 rounded-2xl flex items-center justify-center ${
-                unverified ? "bg-amber-500/10" : "bg-red-500/10"
+                unverified || unlicensed ? "bg-amber-500/10" : "bg-red-500/10"
               }`}
             >
               <svg
-                className={`size-8 ${unverified ? "text-amber-400" : "text-red-400"}`}
+                className={`size-8 ${unverified || unlicensed ? "text-amber-400" : "text-red-400"}`}
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -92,10 +107,16 @@ export function LicenseExpired() {
 
             <div className="space-y-2">
               <h2 className="text-2xl font-bold text-white">
-                {unverified ? "تعذّر التحقق من الترخيص" : "انتهت صلاحية الترخيص"}
+                {unverified
+                  ? "تعذّر التحقق من الترخيص"
+                  : unlicensed
+                    ? "المتجر لسه متفعّلش"
+                    : "انتهت صلاحية الترخيص"}
               </h2>
               <p className="text-sm text-white/60 leading-relaxed">
-                {decision?.messageAr ?? "ترخيص هذا المتجر غير ساري حالياً."}
+                {unlicensed
+                  ? "الحساب والمتجر اتعملوا بنجاح، وبياناتك كلها في مكانها. لسه محتاج تفعيل الاشتراك عشان تقدر تستخدم الشاشات — كلّم الدعم وهيتفعّل."
+                  : (decision?.messageAr ?? "ترخيص هذا المتجر غير ساري حالياً.")}
               </p>
             </div>
           </div>
@@ -144,7 +165,9 @@ export function LicenseExpired() {
 
             {retried && !checking && (
               <p className="text-center text-[12px] text-white/40">
-                ما زال الترخيص غير ساري. تواصل مع الدعم لتجديد الاشتراك.
+                {unlicensed
+                  ? "لسه مفيش تفعيل للمتجر ده. تواصل مع الدعم لتفعيل الاشتراك."
+                  : "ما زال الترخيص غير ساري. تواصل مع الدعم لتجديد الاشتراك."}
               </p>
             )}
 

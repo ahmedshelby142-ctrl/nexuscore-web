@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState } from "react";
 import { Building2, Plus, MapPin, Phone, Power, Trash2, Users, Inbox } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -63,7 +64,9 @@ export function BranchesPage() {
   const [isAssignOpen, setIsAssignOpen] = useState(false);
   const [assignForm, setAssignForm] = useState({ username: "", role: "cashier" as UserRole });
 
-  const handleAddBranch = async () => {
+  // One in-flight write at a time; see `useRunOnce`.
+  const runOnce = useRunOnce();
+  const handleAddBranch = async () => runOnce(async () => {
     if (!branchForm.name || !branchForm.code) return;
     // Awaited: the dialog stays open, with the values still in it, if the
     // branch did not reach Supabase.
@@ -80,7 +83,7 @@ export function BranchesPage() {
     } catch {
       /* the store announced it; leave the form for a retry */
     }
-  };
+  });
 
   const handleAssign = () => {
     if (!assignForm.username || !currentBranchId) return;

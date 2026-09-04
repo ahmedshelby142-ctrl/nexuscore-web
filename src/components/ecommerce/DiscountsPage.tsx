@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useEffect, useMemo } from "react";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import { Percent, Tag, Plus, Trash2, CheckCircle2, Ban } from "lucide-react";
@@ -39,7 +40,9 @@ export function DiscountsPage() {
   const [type, setType] = useDraftState<PromoDiscount["type"]>("discount:type", "percentage");
   const [value, setValue] = useDraftState("discount:value", "");
 
-  const addDiscount = async () => {
+  // One in-flight write at a time; see `useRunOnce`.
+  const runOnce = useRunOnce();
+  const addDiscount = async () => runOnce(async () => {
     const numericValue = parseFloat(value);
     if (!code.trim() || !numericValue || numericValue <= 0) return;
     // Awaited: the fields are only cleared once the row is actually stored.
@@ -55,14 +58,14 @@ export function DiscountsPage() {
     } catch {
       /* the store announced it; the typed code stays so it can be retried */
     }
-  };
+  });
 
-  const toggleDiscount = async (id: string) => {
+  const toggleDiscount = async (id: string) => runOnce(async () => {
     const d = discounts.find((x) => x.id === id);
     // Awaited so a refused toggle surfaces instead of becoming an unhandled
     // rejection with the switch left showing the wrong state.
     if (d) await updatePromoDiscount(id, { active: !d.active }).catch(() => {});
-  };
+  });
 
   const [posSales, setPosSales] = useState<LedgerEvent[]>([]);
   useEffect(() => {

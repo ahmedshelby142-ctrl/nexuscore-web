@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useMemo, useState, useEffect } from "react";
 import { formatMoney } from "@/lib/math";
 import {
@@ -122,7 +123,9 @@ export function CRMPage() {
     setEditorOpen(true);
   };
 
-  const saveCustomer = async () => {
+  // One in-flight write at a time; see `useRunOnce`.
+  const runOnce = useRunOnce();
+  const saveCustomer = async () => runOnce(async () => {
     if (!canSave) return;
     const fields = {
       name: form.name.trim(),
@@ -142,7 +145,7 @@ export function CRMPage() {
     } catch {
       /* the store already told the user; keep the form open to retry */
     }
-  };
+  });
 
   // This customer's history. It used to be a raw `===` on the phone OR the
   // name, so a number stored as «+20 101…» and typed as «0101…» hid the order,

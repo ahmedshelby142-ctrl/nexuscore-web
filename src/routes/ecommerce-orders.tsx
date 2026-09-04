@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Component, useState, useMemo, useCallback, useEffect, type ReactNode } from "react";
 import {
@@ -430,7 +431,10 @@ function EcommerceOrdersInner() {
     discountAmount,
   ]);
 
-  const handleSubmit = useCallback(async () => {
+  // One in-flight submit. Three clicks used to file three orders, three
+  // customers and three stock deductions — see `useRunOnce`.
+  const runOnce = useRunOnce();
+  const handleSubmit = useCallback(async () => runOnce(async () => {
     if (!canSubmit) {
       setResult({ success: false, message: "يرجى إكمال جميع الحقول المطلوبة" });
       return;
@@ -615,7 +619,7 @@ function EcommerceOrdersInner() {
     setAppliedDiscount(null);
     setIsExchange(false);
     setTimeout(() => setResult(null), 4000);
-  }, [
+  }), [
     canSubmit,
     rows,
     customer_name,

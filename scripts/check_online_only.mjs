@@ -32,6 +32,23 @@ const driver = read("../src/lib/ledger/driver.ts");
 
 const NL = String.fromCharCode(10);
 
+/**
+ * Every store action that ends in a Supabase write. Used by two guards: one
+ * that they are awaited, and one that a handler calling them is gated against
+ * a double click.
+ */
+const MUTATION_NAMES = [
+  "addProduct", "updateProduct", "removeProduct", "archiveProduct", "restoreProduct",
+  "addSupplier", "updateSupplier", "addPurchaseInvoice", "recordSupplierPayment",
+  "addWholesaleClient", "updateWholesaleClient", "addWholesaleInvoice",
+  "recordWholesalePayment", "archiveWholesaleClient",
+  "addCustomer", "updateCustomer", "removeCustomer", "archiveCustomer",
+  "addBranch", "updateBranch", "removeBranch",
+  "addPromoDiscount", "updatePromoDiscount", "removePromoDiscount",
+  "addOrder", "updateOrder", "addReturnRecord", "addExpense", "addTransaction",
+];
+
+
 /** Source lines with comments dropped — a comment naming a bug is not the bug. */
 const codeLines = (src) => {
   // Also drops JSX `{/* ... */}` comment blocks. Without that, a comment
@@ -746,12 +763,20 @@ test("an async handler that appends a ledger event is gated", () => {
       if (e.isDirectory()) { if (e.name !== "ui") walk(full); continue; }
       if (!e.name.endsWith(".tsx")) continue;
       const src = readFileSync(full, "utf8");
-      if (!src.includes("appendEvent")) continue;
+      // Not just ledger writers: a branch, a customer, a discount code all
+      // reach Supabase through the store without an event of their own.
+      if (!src.includes("appendEvent") && !MUTATION_NAMES.some((m) => src.includes(m + "("))) continue;
       const lines = code(src).split(NL);
       for (let i = 0; i < lines.length; i++) {
         // an async arrow/function handler declaration
-        if (!/(const|function)\s+\w+\s*(=\s*async\s*\(|\().*=>?\s*\{?\s*$/.test(lines[i])
-            && !/=\s*async\s*\(\s*\)\s*=>\s*\{/.test(lines[i])) continue;
+        // `useCallback(async () => {` is a handler too — that shape is how the
+        // e-commerce order submit escaped this check and filed three orders
+        // from three clicks.
+        const isHandler =
+          /(const|function)\s+\w+\s*(=\s*async\s*\(|\().*=>?\s*\{?\s*$/.test(lines[i]) ||
+          /=\s*async\s*\(\s*\)\s*=>\s*\{/.test(lines[i]) ||
+          /=\s*use(Callback|Memo)\(async\s*\(/.test(lines[i]);
+        if (!isHandler) continue;
         // its body, to the next top-level `};`
         let body = "";
         for (let j = i + 1; j < lines.length && j < i + 140; j++) {
@@ -761,7 +786,10 @@ test("an async handler that appends a ledger event is gated", () => {
         // `runOnce(` wraps the whole body and releases in a finally;
         // `.enter()` is the explicit pair. Either counts.
         const gated = body.includes(".enter()") || lines[i].includes("runOnce(");
-        if (body.includes("appendEvent(") && !gated) {
+        const writesCloud =
+          body.includes("appendEvent(") ||
+          MUTATION_NAMES.some((m) => body.includes(m + "("));
+        if (writesCloud && !gated) {
           offenders.push(e.name + ":" + (i + 1) + "  " + lines[i].trim().slice(0, 60));
         }
       }

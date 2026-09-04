@@ -1,3 +1,4 @@
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useMemo, useState } from "react";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import { Boxes, Package, Plus, Trash2, Save, CheckCircle2 } from "lucide-react";
@@ -68,7 +69,9 @@ export function BundlesPage() {
   const selectedStockOk = selectedItems.every((item) => qtyOf(item.productId) >= item.quantity);
   const totalComponentCost = selectedItems.reduce((total, item) => total + (item.cost * item.quantity), 0);
 
-  const saveBundle = async () => {
+  // One in-flight write at a time; see `useRunOnce`.
+  const runOnce = useRunOnce();
+  const saveBundle = async () => runOnce(async () => {
     if (!name.trim() || !sku.trim() || !price || selectedItems.length === 0) {
       setMessage("أكمل اسم البوكس، SKU، السعر، وقم باختيار المنتجات");
       return;
@@ -104,13 +107,13 @@ export function BundlesPage() {
       // The store already told the user what went wrong. Keep their input.
       setMessage("البوكس متسجّلش. راجع الاتصال وجرّب تاني — البيانات زي ما هي.");
     }
-  };
+  });
 
-  const toggleBundle = async (id: string, currentActive: boolean) => {
+  const toggleBundle = async (id: string, currentActive: boolean) => runOnce(async () => {
     // Awaited so a refused toggle surfaces instead of becoming an unhandled
     // rejection with the switch showing a state the database never accepted.
     await updateProduct(id, { isActive: !currentActive }).catch(() => {});
-  };
+  });
 
   const setQuantity = (key: string, quantity: number) => {
     setSelected((current) => ({ ...current, [key]: Math.max(0, quantity) }));

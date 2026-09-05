@@ -556,6 +556,12 @@ function EcommerceOrdersInner() {
       customerPhone: customer_phone.trim(),
       address: [governorate, city, detailedAddress].filter(Boolean).join(" - "),
       governorate,
+      // `orders.city` is a real column (migration 012) that NOTHING wrote: the
+      // city was only ever put inside `metadata`, which is not a column, so
+      // `toRemoteRow` dropped it. The delivery address survived — it is
+      // composed into `address` above — but the dedicated column stayed null
+      // on every order ever placed, so anything filtering by city found none.
+      city,
       metadata: {
         governorate,
         city,
@@ -905,6 +911,13 @@ function EcommerceOrdersInner() {
             </p>
           </div>
           <Switch
+            // The visible text next to it is a <Label> with no `htmlFor`, so it
+            // named nothing — this announced as an anonymous switch. It decides
+            // whether the customer has ALREADY PAID or the courier must collect
+            // 250 EGP on delivery, which is the difference between a settled
+            // order and a debt. The exchange toggle above is fine: it carries
+            // an id its Label points at.
+            aria-label="طريقة الدفع: مدفوع مسبقاً أو تحصيل عند الاستلام"
             checked={paymentMethod === "full_prepaid"}
             onCheckedChange={(on) => {
               setPaymentMethod(on ? "full_prepaid" : "partial_cod");

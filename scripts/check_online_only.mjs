@@ -866,3 +866,25 @@ test("the backup screen does not promise data it cannot restore", () => {
     "applyBundle writes localStorage only; a cloud write here changes the contract",
   );
 });
+
+test("a shop provisioned at signup gets a name", () => {
+  // `claim_store` created the store with `INSERT INTO public.stores (id)` and
+  // no name, so every shop a signup provisioned had `name = NULL`. The settings
+  // screen then showed its hardcoded default ("محلي") over a row holding
+  // nothing, and any invoice or header printing the shop name printed blank.
+  //
+  // The name is a neutral placeholder on purpose — NOT the email local-part.
+  // The shop name is printed on invoices and shown to customers, and turning
+  // someone's personal address into their public shop name is a privacy leak
+  // they never agreed to.
+  const m = read("../docs/migrations/019_claim_store_onboarding.sql");
+  assert.match(m, /INSERT INTO public\.stores \(id, name\)/, "the new store must be named");
+  assert.ok(!/split_part\(.*email|auth\.email|users\.email/.test(m),
+    "the shop name must not be derived from the owner's email");
+
+  // The activation switch must stay a switch — and must stay at the CURRENT
+  // behaviour unless someone deliberately changes it. Flipping it silently
+  // would either give the product away or lock every new customer out.
+  assert.match(m, /TRIAL_DAYS CONSTANT INT := 0/,
+    "TRIAL_DAYS is a commercial decision; it stays at today's behaviour until changed on purpose");
+});

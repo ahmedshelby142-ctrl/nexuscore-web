@@ -188,7 +188,8 @@ export function BackupsPage() {
             النسخ الاحتياطي والاستعادة
           </h1>
           <p className="text-muted-foreground mt-1">
-            صدّر كل بياناتك كملف JSON محلي، أو استعد من ملف نسخة احتياطية سابقة
+            صدّر إعدادات الجهاز كملف JSON محلي. بيانات الشغل نفسها متخزّنة في
+            السحابة، مش في الملف ده.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -363,7 +364,21 @@ export function BackupsPage() {
         <div className="text-sm text-blue-900 dark:text-blue-200 leading-relaxed">
           <p className="font-semibold">كيف تعمل النسخ الاحتياطية؟</p>
           <ul className="list-disc pr-5 mt-1.5 space-y-0.5">
-            <li>النسخة تُحمَّل كملف JSON واحد يحوي كل المتاجر في النظام.</li>
+            {/* This list used to promise "كل بياناتك" and "كل المتاجر في
+                النظام". Neither is true since the business tables moved to
+                Supabase: the bundle carries localStorage slices, and
+                `hydrateAll` refetches every cloud-owned collection on the next
+                boot — so a restored copy of them is discarded seconds later.
+                Saying otherwise is worse than a missing feature, because the
+                owner believes they are protected and is not. */}
+            <li>
+              الملف فيه إعدادات الجهاز والتفضيلات بس — <strong>مش</strong> المنتجات
+              ولا الأوردرات ولا العملاء ولا الفواتير ولا دفتر الحسابات.
+            </li>
+            <li>
+              بيانات الشغل كلها متخزّنة في السحابة (Supabase) ومحفوظة هناك، فمش
+              محتاجة النسخة دي عشان تفضل موجودة.
+            </li>
             <li>
               النسخة "الآمنة" تستبدل كلمات المرور والمفاتيح السرية بـ <code>***</code> قبل التنزيل.
             </li>
@@ -448,7 +463,9 @@ export function BackupsPage() {
               تأكيد الاستعادة
             </DialogTitle>
             <DialogDescription>
-              هذه العملية ستستبدل البيانات الحالية في المتاجر التالية. لن يمكن التراجع.
+              هتستبدل إعدادات الجهاز الحالية. ملاحظة مهمة: الاستعادة دي
+              <strong> مش </strong> بترجّع منتجات ولا أوردرات ولا فواتير — دي
+              بتتقرا من السحابة وهتفضل زي ما هي.
             </DialogDescription>
           </DialogHeader>
           {confirm && (

@@ -839,3 +839,30 @@ test("the shipping tariff is cloud data, not a localStorage file", () => {
   const orders = code(read("../src/routes/ecommerce-orders.tsx"));
   assert.match(orders, /shippingRates\.length === 0/, "an unconfigured tariff must be announced");
 });
+
+test("the backup screen does not promise data it cannot restore", () => {
+  // `applyBundle` writes localStorage keys and nothing else — it never touches
+  // Supabase. Since the business tables moved to the cloud, `hydrateAll`
+  // clears and refetches every cloud-owned collection on the next boot, so a
+  // "restored" copy of them is discarded seconds later.
+  //
+  // The screen used to say "صدّر كل بياناتك" and that the file "يحوي كل
+  // المتاجر في النظام". An owner who lost their machine would restore their
+  // theme and none of their shop, believing they were covered.
+  const page = code(read("../src/routes/backups.tsx"));
+  assert.ok(!page.includes("صدّر كل بياناتك"), "the export must not claim to carry all data");
+  assert.ok(
+    !page.includes("يحوي كل المتاجر في النظام"),
+    "the bundle does not contain the stores' business data",
+  );
+  // …and it must say where the business data actually lives.
+  assert.match(page, /السحابة/, "the screen must point at the cloud as the real store of record");
+
+  // The restore path must still be localStorage-only — if it ever gains a
+  // Supabase write, this test should fail so the claim gets re-examined.
+  const store = code(read("../src/store/useBackupStore.ts"));
+  assert.ok(
+    !/writeThrough|cloudUpsert|from\(["'`]/.test(store),
+    "applyBundle writes localStorage only; a cloud write here changes the contract",
+  );
+});

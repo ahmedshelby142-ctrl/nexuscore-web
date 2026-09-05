@@ -113,7 +113,27 @@ export type ShipmentMovement = any;
 export type ShippingConfig = any;
 export type ShippingInfo = any;
 export type ShippingProvider = any;
-export type ShippingRateRow = any;
+/**
+ * One governorate's tariff. Shape proven by migration 018 and by the screens
+ * that read it — the three movement keys are indexed BY NAME in
+ * `rateFor(rows, gov, movement)`, so they must stay exactly `delivery` /
+ * `return` / `exchange`, matching `ShipmentMovement`.
+ */
+export interface ShippingRateRow {
+  id: string;
+  governorate: string;
+  delivery: number;
+  return: number;
+  exchange: number;
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
+  /** Sync columns every cloud-backed row carries. */
+  store_id?: string;
+  device_id?: string;
+  sync_status?: string;
+  updated_at?: number;
+  deleted_at?: string | null;
+}
 export type ShippingTariff = any;
 export type StockActionType = any;
 export type StockLog = any;

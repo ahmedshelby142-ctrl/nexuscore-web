@@ -764,6 +764,16 @@ function EcommerceOrdersInner() {
                 </optgroup>
               ))}
             </select>
+            {/* A shop that has entered no tariff cannot ship anywhere, so this
+                dropdown is empty and the submit button is disabled. Saying
+                nothing left the user staring at a dead form with no idea why —
+                the single worst dead end in the product. */}
+            {shippingRates.length === 0 && (
+              <p className="text-xs text-amber-600 dark:text-amber-500 leading-relaxed">
+                لسه مفيش أسعار شحن متسجّلة، فمفيش محافظات تختار منها ومش هتقدر
+                تحفظ الأوردر. ضيفها من الإعدادات ← الشحن الأول.
+              </p>
+            )}
           </div>
           <div className="space-y-1.5">
             <label className="text-sm font-medium flex items-center gap-1.5">

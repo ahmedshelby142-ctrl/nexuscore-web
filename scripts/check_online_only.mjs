@@ -822,3 +822,20 @@ test("a shop that was never licensed is not told its licence expired", () => {
     "the expiry wording must sit behind an unlicensed check",
   );
 });
+
+test("the shipping tariff is cloud data, not a localStorage file", () => {
+  // It was the last piece of business data only one browser could see — and
+  // not cosmetically: /ecommerce-orders builds its governorate dropdown from
+  // these rows, so a browser without them could not raise an online order at
+  // all. The dropdown was empty, submit disabled, and nothing said why.
+  const store = read("../src/store/useShippingRatesStore.ts");
+  assert.ok(!code(store).includes("persist("), "shipping rates must not be persisted locally");
+  assert.match(code(store), /writeThrough\("shipping_rates"/, "writes must reach Supabase");
+  assert.match(code(store), /deleteThrough\("shipping_rates"/, "deletes must reach Supabase");
+  // …and hydrated on boot like every other cloud-owned collection.
+  assert.match(hydrate, /shipping_rates:/, "shipping_rates must be a hydration sink");
+
+  // The empty state must be explained, not left as a dead form.
+  const orders = code(read("../src/routes/ecommerce-orders.tsx"));
+  assert.match(orders, /shippingRates\.length === 0/, "an unconfigured tariff must be announced");
+});

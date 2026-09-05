@@ -10,6 +10,7 @@
  * shortchanged: a return is the only one the shop bears.
  */
 
+import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState } from "react";
 import { Plus, Trash2, Info } from "lucide-react";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
@@ -29,10 +30,21 @@ export function ShippingRateMatrix() {
   const { rows, addRow, updateRow, removeRow } = useShippingRatesStore();
   const [newGovernorate, setNewGovernorate] = useState("");
 
-  const add = () => {
-    addRow(newGovernorate);
-    setNewGovernorate("");
-  };
+  // Cloud writes since migration 018, so these are awaited — and gated, or a
+  // double click files the same governorate twice and the second one dies on
+  // the unique index instead of being ignored.
+  const runOnce = useRunOnce();
+
+  const add = () =>
+    runOnce(async () => {
+      const name = newGovernorate;
+      try {
+        await addRow(name);
+        setNewGovernorate("");
+      } catch {
+        /* the store announced it; leave the typed name for a retry */
+      }
+    });
 
   return (
     <div className="space-y-4">
@@ -110,7 +122,7 @@ export function ShippingRateMatrix() {
                         step="0.01"
                         value={row[movement] || ""}
                         onChange={(e) =>
-                          updateRow(row.id, { [movement]: parseFloat(e.target.value) || 0 })
+                          void updateRow(row.id, { [movement]: parseFloat(e.target.value) || 0 })
                         }
                         className={
                           "w-24 mx-auto text-center " +
@@ -125,7 +137,7 @@ export function ShippingRateMatrix() {
                       variant="ghost"
                       size="icon"
                       className="size-8 text-destructive"
-                      onClick={() => removeRow(row.id)}
+                      onClick={() => void removeRow(row.id)}
                     >
                       <Trash2 className="size-4" />
                     </Button>

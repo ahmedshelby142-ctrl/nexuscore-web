@@ -26,6 +26,7 @@ import { useBranchStore } from "@/store/useBranchStore";
 import { useOrderStore } from "@/store/useOrderStore";
 import { useFinancialStore } from "@/store/useFinancialStore";
 import { useSettingsStore } from "@/store/useSettingsStore";
+import { useShippingRatesStore } from "@/store/useShippingRatesStore";
 
 type Sink = (rows: any[]) => void;
 
@@ -37,6 +38,7 @@ const SINKS: Record<string, Sink> = {
   discount_codes: (rows) => useBusinessStore.setState({ promoDiscounts: rows }),
   return_records: (rows) => useBusinessStore.setState({ returnRecords: rows }),
   purchase_invoices: (rows) => useBusinessStore.setState({ purchaseInvoices: rows }),
+  shipping_rates: (rows) => useShippingRatesStore.setState({ rows, loaded: true }),
   wholesale_clients: (rows) => useBusinessStore.setState({ wholesaleClients: rows }),
   wholesale_invoices: (rows) => useBusinessStore.setState({ wholesaleInvoices: rows }),
   transactions: (rows) => useBusinessStore.setState({ transactions: rows }),

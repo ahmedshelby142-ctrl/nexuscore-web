@@ -137,6 +137,16 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
   // 010: the MONEY was always in the ledger, the DOCUMENT was in localStorage
   // and nowhere else — so a client added on the till did not exist in the
   // office, and a cache clear erased invoices whose ledger events survived.
+  // The delivery tariff (migration 018). Reference config, not a balance:
+  // every fee is snapshotted into its ledger event at the moment of the
+  // movement, so these rows price the future and never rewrite the past.
+  shipping_rates: {
+    columns: [
+      "id", "governorate", "delivery", "return", "exchange",
+      "createdAt", "updatedAt", ...COMMON,
+    ],
+  },
+
   wholesale_clients: {
     columns: [
       "id", "companyName", "contactPerson", "phone", "email", "notes",

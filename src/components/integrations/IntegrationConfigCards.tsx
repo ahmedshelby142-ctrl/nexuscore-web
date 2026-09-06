@@ -193,7 +193,7 @@ function IntegrationCard({
         <div className="flex items-center gap-2 shrink-0">
           <Switch checked={enabled} onCheckedChange={onToggle} aria-label={`تفعيل ${title}`} />
           {docsUrl && (
-            <a href={docsUrl} target="_blank" rel="noreferrer">
+            <a href={docsUrl} target="_blank" rel="noreferrer" aria-label={`توثيق ${title}`}>
               <Button variant="ghost" size="icon" title="التوثيق">
                 <ExternalLink className="size-4" />
               </Button>
@@ -602,6 +602,7 @@ export function ShippingIntegrationCard() {
           </div>
           <Switch
             checked={shipping.autoTrack}
+            aria-label="تتبع تلقائي للشحنات"
             onCheckedChange={(v) => updateShipping({ autoTrack: v })}
           />
         </div>
@@ -614,6 +615,7 @@ export function ShippingIntegrationCard() {
           </div>
           <Switch
             checked={shipping.autoCreateShipment}
+            aria-label="إنشاء شحنة تلقائياً"
             onCheckedChange={(v) => updateShipping({ autoCreateShipment: v })}
           />
         </div>
@@ -779,6 +781,7 @@ export function OnlineOrderIntakeCard() {
             </div>
             <Switch
               checked={onlineOrderIntake.allowAutoIngest}
+            aria-label="الاستلام التلقائي"
               onCheckedChange={(v) => updateOnlineOrderIntake({ allowAutoIngest: v })}
             />
           </div>
@@ -793,6 +796,7 @@ export function OnlineOrderIntakeCard() {
             </div>
             <Switch
               checked={onlineOrderIntake.pushStatusUpdates}
+            aria-label="إرسال تحديثات الحالة"
               onCheckedChange={(v) => updateOnlineOrderIntake({ pushStatusUpdates: v })}
             />
           </div>
@@ -807,6 +811,7 @@ export function OnlineOrderIntakeCard() {
             </div>
             <Switch
               checked={onlineOrderIntake.pollEnabled}
+            aria-label="سحب دوري (Polling)"
               onCheckedChange={(v) => updateOnlineOrderIntake({ pollEnabled: v })}
             />
           </div>

@@ -89,7 +89,11 @@ export function ShippingSelector({ value, onChange, personaLabel }: ShippingSele
             {personaLabel || "يتطلب شحن؟"}
           </Label>
         </div>
-        <Switch checked={value.requiresShipping} onCheckedChange={handleToggle} />
+        <Switch
+          checked={value.requiresShipping}
+          onCheckedChange={handleToggle}
+          aria-label={personaLabel || "يتطلب شحن؟"}
+        />
       </div>
 
       {value.requiresShipping && (

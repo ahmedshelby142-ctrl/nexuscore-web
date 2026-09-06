@@ -236,6 +236,7 @@ export function ExecutiveDashboard() {
           <div className="relative flex items-center pr-2 pl-1 border-r border-border ml-1">
             <input 
               type="month"
+              aria-label="اختيار شهر محدد"
               value={period.match(/^\d{4}-\d{2}$/) ? period : ""}
               onChange={(e) => {
                 if (e.target.value) setPeriod(e.target.value);

@@ -60,7 +60,7 @@ function SettingRow({
         <h3 className="font-medium">{label}</h3>
         <p className="text-sm text-muted-foreground mt-1">{description}</p>
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
     </div>
   );
 }

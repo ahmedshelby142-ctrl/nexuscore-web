@@ -819,23 +819,8 @@ test("an async handler that appends a ledger event is gated", () => {
   );
 });
 
-test("a shop that was never licensed is not told its licence expired", () => {
-  // `LicenseVerdict` has carried `unlicensed` separately from `expired` all
-  // along, but the screen collapsed the two and told every brand-new signup
-  // "انتهت صلاحية الترخيص". `claim_store` creates a store with no licence row,
-  // so that is what EVERY new customer saw — and an owner told their licence
-  // expired reasonably reaches for a reinstall or a backup restore to get
-  // their data "back", when nothing was lost and nothing ran out.
-  const page = code(read("../src/pages/LicenseExpired.tsx"));
-  assert.match(page, /verdict === "unlicensed"/, "the screen must read the unlicensed verdict");
-  // The expiry wording must be reachable ONLY when it is not the unlicensed case.
-  const at = page.indexOf("انتهت صلاحية الترخيص");
-  assert.ok(at > 0, "the expiry wording should still exist for a real expiry");
-  assert.ok(
-    page.slice(Math.max(0, at - 260), at).includes("unlicensed"),
-    "the expiry wording must sit behind an unlicensed check",
-  );
-});
+// The lockout screen's four-state copy is asserted in check_license_gate.mjs,
+// beside the verdict logic that produces those four states.
 
 test("the shipping tariff is cloud data, not a localStorage file", () => {
   // It was the last piece of business data only one browser could see — and

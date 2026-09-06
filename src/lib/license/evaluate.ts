@@ -3,33 +3,52 @@
  *
  * Pure, no imports, no clock of its own — `nowMs` is always passed in. That is
  * what lets `scripts/check_license_gate.mjs` drive every branch (expiry, the
- * moment of expiry, a revoked licence, a rolled-back clock) without a database
- * or a fake timer.
+ * moment of expiry, a suspension, a rolled-back clock) without a database or a
+ * fake timer.
  *
- * ## The two failures this has to tell apart
+ * ## The four things this has to tell apart
  *
  * A lockout screen is the harshest thing this app can do to a shop, so the
- * verdict distinguishes "you have not paid" from "we could not check":
+ * verdict never says more than it knows:
  *
- *   expired / unlicensed → their side. Lock, and say why.
- *   unverified           → our side (our outage, our missing row). Still locks,
- *                          but says something different, because telling a
- *                          paying shop their licence expired when in fact our
- *                          server was down is a support call and a lost
- *                          customer.
+ *   unlicensed → never activated. Nothing expired, nothing was switched off.
+ *   expired    → the paid period ran out on its own.
+ *   suspended  → the system owner switched it off before that date.
+ *   unverified → OUR side: our outage, our unreadable row. Still locks, but
+ *                says something different, because telling a paying shop their
+ *                licence expired when in fact our server was down is a support
+ *                call and a lost customer.
+ *
+ * These used to collapse: an owner-revoked licence and a lapsed one both came
+ * back as `expired`, so a suspended shop was told its subscription had run out
+ * and went looking for a renewal button when what it needed was a phone call.
  *
  * The one thing this must never do is grant access because a check failed
  * softly — a protection system that fails open is not a protection system.
+ * That is why the status check below is `!== "active"` rather than a list of
+ * known-bad values: a status this build has never heard of locks the shop and
+ * reports `unverified`, instead of falling through to the date and opening.
  */
 
-export type LicenseVerdict = "ok" | "expired" | "unlicensed" | "unverified";
+export type LicenseVerdict = "ok" | "expired" | "suspended" | "unlicensed" | "unverified";
+
+/** What `store_licenses.status` may hold. Widened as `string` on the row, on purpose. */
+export type LicenseStatus = "active" | "expired" | "suspended";
 
 export interface LicenseRow {
   license_key: string;
   plan_type: "BASIC" | "PRO";
   /** ISO-8601 from Postgres `timestamptz`. */
   valid_until: string;
-  status: "active" | "expired";
+  /**
+   * Deliberately `string`, not `LicenseStatus`. This value comes off the wire
+   * from a database that can be migrated ahead of the bundle reading it, so
+   * the type must admit a value this build does not know — and the logic must
+   * then fail closed rather than fall through.
+   */
+  status: string;
+  /** When the owner switched it off. Only set while `status = 'suspended'`. */
+  suspended_at?: string | null;
 }
 
 export interface LicenseDecision {
@@ -74,9 +93,29 @@ export function evaluateLicense(
 
   const daysLeft = Math.floor((expiresAt - nowMs) / DAY_MS);
 
-  // An explicit revoke outranks the date: it is how a licence is killed early.
+  // The status outranks the date in both directions: a suspension takes effect
+  // while the paid period is still running, and an explicit revoke kills a
+  // licence early.
+  if (row.status === "suspended") {
+    return {
+      verdict: "suspended",
+      daysLeft,
+      messageAr: "تم إيقاف الوصول لهذا المتجر مؤقتاً من إدارة النظام.",
+    };
+  }
+
   if (row.status === "expired") {
-    return { verdict: "expired", daysLeft, messageAr: "تم إيقاف ترخيص هذا المتجر." };
+    return { verdict: "expired", daysLeft, messageAr: "تم إنهاء ترخيص هذا المتجر." };
+  }
+
+  if (row.status !== "active") {
+    // A value this build does not know. Lock, and say it is our side — because
+    // it is: the database is ahead of this bundle.
+    return {
+      verdict: "unverified",
+      daysLeft,
+      messageAr: "حالة الترخيص غير معروفة لهذه النسخة. حدّث التطبيق أو تواصل مع الدعم.",
+    };
   }
 
   if (opts.fromCache && opts.clockRolledBack) {

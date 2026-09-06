@@ -29,6 +29,24 @@ import {
 
 const CACHE_KEY = "store-license-cache-v1";
 
+/**
+ * How long a cached verdict may stand in for the server's.
+ *
+ * The cache exists so a transient outage does not shut a paying shop, not so a
+ * shop can stay open indefinitely by never reaching the server. Without a
+ * bound, a store the owner suspends this morning keeps trading on a row cached
+ * yesterday for as long as it stays offline — up to `valid_until`, which could
+ * be a year. That is the gate being bypassed by pulling a network cable.
+ *
+ * Three days is longer than any outage this app has had and shorter than any
+ * suspension is meant to last. Past it, an unreachable server reports
+ * `unverified` — locked, and honest about whose fault it is. Nothing is lost
+ * by being strict here: every screen reads through `cloudList`, which cannot
+ * return a row without a connection either, so a shop offline for three days
+ * has had no working app for three days regardless.
+ */
+const CACHE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
 interface CachedLicense {
   row: LicenseRow;
   fetchedAt: number;
@@ -52,7 +70,12 @@ function readCache(): CachedLicense | null {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CachedLicense;
-    return parsed?.row?.valid_until ? parsed : null;
+    if (!parsed?.row?.valid_until) return null;
+    // A cache with no timestamp predates the bound; treat it as stale rather
+    // than trusting it forever.
+    const age = Date.now() - (parsed.fetchedAt ?? 0);
+    if (!(age >= 0) || age > CACHE_MAX_AGE_MS) return null;
+    return parsed;
   } catch {
     return null;
   }
@@ -117,7 +140,7 @@ export const useStoreLicense = create<StoreLicenseState>()((set) => ({
     try {
       const { data, error } = await sb
         .from("store_licenses")
-        .select("license_key, plan_type, valid_until, status")
+        .select("license_key, plan_type, valid_until, status, suspended_at")
         .limit(1)
         .maybeSingle();
 

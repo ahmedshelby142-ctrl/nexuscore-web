@@ -90,19 +90,37 @@ export function IntegrationsPanel() {
           </div>
         )}
 
-        {/* Connected Sources */}
+        {/*
+          These are the adapters COMPILED INTO THIS BUILD, not shops that are
+          connected to anything. `getRegisteredSources()` reads the adapter
+          registry — it knows nothing about credentials, and it makes no request
+          to any provider.
+
+          The heading used to read "المصادر المتصلة" with "متصل" printed under
+          each one, so the screen told the owner that Shopify, WooCommerce and a
+          custom storefront were all live. None of them is: the webhook
+          functions in `supabase/functions/` are not deployed, so no order can
+          arrive from any of them. An owner who believes their storefront is
+          wired up stops checking it, and finds out when a customer asks where
+          their order went.
+        */}
         <div className="mb-6">
-          <h4 className="font-semibold mb-3">المصادر المتصلة</h4>
+          <h4 className="font-semibold mb-1">المنصّات المدعومة</h4>
+          <p className="text-xs text-muted-foreground mb-3">
+            دي المنصّات اللي النظام يعرف يتكلم معاها — مفيش واحدة فيهم مربوطة
+            دلوقتي. الربط محتاج نشر دوال الاستقبال (webhooks) وإدخال بيانات
+            المنصة في الكروت اللي تحت.
+          </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             {registeredSources.map((source) => (
               <div
                 key={source}
                 className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/50"
               >
-                <Globe className="size-5 text-primary" />
+                <Globe className="size-5 text-muted-foreground" />
                 <div>
                   <p className="font-medium capitalize">{source}</p>
-                  <p className="text-xs text-muted-foreground">متصل</p>
+                  <p className="text-xs text-muted-foreground">غير مربوط</p>
                 </div>
               </div>
             ))}
@@ -115,7 +133,7 @@ export function IntegrationsPanel() {
             <div className="flex items-center justify-between mb-4">
               <div>
                 <p className="text-sm text-muted-foreground">
-                  مزامنة الطلبات المعلقة من جميع المصادر المتصلة
+                  مزامنة الطلبات المعلقة من المنصّات المربوطة — مفيش منصة مربوطة دلوقتي
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
                   سيتم تحديث المخزون والسجلات المالية تلقائياً

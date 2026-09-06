@@ -653,6 +653,23 @@ test("no integration claims a connection it never made", () => {
       `${provider} must not report a successful connection — it makes no request`,
     );
   }
+
+  // The panel above the cards listed the COMPILED-IN adapters under the
+  // heading "المصادر المتصلة" with "متصل" printed beneath each, so the screen
+  // told the owner that Shopify, WooCommerce and a custom storefront were all
+  // live. `getRegisteredSources()` reads the adapter registry: it knows nothing
+  // about credentials and makes no request. None of them can be connected —
+  // the webhook functions in supabase/functions/ are not deployed, so no order
+  // can arrive from any of them. Found in the acceptance UAT, 2026-09-07.
+  const panel = code(read("../src/components/integrations/IntegrationsPanel.tsx"));
+  assert.ok(
+    !/<h4[^>]*>\s*المصادر المتصلة/.test(panel),
+    "the panel must not head the compiled-in adapters 'connected sources'",
+  );
+  assert.ok(
+    !/>\s*متصل\s*</.test(panel),
+    "no adapter may be labelled متصل — nothing in this build connects to a provider",
+  );
 });
 
 test("document numbers are allocated by the database", () => {

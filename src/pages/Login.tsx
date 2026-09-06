@@ -50,6 +50,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { checkLeakedPassword, LEAKED_PASSWORD_MESSAGE_AR } from "@/lib/security";
 import { changePassword as serverChangePassword } from "@/lib/api/authServer";
 import { getMachineFingerprint } from "@/lib/machineId";
 import { getSupabaseClient } from "@/lib/supabase";
@@ -181,6 +182,23 @@ export function Login() {
         let userId = "";
 
         if (authMode === "signup") {
+          // Refuse a password that is already in a public breach corpus.
+          //
+          // Supabase does this as a project setting, but only on a paid plan.
+          // The check runs here instead, on k-anonymity: five characters of the
+          // SHA-1 leave the browser, never the password. It is ADVISORY — it
+          // fails open, so an outage at the range API cannot stop anyone
+          // opening an account. See `lib/security.ts`.
+          //
+          // Before `signUp`, not after: an account created with a breached
+          // password is already a liability, and Supabase has no undo that
+          // leaves the address free to register again cleanly.
+          if (await checkLeakedPassword(password.trim())) {
+            setLocalError(LEAKED_PASSWORD_MESSAGE_AR);
+            setError({ code: "invalid_credentials", message: LEAKED_PASSWORD_MESSAGE_AR });
+            return;
+          }
+
           const { data, error } = await sb.auth.signUp({
             email: username.trim(),
             password: password.trim(),
@@ -338,6 +356,14 @@ export function Login() {
       return;
     }
     if (!session) return;
+
+    // Same check as signup: a password chosen at a change screen is no safer
+    // for being the second one someone picked.
+    if (await checkLeakedPassword(newPassword)) {
+      setLocalError(LEAKED_PASSWORD_MESSAGE_AR);
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const fp = machineId || (await getMachineFingerprint());

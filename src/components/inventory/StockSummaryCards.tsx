@@ -69,9 +69,17 @@ interface StockSummaryCardsProps {
   products: StockCardProduct[];
   value: StockFilter;
   onChange: (filter: StockFilter) => void;
+  /**
+   * Weighted-average cost per unit, from `useStock().costOf`.
+   *
+   * Required, not optional with a fallback: an optional prop is how the stored
+   * `costPrice` got read here in the first place. A caller that has products
+   * has `useStock`, so there is nothing to make this convenient for.
+   */
+  costOf: (productId: string) => number;
 }
 
-export function StockSummaryCards({ products, value, onChange }: StockSummaryCardsProps) {
+export function StockSummaryCards({ products, value, onChange, costOf }: StockSummaryCardsProps) {
 
   let lowStock = 0;
   let outOfStock = 0;
@@ -93,9 +101,20 @@ export function StockSummaryCards({ products, value, onChange }: StockSummaryCar
       lowStock += 1;
     }
 
-    // 1. Total Inventory Value
-    const cost = (product.costPrice || product.purchasePrice || product.averageCost || 0);
-    totalValue += (qty || 0) * cost;
+    // 1. Total Inventory Value, priced from the LEDGER.
+    //
+    // This read `product.costPrice || product.purchasePrice || product.averageCost`
+    // — contradicting the note at the top of this file, and wrong in both
+    // directions. `costPrice` is a stored field the purchase path stopped
+    // maintaining, so where it held a stale number the card priced stock at it;
+    // and where it was empty the whole chain fell through to 0, so a shop with
+    // 60 units at an average cost of 100 showed إجمالي قيمة المخزون = ٠ ج.م
+    // while the row beside it showed متوسط التكلفة = ١٠٠. One screen, two
+    // numbers, and the wrong one in the headline.
+    //
+    // `costOf` is the same weighted average the row prints and the same one a
+    // sale snapshots as `unit_cost`, so the card, the row and COGS agree.
+    totalValue += (qty || 0) * costOf(product.id);
   }
 
   // Clicking the active filter clears it, so a card is a toggle rather than a

@@ -71,3 +71,35 @@ test("getActualStock reads the snapshot, not the record", () => {
   assert.match(src, /ledgerQty\(product\.id\)/, "getActualStock must consult the ledger");
   assert.match(src, /Math\.min\(fromMirror, getActualStock\(product\)\)/, "variants must be clamped");
 });
+
+test("قيمة المخزون is priced from the ledger, not a stored cost", () => {
+  // The same rule as quantity, one column over. The summary card computed
+  //
+  //     product.costPrice || product.purchasePrice || product.averageCost || 0
+  //
+  // which is wrong twice: `costPrice` is a stored field the purchase path
+  // stopped maintaining, so a stale value priced the whole shelf; and where it
+  // was empty the chain fell through to 0, so a store holding 60 units at an
+  // average cost of 100 printed إجمالي قيمة المخزون = ٠ ج.م directly beside a
+  // row reading متوسط التكلفة = ١٠٠. Observed on the QA store, both screens.
+  //
+  // `costOf` comes from `useStock`, which is the same weighted average the row
+  // prints and the same one a sale snapshots as `unit_cost`.
+  const src = readFileSync(
+    new URL("../src/components/inventory/StockSummaryCards.tsx", import.meta.url),
+    "utf8",
+  );
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trimStart().startsWith("//")).join("\n");
+
+  assert.match(code, /costOf\(product\.id\)/, "the value card must price from the ledger");
+  for (const ghost of ["costPrice", "purchasePrice", "averageCost"]) {
+    assert.ok(
+      !code.includes(`product.${ghost}`),
+      `the card is reading the stored ${ghost} again — it does not track reality`,
+    );
+  }
+  assert.ok(
+    !/costOf\?\.|costOf\s*\?\s*:|costOf\s*\?\?/.test(code),
+    "costOf must stay required: an optional prop with a fallback is how the stored cost got in",
+  );
+});

@@ -45,7 +45,7 @@ export function InventoryTable() {
   const products = useMemo(() => activeProducts(allProducts), [allProducts]);
   // Same source as المنتجات: quantity is SUM(stock) and the value card prices
   // it at the weighted-average cost, so the two screens cannot disagree.
-  const { qtyOf, refresh: refreshStock } = useStock();
+  const { qtyOf, costOf, refresh: refreshStock } = useStock();
   const [stockFilter, setStockFilter] = useState<StockFilter>("all");
   const [pendingRemoval, setPendingRemoval] = useState<Product | null>(null);
   // Sorting is a view concern only — it reorders `qtyOf` reads, never touches
@@ -126,7 +126,7 @@ export function InventoryTable() {
     <div className="space-y-6">
       {/* The same four cards as المنتجات, from the same component and the same
           ledger figures — clicking one filters the table below. */}
-      <StockSummaryCards products={products} value={stockFilter} onChange={setStockFilter} />
+      <StockSummaryCards products={products} value={stockFilter} onChange={setStockFilter} costOf={costOf} />
 
       <div className="rounded-2xl border border-border bg-card p-6">
       {/* A one-line prompt, not a list.

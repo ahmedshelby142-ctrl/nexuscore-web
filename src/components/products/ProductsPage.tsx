@@ -414,6 +414,7 @@ export function ProductsPage() {
           products={products}
           value={stockStatusFilter}
           onChange={setStockStatusFilter}
+          costOf={costOf}
         />
       )}
 

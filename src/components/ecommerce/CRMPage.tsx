@@ -111,7 +111,25 @@ export function CRMPage() {
     () => duplicateOf(customers, { phone: form.phone, name: form.name }, editingId ?? undefined),
     [customers, form.phone, form.name, editingId],
   );
-  const canSave = form.name.trim().length > 0 && !clash;
+  /**
+   * A phone that cannot be dialled is worse than no phone.
+   *
+   * The field took anything at all — "not-a-phone" saved cleanly during the
+   * acceptance UAT — while this same page turns the number into a `wa.me`
+   * link and the courier screens use it to reach the customer. The result is a
+   * card that looks complete, a WhatsApp button that goes nowhere, and an
+   * order nobody can deliver.
+   *
+   * The predicate is `toWhatsAppNumber` rather than a regex of its own: it is
+   * already the app's definition of "dialable" (Arabic-Indic digits, +20, 00,
+   * trunk 0, separators), so the form and the link cannot disagree about the
+   * same number. Empty stays allowed — a walk-in customer has no phone, and
+   * the duplicate check below already handles two nameless-numberless rows.
+   */
+  const phoneEntered = form.phone.trim().length > 0;
+  const phoneUnusable = phoneEntered && toWhatsAppNumber(form.phone) === null;
+
+  const canSave = form.name.trim().length > 0 && !clash && !phoneUnusable;
 
   const openEditor = (customer?: CustomerProfile) => {
     setEditingId(customer?.id ?? null);
@@ -635,6 +653,12 @@ export function CRMPage() {
             {/* The guard that keeps one number on one card. Without it the
                 owner can hand two active rows the same identity, and from then
                 on every match is ambiguous for ever. */}
+            {phoneUnusable && (
+              <p className="text-sm text-destructive">
+                الرقم ده مش رقم تليفون صالح. اكتبيه بالشكل ده: 01012345678 أو
+                +201012345678 — أو سيبيه فاضي لو العميل من غير رقم.
+              </p>
+            )}
             {clash && (
               <p className="text-sm text-destructive">
                 {form.phone.trim()

@@ -49,3 +49,34 @@ test("nothing dialable gives no link, rather than a broken one", () => {
 test("the link is the plain wa.me form", () => {
   assert.equal(whatsAppLink("01012345678"), "https://wa.me/201012345678");
 });
+
+test("the customer form refuses a phone that cannot be dialled", async () => {
+  // Found in the acceptance UAT on 2026-09-07: the CRM card saved
+  // `phone: "not-a-phone"` without a murmur. `canSave` checked the name and
+  // the duplicate rule and nothing else.
+  //
+  // It matters because this same page renders the number as a `wa.me` link and
+  // the courier screens use it to reach the customer: the card looks complete,
+  // the WhatsApp button goes nowhere, and the order cannot be delivered.
+  //
+  // The rule is `toWhatsAppNumber(...) === null`, not a regex of the form's
+  // own — one definition of "dialable" for the field and the link it becomes.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/components/ecommerce/CRMPage.tsx", import.meta.url), "utf8");
+
+  assert.match(src, /toWhatsAppNumber\(form\.phone\) === null/, "the form must use the shared predicate");
+  assert.match(
+    src,
+    /canSave =[^;]*!phoneUnusable/,
+    "an unusable phone must block the save, not merely warn",
+  );
+
+  // And the predicate itself still has to reject the thing that got through.
+  assert.equal(toWhatsAppNumber("not-a-phone"), null);
+  assert.equal(toWhatsAppNumber("123"), null, "too short to dial");
+  // While the shapes Egyptians actually type keep working.
+  assert.equal(toWhatsAppNumber("01012345678"), "201012345678");
+  assert.equal(toWhatsAppNumber("+20 101 234 5678"), "201012345678");
+  assert.equal(toWhatsAppNumber("٠١٠١٢٣٤٥٦٧٨"), "201012345678");
+  assert.equal(toWhatsAppNumber(""), null, "empty is not a number, but the form allows empty");
+});

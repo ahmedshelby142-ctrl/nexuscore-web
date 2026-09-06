@@ -47,6 +47,15 @@ business-data backup; see item 1 of [KNOWN_LIMITATIONS.md](./KNOWN_LIMITATIONS.m
 | Tests | PASS | 638 total — 637 pass, 0 fail, 1 skipped. |
 | Documentation | PASS | This set: README, ARCHITECTURE, SECURITY, LICENSE_OPERATIONS, DEPLOYMENT, QA_STATUS, KNOWN_LIMITATIONS. |
 
+## Deployment
+
+| | |
+| --- | --- |
+| Audited commit | `50e83a7` |
+| Remotes | `origin` (nexuscore-web) and `deployed` (nexuscore-web1), both at this commit |
+| Vercel | project `nexuscore-web1`, production, built from `deployed` |
+| Migrations applied | `000`–`021`, including `021_close_open_policies.sql` from this audit |
+
 ## Exact figures
 
 ```

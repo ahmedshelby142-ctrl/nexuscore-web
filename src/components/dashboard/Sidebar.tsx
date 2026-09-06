@@ -367,6 +367,27 @@ export function Sidebar() {
                   } catch {
                     // ignore
                   }
+
+                  // END THE SUPABASE SESSION, not just the local flag.
+                  //
+                  // `logout()` only clears `isAuthenticated`. The refresh token
+                  // stayed in localStorage, so pressing تسجيل الخروج left a
+                  // live session behind — and the boot reconciliation, which
+                  // exists to restore a valid session whose local flag was
+                  // lost, faithfully signed the user straight back in.
+                  // Reproduced: log out, walk to /inventory, and you are in
+                  // with full access and no credentials. On a shared machine
+                  // that is the whole point of logging out, defeated.
+                  //
+                  // `signOut` clears the stored session even when the network
+                  // call fails, so the local state is consistent either way.
+                  try {
+                    const { getSupabaseClient } = await import("@/lib/supabase");
+                    await getSupabaseClient()?.auth.signOut();
+                  } catch {
+                    // Never strand the user on the app because sign-out failed.
+                  }
+
                   logout();
                   navigate("/login", { replace: true });
                 }}

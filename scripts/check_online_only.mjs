@@ -888,3 +888,21 @@ test("a shop provisioned at signup gets a name", () => {
   assert.match(m, /TRIAL_DAYS CONSTANT INT := 0/,
     "TRIAL_DAYS is a commercial decision; it stays at today's behaviour until changed on purpose");
 });
+
+test("logging out ends the Supabase session, not just the local flag", () => {
+  // `logout()` clears `isAuthenticated` and nothing else, so the refresh token
+  // stayed in localStorage and the session stayed alive. The boot
+  // reconciliation — which exists to restore a valid session whose local flag
+  // was lost — then signed the user straight back in. Reproduced on the QA
+  // tenant: press تسجيل الخروج, walk to /inventory, and you are inside with
+  // full access and no credentials. On a shared machine that is the entire
+  // point of logging out, defeated.
+  const sidebar = code(read("../src/components/dashboard/Sidebar.tsx"));
+  assert.match(sidebar, /auth\.signOut\(\)/,
+    "the logout button must end the Supabase session");
+
+  // And the reconciliation must stay one-directional about signing OUT: it may
+  // restore a session, but a real sign-out has to remove the token so there is
+  // nothing left to restore.
+  assert.match(boot, /auth\.getSession\(\)/, "boot still reconciles against the real session");
+});

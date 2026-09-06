@@ -1,6 +1,7 @@
 # Known limitations
 
-Every item here was confirmed during the audit of 6 September 2026. Nothing on
+Items 1-10 were confirmed during the hardening audit of 6 September 2026;
+items 11-14 were added by the user acceptance test of 7 September 2026. Nothing on
 this page is speculation, and nothing that was actually fixed is listed as a
 limitation.
 
@@ -104,9 +105,14 @@ Four edge functions exist in `supabase/functions/`
 reports zero edge functions.
 
 The screen therefore stores configuration and does not exchange traffic with any
-provider. It does not claim otherwise: the cards show a "not verified" state
-rather than a false "connected", and no integration secret is persisted to
-`localStorage`.
+provider, and it now says so. The cards show a "not verified" state rather than a
+false "connected", and no integration secret is persisted to `localStorage`.
+
+The acceptance UAT of 7 September 2026 found one place that still claimed
+otherwise: a panel headed "المصادر المتصلة" listing Shopify, WooCommerce and
+Custom with "متصل" under each. Those are the adapters compiled into the build,
+not connections. It now reads "المنصّات المدعومة" with each marked
+"غير مربوط".
 
 Treat the integrations screen as configuration-ahead-of-deployment.
 
@@ -189,3 +195,80 @@ What they do not cover: rendered layout. The responsive and accessibility result
 in `QA_STATUS.md` come from driving a real browser at twelve widths during the
 audit, not from a test that runs in CI. A layout regression would not be caught
 automatically.
+
+---
+
+## 11. An access token keeps working for its lifetime after logout
+
+Logout does revoke the session server-side — replaying a pre-logout token
+against `/auth/v1/user` returns `403 session_not_found`, confirmed during the
+UAT. But the same token still reads data: `/rest/v1/products` answered `200`
+with rows.
+
+That is how stateless JWT verification works. PostgREST checks the signature
+and the claims; it does not consult the session table on every request, so an
+already-issued access token stays valid until it expires (about an hour) even
+though no new one can be minted.
+
+The practical exposure is small: the browser no longer holds the token after
+logout, so a user cannot restore their own access, and an attacker who had
+already taken a copy would have had that window regardless. It is listed
+because it is a real property somebody should know before assuming logout is
+instantaneous everywhere.
+
+**What would change it:** shortening the access-token lifetime in the Supabase
+project settings. There is nothing to fix in this codebase.
+
+---
+
+## 12. Supabase auth errors reach the user in English
+
+The login and signup screens surface Supabase's own error strings verbatim —
+"Invalid login credentials", "Unable to validate email address: invalid
+format" — inside an otherwise fully Arabic, RTL interface.
+
+The messages are accurate and the flows behave correctly; only the language is
+wrong. Every error the application itself raises is already in Arabic. Left
+alone deliberately: mapping provider error codes to Arabic copy is a small
+feature, not a defect fix, and guessing at the mapping risks turning a precise
+message into a vague one.
+
+Severity: LOW. Cosmetic, with no functional impact.
+
+---
+
+## 13. The QA tenant holds the acceptance dataset, and was not wiped
+
+The UAT created a coherent set of records in the QA store
+(`db31bbd8-…`): a product with a purchase, a sale, a return and an
+e-commerce order against it; a wholesale client and invoice `FJ-0001`; a
+purchase invoice `FM-0002`; a branch, a customer, a discount, a bundle, a
+shipping rate and an expense.
+
+These were **deliberately not deleted**. The ledger is append-only by design —
+`ledger_events` and `ledger_lines` cannot be updated or deleted by any client
+role — so removing the documents while the events remain would manufacture
+exactly the orphan condition documented in limitation 4. A coherent test
+dataset in a disposable tenant is safer than a half-deleted one.
+
+The production store was not touched at any point. One customer row created by
+a failing validation test (`phone: not-a-phone`) was removed, and every RLS
+probe row was deleted in the same script that created it.
+
+---
+
+## 14. Restore was not executed
+
+`/backups` produces and verifies a bundle, and the create path was exercised
+during the UAT — one file, 6,436 bytes, checksummed, containing only device
+settings.
+
+Restore was **not run**. It is not unsafe — `applyBundle` writes only
+whitelisted `localStorage` keys, so it cannot reach Supabase, cross tenants, or
+destroy business data — but running it overwrites the live session's local
+state, including the auth slice, and there was no throwaway browser context to
+run it in without ending the audit. It is therefore reported as verified by
+inspection and by its whitelist, not by execution.
+
+This is separate from limitation 1, which is the larger point: there is no
+business-data restore at all.

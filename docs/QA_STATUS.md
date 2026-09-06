@@ -1,5 +1,161 @@
 # Production readiness status
 
+Two passes are recorded here. The **user acceptance test** below is the most
+recent and supersedes the hardening audit where they disagree; the hardening
+audit is kept because its findings and evidence still stand.
+
+---
+
+# Part 1 — User acceptance test
+
+**Date:** 7 September 2026
+**Commit tested:** `2bd0743`, with fixes committed through `d243a28`
+**Method:** the current source was re-enumerated, and every result below comes
+from driving the running application in a browser against the live Supabase
+project. Nothing here is carried over from Part 2.
+
+## Verdict
+
+> ## ACCEPTED FOR HANDOVER
+
+Three defects were found by pressing buttons rather than by reading code. All
+three are fixed and re-verified in the running app. No critical or high
+functional defect remains open.
+
+## What was found
+
+| # | Defect | Severity | Status |
+| --- | --- | --- | --- |
+| 1 | **Every dialog in the app stayed on screen after closing.** Save a product: the row lands in the database and the dialog stays open with the fields still filled — no toast, no error, submit re-enabled. Cancel and the X behaved identically, and selects left their listbox mounted over the form. | HIGH | FIXED `bbb8a25` |
+| 2 | **The customer form accepted an undialable phone.** `not-a-phone` saved cleanly into `customers.phone`, which this same page turns into a WhatsApp link and the courier screens use to reach the customer. | MEDIUM | FIXED `6d5fb5d` |
+| 3 | **The integrations screen claimed three live storefronts.** "المصادر المتصلة" with "متصل" under Shopify, WooCommerce and Custom — while no webhook function is deployed and no provider request is ever made. | MEDIUM | FIXED `d243a28` |
+
+### Why the dialogs stuck
+
+Radix unmounts through `Presence`, which waits for `animationend` when an exit
+animation is present. The components carried the v3-era `tailwindcss-animate`
+utilities (`data-[state=closed]:animate-out …`). Under Tailwind v4 with
+`tw-animate-css`, `@keyframes exit` compiles and the `fade-out-0` /
+`zoom-out-95` utilities compile — they set `--tw-exit-*` — but the `animate-out`
+rule that names and times the animation does not appear in the output.
+
+Verified rather than inferred: listeners for `animationstart`, `animationend`
+and `animationcancel` across a full open/close cycle recorded **zero** events,
+while `getComputedStyle` reported `animation-name: exit`. `Presence` was
+waiting for an event that could not arrive. Once stuck, reopening reused the
+same closed node, so it never recovered.
+
+The exit-animation utilities were removed from all twelve overlay primitives.
+Nothing was lost visually, because nothing was animating.
+
+## Acceptance table
+
+| Area | Tests | PASS | FIXED | BLOCKED | FAIL | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Authentication | 7 | 7 | 0 | 0 | 0 | Logout revokes the server session — replaying the pre-logout token gave `403 session_not_found`. Refresh and direct URLs both land on `/login`. |
+| Signup | 5 | 5 | 0 | 0 | 0 | Leaked password refused before `signUp` (prefix `5BAA6` sent, `/auth/v1/signup` never called); a safe password reaches signUp; invalid email refused. No account was created. |
+| Dashboard | 4 | 4 | 0 | 0 | 0 | Net worth 5,400 = stock 6,800 − wallet 1,400, reconciled to the ledger. |
+| POS | 12 | 12 | 0 | 0 | 0 | Search, add, ± quantity, remove with confirmation (both branches), sale, return. Triple-click on both money buttons → one event each. |
+| Products | 8 | 7 | 1 | 0 | 0 | Create, edit, validation, row actions. The dialog-close failure was defect 1. |
+| Inventory | 3 | 3 | 0 | 0 | 0 | 9 units / 5,900 value / WAC 100, agreeing with Products and the ledger. |
+| Stock Audit | 2 | 2 | 0 | 0 | 0 | Renders with a truthful empty state; no failed request shown as "no movements". |
+| Purchasing | 6 | 6 | 0 | 0 | 0 | Quick supply disabled until valid; triple-click → one purchase event, one invoice `FM-0002`, stock +10, wallet −1,000. |
+| Wholesale | 6 | 6 | 0 | 0 | 0 | Client created; invoice `FJ-0001` issued once under triple-click; stock 9→7, COGS +200, revenue segregated under `wholesale`. |
+| Partners | 4 | 4 | 0 | 0 | 0 | Four tabs; the expense dialog is reached from the finance tab. |
+| Orders | 6 | 6 | 0 | 0 | 0 | Order created once; `pending → shipped → delivered`, each exactly once under triple-click; revenue and COGS booked on delivery only. |
+| Returns | 3 | 3 | 0 | 0 | 0 | The POS return reverses stock, revenue and COGS; the screen renders with a truthful empty state. |
+| Shipping | 4 | 4 | 0 | 0 | 0 | Rate created once under triple-click, inline edit persists, delete removes the row — all cloud-backed. |
+| Courier | 1 | 1 | 0 | 0 | 0 | Renders; the QA dataset has no courier activity to settle. |
+| Expenses | 5 | 5 | 0 | 0 | 0 | Empty, zero and negative amounts all blocked; triple-click → one expense row, one ledger event, wallet −50. |
+| Discounts | 3 | 3 | 0 | 0 | 0 | `QAUAT10` created once with the correct type and value. |
+| Bundles | 3 | 3 | 0 | 0 | 0 | Component cost derived from the ledger (100); bundle saved once with correct `bundleItems`. |
+| CRM | 5 | 4 | 1 | 0 | 0 | Customer created once and appears in the POS dropdown. Phone validation was defect 2. |
+| Branches | 4 | 4 | 0 | 0 | 0 | Empty form refused; triple-click → one branch, every field persisted. |
+| Users | 2 | 2 | 0 | 0 | 0 | Renders with role display and two row actions. |
+| Settings | 6 | 6 | 0 | 0 | 0 | Cloud values loaded rather than defaults; save persisted phone and address **without clobbering the store name**; success message shown. |
+| Preferences | 2 | 2 | 0 | 0 | 0 | Theme controls render and respond. |
+| Integrations | 4 | 3 | 1 | 0 | 0 | 59 controls, all named, 7 secret fields. The false connectivity claim was defect 3. |
+| Backups | 3 | 3 | 0 | 0 | 0 | Bundle built once (6,436 bytes) with a checksum; contains only device settings — no products, orders or ledger. Restore **not executed**; see limitations. |
+| License Admin | 2 | 1 | 0 | 1 | 0 | A store ADMIN is redirected away from `/system-admin/licenses`. The owner-side buttons remain BLOCKED — no authorized System Owner session was available, and none was fabricated. |
+| Placeholders | 8 | 8 | 0 | 0 | 0 | All eight render, say "قيد التطوير", carry zero controls and throw nothing. |
+
+**Totals — 118 checks: 114 PASS, 3 FIXED, 1 BLOCKED, 0 FAIL.**
+
+## Inventory of the current application
+
+33 route definitions in `src/App.tsx`: **21 implemented screens** (the dashboard
+index plus 20 named), **8 placeholders**, **3 auth/admin screens**, and the
+Layout wrapper. The previous count of 21 implemented screens is unchanged.
+
+At 1440 px the 21 implemented screens present **241 visible controls on first
+render, every one of them named** — buttons, icon buttons, links, text/number/
+date/password/search inputs, selects, comboboxes, switches, tabs and checkboxes.
+Controls inside dialogs are additional and were exercised per screen.
+
+## Cross-screen consistency
+
+A controlled sequence on a product created for this test, `QA-UAT-WIDGET`:
+purchase 10 @ 100 → sale 2 @ 300 → return 1.
+
+| Metric | Expected | Actual |
+| --- | ---: | ---: |
+| Stock | 9 | **9** |
+| Stock value | 900 | **900** |
+| WAC | 100 | **100.0000** |
+| COGS | 100 | **100** |
+
+Products, Inventory, POS and the Dashboard all reported the same figures from
+the same ledger rows.
+
+**One intentional difference from the brief.** The brief expects `Revenue 600`.
+The `revenue` account did read 600 at that moment, but that total is
+300 (an earlier sale) + 600 (this sale) − 300 (this return); this product's own
+net contribution is 300. The application books a return as a reversing entry
+against revenue rather than leaving the gross figure standing, which is the
+correct treatment — the brief's 600 is the gross before the return. Nothing is
+wrong; the two numbers answer different questions.
+
+## Rapid interaction
+
+Single, double and triple clicks were driven against every high-value mutation
+in the running UI. Each produced exactly one logical mutation, confirmed in the
+database:
+
+product create · product edit · quick supply · POS sale · POS return ·
+wholesale invoice · expense · branch · customer · discount · bundle ·
+e-commerce order · order dispatch · order delivery · shipping rate · backup.
+
+## Failure truth
+
+A 503 was forced on `ledger_events` mid-sale. The screen said
+«لم تُسجَّل العملية ولم يتغيّر أي رصيد» with the underlying error, claimed no
+success, and kept the cart for a retry — and the ledger was byte-identical
+afterwards, with no phantom event.
+
+## Console and network
+
+Zero uncaught exceptions, zero unhandled rejections and zero failed application
+requests were recorded across the whole UAT. The only non-2xx responses seen
+were ones deliberately provoked: the RLS probes, the forced 503, and the
+intercepted signup.
+
+## Responsive
+
+320 / 360 / 375 / 390 / 414 / 430 / 768 / 820 / 834 / 1024 / 1280 / 1440 px, in
+RTL. Zero horizontal overflow and zero unnamed controls at every width.
+
+## Test, typecheck, build
+
+```
+TESTS:   PASS = 641   FAIL = 0   SKIP = 1   (642 total)
+TSC:     PASS
+BUILD:   PASS
+```
+
+---
+
+# Part 2 — Production hardening audit
+
 **Audit date:** 6 September 2026
 **Scope:** full repository, live Supabase project `oczgqpxeixlrufvevitz`, and the
 production Vercel deployment.

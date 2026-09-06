@@ -57,26 +57,30 @@ const inMemoryLoginAttempts: Array<{
 
 let bootPromise: Promise<void> | null = null;
 
-async function ensureBootstrapped() {
-  if (inMemoryUsers.length > 0) return;
-  if (bootPromise) return bootPromise;
-  bootPromise = (async () => {
-    // Seed the first owner with a temporary password the user must
-    // change on first login. Username: "owner", password: "owner".
-    const hash = await hashPassword("owner");
-    inMemoryUsers.push({
-      id: crypto.randomUUID(),
-      username: "owner",
-      full_name: "Default Owner",
-      role: "owner",
-      password_hash: hash,
-      must_change_password: true,
-      is_active: true,
-      created_at: new Date(),
-    });
-  })();
-  return bootPromise;
-}
+/*
+ * `ensureBootstrapped()` used to live here. It seeded the in-memory user table
+ * with `owner` / `owner`, role "owner", the first time anyone tried to log in
+ * without Supabase configured.
+ *
+ * That was a login backdoor, and the condition guarding it was not what it
+ * looked like. `getOperationMode()` returns "offline_local" for exactly one
+ * reason — `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` are absent — and
+ * that is the SAME condition that makes `getSupabaseClient()` return null and
+ * sends `login` down the in-memory branch. So "offline mode" and "the seeded
+ * owner account is live" were one fact, not two: any build served without
+ * those env vars — a preview deployment, a fork, a mistyped variable name in
+ * the Vercel dashboard — accepted owner/owner and handed back a full owner
+ * session.
+ *
+ * A previous pass deleted a hardcoded `owner`/`owner` branch from the login
+ * SCREEN. This was the same bypass one layer down, still reachable.
+ *
+ * Nothing replaces it. The app cannot function offline in any case: every read
+ * goes through `cloudList`, which throws `CloudUnavailable` with no client. A
+ * login that unlocks a UI with no data behind it buys nothing and costs this.
+ * The table stays — `createUser` still fills it — but it now starts empty, so
+ * every lookup misses and every in-memory login is refused.
+ */
 
 function findInMemoryUser(username: string): InMemoryUser | undefined {
   return inMemoryUsers.find((u) => u.username === username);
@@ -143,8 +147,9 @@ export const login = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sb = getSupabaseClient();
     if (!sb) {
-      // In-memory fallback.
-      await ensureBootstrapped();
+      // In-memory only, and the table is empty until someone with an existing
+      // owner session creates a user — which cannot happen without Supabase.
+      // See the note where the seeded owner used to be.
       const user = findInMemoryUser(data.username);
       if (!user || !user.is_active) {
         recordInMemoryAttempt(data.username, data.machine_id, false, "no_user");

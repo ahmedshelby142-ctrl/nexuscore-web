@@ -50,7 +50,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { login as serverLogin, changePassword as serverChangePassword } from "@/lib/api/authServer";
+import { changePassword as serverChangePassword } from "@/lib/api/authServer";
 import { getMachineFingerprint } from "@/lib/machineId";
 import { getSupabaseClient } from "@/lib/supabase";
 
@@ -148,37 +148,28 @@ export function Login() {
 
     try {
       if (opMode === "offline_local") {
-        // The hardcoded `owner` / `owner` ADMIN bypass that used to sit here is
-        // gone. It was gated on `offline_local`, which was ALSO the default
-        // mode — and on a public URL that is not a developer convenience, it is
-        // an unauthenticated admin login compiled into the bundle any visitor
-        // can read. The real server login below is the only way in.
-        const fp = machineId || (await getMachineFingerprint());
-        const result = await serverLogin({
-          data: {
-            username: username.trim(),
-            password: password.trim(),
-            machine_id: fp,
-          },
+        // `offline_local` means one thing only: this build was served without
+        // VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY. It is a deployment fault,
+        // not a mode anyone chooses — and there is nothing to log in TO, since
+        // every read in the app goes through `cloudList`, which cannot run
+        // without a client.
+        //
+        // Two bypasses have already been removed from this path: a hardcoded
+        // `owner`/`owner` branch in this file, and the seeded owner account
+        // `authServer` created behind it. Say what is actually wrong instead of
+        // asking for credentials that cannot be checked against anything.
+        setLocalError(
+          "إعدادات السحابة غير موجودة في هذه النسخة — لا يمكن تسجيل الدخول. راجع متغيرات البيئة VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY.",
+        );
+        setError({
+          code: "no_server",
+          message: "لم يتم ضبط اتصال السحابة لهذه النسخة.",
         });
+        return;
+      }
 
-        if (!result.success) {
-          setLocalError(result.error ?? "تعذّر تسجيل الدخول");
-          setError({
-            code: "invalid_credentials",
-            message: result.error ?? "تعذّر تسجيل الدخول",
-          });
-          return;
-        }
-
-        setSession(result.data);
-
-        if (result.data.user.must_change_password) {
-          setMustChangePassword(true);
-          setStatus("online");
-          return;
-        }
-      } else {
+      // Braced only to keep this diff to the branch that was deleted.
+      {
         // --- REAL CLOUD SUPABASE AUTH ---
         const sb = getSupabaseClient();
         if (!sb) {

@@ -202,7 +202,7 @@ test("cloudList pages past the 1000-row cap", () => {
     cloudData.indexOf("export async function cloudUpsert"),
   );
   assert.match(fn, /\.range\(/, "cloudList must page with .range()");
-  assert.match(fn, /length < PAGE/, "and stop only on a short page");
+  assert.match(fn, /pageAll/, "and drive it with the shared loop — see check_paging.mjs");
 });
 
 test("writeThrough rethrows so a caller cannot commit after a failure", () => {

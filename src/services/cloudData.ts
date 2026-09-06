@@ -36,6 +36,7 @@ import { getSupabaseClient } from "@/lib/supabase";
 import { toRemoteRow, fromRemoteRow } from "./api/fieldMapping";
 import { getSyncIdentity } from "./api/storeContext";
 import { isSyncedTable } from "./api/cloudSchema";
+import { pageAll } from "@/lib/pageAll";
 
 export class CloudUnavailable extends Error {
   constructor(message: string) {
@@ -60,41 +61,28 @@ const noTombstone = new Set<string>();
  * Asking once and remembering is better than hard-coding either shape — add the
  * column and the tombstone filter starts working with no code change.
  */
-const PAGE = 1000;
-
 export async function cloudList(table: string): Promise<any[]> {
   const sb = getSupabaseClient();
   if (!sb) throw new CloudUnavailable("لا يوجد اتصال بالسحابة");
 
   for (const withTombstone of noTombstone.has(table) ? [false] : [true, false]) {
-    const rows: any[] = [];
-    let failed: { message: string } | null = null;
-
-    // PostgREST answers at most 1000 rows. Without paging, a shop that has
-    // crossed that shows its first 1000 orders and NOTHING says the rest
-    // exist — a truncated read is indistinguishable from a complete one, which
-    // is the same failure `selectAll` in the ledger driver exists to prevent.
-    for (let from = 0; ; from += PAGE) {
-      const query = sb.from(table).select("*").range(from, from + PAGE - 1);
-      const { data, error } = await (withTombstone ? query.is("deleted_at", null) : query);
-      if (error) {
-        failed = error;
-        break;
-      }
-      const page = (data ?? []) as any[];
-      rows.push(...page);
-      if (page.length < PAGE) break;
-    }
-
-    if (!failed) {
+    try {
+      // Paged: PostgREST answers at most 1000 rows, and a truncated page is
+      // indistinguishable from a table that short. See `pageAll`.
+      const rows = await pageAll<any>((from, to) => {
+        const query = sb.from(table).select("*").range(from, to);
+        return withTombstone ? query.is("deleted_at", null) : query;
+      });
       return rows.map((row) => fromRemoteRow(table, row));
+    } catch (e: any) {
+      const message = String(e?.message ?? e);
+      if (withTombstone && /deleted_at/.test(message)) {
+        console.warn(`[CloudData] [${table}] has no deleted_at column — reading without it.`);
+        noTombstone.add(table);
+        continue;
+      }
+      throw new Error(`[${table}] ${message}`);
     }
-    if (withTombstone && /deleted_at/.test(failed.message)) {
-      console.warn(`[CloudData] [${table}] has no deleted_at column — reading without it.`);
-      noTombstone.add(table);
-      continue;
-    }
-    throw new Error(`[${table}] ${failed.message}`);
   }
 
   return [];

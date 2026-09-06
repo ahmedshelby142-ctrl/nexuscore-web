@@ -21,6 +21,7 @@ import { getSyncIdentity } from "@/services/api/storeContext";
 // Supabase client. Re-exported here because this file is the boundary in spirit.
 export { fromPiastres, toPiastres } from "./money";
 import { fromPiastres } from "./money";
+import { pageAll } from "@/lib/pageAll";
 
 // ── Wire shapes ─────────────────────────────────────────────────────────────
 // snake_case, piastres, fully-formed ids: exactly what the Postgres columns hold.
@@ -82,31 +83,6 @@ async function requireStoreId(): Promise<string> {
     throw new LedgerUnavailable("لم يتم ربط هذا الجهاز بمتجر بعد — سجّل الدخول أولاً");
   }
   return identity.storeId;
-}
-
-/**
- * PostgREST caps a response at 1000 rows. A balance is a SUM over every line
- * ever written for an account, so a shop with history WILL cross that — and a
- * silently truncated page reads as stock that vanished.
- *
- * ponytail: pages client-side and sums in JS. Correct at any size, but it
- * transfers every line to compute one number. If a balance read ever gets slow,
- * the upgrade is a Postgres view or RPC that returns the SUM — `balances()` is
- * the only caller that would change.
- */
-const PAGE = 1000;
-
-async function selectAll<T>(
-  build: (from: number, to: number) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
-): Promise<T[]> {
-  const out: T[] = [];
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await build(from, from + PAGE - 1);
-    if (error) throw new Error(error.message);
-    const rows = (data ?? []) as T[];
-    out.push(...rows);
-    if (rows.length < PAGE) return out;
-  }
 }
 
 /** A line joined to the two parent facts a balance query filters on. */
@@ -185,7 +161,7 @@ const supabaseDriver: LedgerDriver = {
     // `!inner` makes the join a filter: a line whose event does not match the
     // kind or the date window is dropped by Postgres rather than fetched here
     // and discarded.
-    const rows = await selectAll<JoinedLine>((from, to) => {
+    const rows = await pageAll<JoinedLine>((from, to) => {
       let q = sb
         .from("ledger_lines")
         .select("subject_id, qty_delta, amount_delta, ledger_events!inner(kind, occurred_at)")

@@ -191,6 +191,20 @@ test("a failed write does NOT re-read the table to undo itself", () => {
   );
 });
 
+test("cloudList pages past the 1000-row cap", () => {
+  // PostgREST answers at most 1000 rows. `cloudList` read a table in one
+  // `.select("*")`, so a shop past that showed its first 1000 orders and
+  // nothing said the rest existed. A truncated read looks exactly like a
+  // complete one, which is the failure `selectAll` in the ledger driver
+  // already exists to prevent — the document tables need the same.
+  const fn = cloudData.slice(
+    cloudData.indexOf("export async function cloudList"),
+    cloudData.indexOf("export async function cloudUpsert"),
+  );
+  assert.match(fn, /\.range\(/, "cloudList must page with .range()");
+  assert.match(fn, /length < PAGE/, "and stop only on a short page");
+});
+
 test("writeThrough rethrows so a caller cannot commit after a failure", () => {
   const fn = cloudData.slice(
     cloudData.indexOf("export async function writeThrough"),

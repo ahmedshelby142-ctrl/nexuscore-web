@@ -45,11 +45,13 @@ If you are assessing whether to run it, read `QA_STATUS.md` and then
 
 ## Other material in this repository
 
-* `docs/migrations/` — the SQL migration history, `000` through `021`. These are
+* `docs/migrations/` — the SQL migration history, `000` through `023`. These are
   the authoritative record of the database schema and its policies.
 * `docs/NEXUSCORE_*.md`, `docs/phase*-blueprint.md` — historical planning
   documents. They describe intent at the time of writing and have **not** been
   reconciled with the current system; prefer the documents in the index above.
-* `supabase/` — legacy scaffolding. The migrations there predate the current
-  schema and the edge functions there are **not deployed**. See
+* `supabase/` — mostly legacy scaffolding. The migrations there predate the
+  current schema and must not be applied, and the four integration functions are
+  **not deployed**. The one exception is `supabase/functions/invite-staff/`,
+  which **is** deployed and is what الصلاحيات → إضافة موظف calls. See
   `KNOWN_LIMITATIONS.md`.

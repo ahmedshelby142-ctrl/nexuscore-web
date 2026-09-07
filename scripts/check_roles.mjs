@@ -176,9 +176,11 @@ test("the users screen does not promise a self-service join that does not exist"
   // separate empty tenant — and `list_store_members` only ever returns members
   // of the caller's own store, so the new hire is invisible to their employer.
   //
-  // Linking an account to an existing shop is a manual step, like activating a
-  // licence. The screen has to say that rather than describe a flow that
-  // silently creates a second shop. Found in the roles audit, 2026-09-07.
+  // Found in the roles audit, 2026-09-07. The first correction pointed the
+  // owner at إدارة النظام, because linking was a manual step and nothing in the
+  // app could do it. `invite-staff` now can, so the screen offers the button —
+  // but the warning stays, since it is the reason to use the button rather than
+  // let a new hire sign up on their own. See scripts/check_invite_staff.mjs.
   const { readFileSync } = await import("node:fs");
   const panel = readFileSync(
     new URL("../src/components/auth/UserManagementPanel.tsx", import.meta.url),
@@ -193,8 +195,8 @@ test("the users screen does not promise a self-service join that does not exist"
   );
   assert.match(
     panel,
-    /إدارة النظام/,
-    "the screen must point at the manual linking step that actually adds someone",
+    /إضافة موظف/,
+    "the screen must offer the action that actually adds someone",
   );
   assert.match(
     panel,

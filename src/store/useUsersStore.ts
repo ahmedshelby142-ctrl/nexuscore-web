@@ -39,8 +39,37 @@ interface UsersState {
   error: string | null;
 
   fetchStaffMembers: () => Promise<void>;
+  inviteStaff: (email: string, role: AppRole) => Promise<InviteResult>;
   updateUserRole: (userId: string, role: AppRole) => Promise<void>;
   removeUser: (userId: string) => Promise<void>;
+}
+
+export interface InviteResult {
+  ok: boolean;
+  /** Arabic, and true either way — shown verbatim to the admin. */
+  message: string;
+}
+
+/**
+ * Pull the real reason out of a failed `functions.invoke`.
+ *
+ * supabase-js turns any non-2xx into a `FunctionsHttpError` whose message is
+ * the useless "Edge Function returned a non-2xx status code"; the body it read
+ * hangs off `context` as a Response. `invite-staff` always answers JSON with an
+ * `error` string, so reading it is the difference between telling an admin
+ * "الإيميل ده مربوط بمحل تاني" and telling them nothing at all.
+ */
+async function functionErrorMessage(error: unknown): Promise<string> {
+  const context = (error as { context?: unknown }).context;
+  if (context instanceof Response) {
+    try {
+      const body = (await context.json()) as { error?: unknown };
+      if (typeof body?.error === "string" && body.error) return body.error;
+    } catch {
+      // Not JSON — fall through to the generic message.
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 export const useUsersStore = create<UsersState>((set, get) => ({
@@ -94,6 +123,59 @@ export const useUsersStore = create<UsersState>((set, get) => ({
         isLoading: false,
         error: e instanceof Error ? e.message : String(e),
       });
+    }
+  },
+
+  /**
+   * Add someone to THIS shop — the missing half of الصلاحيات.
+   *
+   * Nothing about who-may-invite-whom is decided here. The Edge Function
+   * derives the store from the caller's own JWT and inserts the membership AS
+   * the caller, under the same `write_store_members` policy as every other
+   * write, so a tampered client can ask for a different store and still be
+   * refused by Postgres. This method carries the answer back, nothing more.
+   *
+   * It deliberately does NOT add a row optimistically. A membership that
+   * appears on screen but not in the table is the exact lie the rest of this
+   * store was rewritten to remove — so on success it re-reads the table, and
+   * on failure it says so.
+   */
+  inviteStaff: async (email: string, role: AppRole) => {
+    const sb = getSupabaseClient();
+    if (!sb) {
+      const message = "إضافة موظف محتاجة اتصال بالسحابة.";
+      set({ error: message });
+      return { ok: false, message };
+    }
+
+    set({ isLoading: true, error: null });
+    try {
+      const { data, error } = await sb.functions.invoke("invite-staff", {
+        body: { email: email.trim().toLowerCase(), role },
+      });
+
+      if (error) {
+        const message = await functionErrorMessage(error);
+        set({ isLoading: false, error: message });
+        return { ok: false, message };
+      }
+
+      const result = data as { ok?: boolean; message?: string; error?: string } | null;
+      if (!result?.ok) {
+        const message = result?.error || "لم تتم الإضافة.";
+        set({ isLoading: false, error: message });
+        return { ok: false, message };
+      }
+
+      // The table is the truth, not the reply. This also brings back the row
+      // with whatever the database actually stored.
+      await get().fetchStaffMembers();
+      set({ isLoading: false, error: null });
+      return { ok: true, message: result.message || "تمت الإضافة." };
+    } catch (e) {
+      const message = `لم تتم الإضافة. ${e instanceof Error ? e.message : String(e)}`;
+      set({ isLoading: false, error: message });
+      return { ok: false, message };
     }
   },
 

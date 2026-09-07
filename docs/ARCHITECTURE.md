@@ -177,14 +177,30 @@ No billing, no subscriptions, no plan-based feature gating.
 `/integrations` configures Paymob, shipping and online-order intake. Two things
 to be clear about:
 
-* **No integration is live.** Four edge functions exist in `supabase/functions/`
-  (`handle-ecommerce-order`, `handle-paymob-webhook`, `handle-shipping-webhook`,
-  `handle-subscription-webhook`) but **none is deployed** — the project reports
-  zero edge functions. The screen stores configuration; it does not currently
-  exchange traffic with any provider.
+* **No integration is live.** Four integration edge functions exist in
+  `supabase/functions/` (`handle-ecommerce-order`, `handle-paymob-webhook`,
+  `handle-shipping-webhook`, `handle-subscription-webhook`) and **none of them is
+  deployed**. The screen stores configuration; it does not currently exchange
+  traffic with any provider. (`invite-staff`, described below, is deployed and is
+  unrelated to integrations — it is the only deployed function.)
 * **No integration secret is persisted.** The store strips secret fields before
   writing to `localStorage` and purges anything an older build left behind.
   Secrets live in memory for the session only.
+
+## The one server-side function
+
+`invite-staff` is the only deployed Edge Function, and it exists for one reason:
+creating an auth account requires the service key, and a service key cannot be
+in a Vite bundle. Everything else in this app is a browser talking to PostgREST
+under RLS, and that is on purpose — a rule in TypeScript is a rule anyone can
+edit, so authorization lives in Postgres.
+
+The function keeps to that rule rather than becoming an exception to it. It
+derives the store from `auth.uid()` via `staff_invite_context()`, uses the
+service key for the single `inviteUserByEmail` call, and inserts the membership
+back through the *caller's* client so RLS decides. Read it as plumbing around a
+key, not as an application server. Full flow and the refusals it was tested
+against: `SECURITY.md` → "Adding a member of staff".
 
 ## Document numbering
 

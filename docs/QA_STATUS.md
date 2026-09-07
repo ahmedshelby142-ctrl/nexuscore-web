@@ -1,8 +1,9 @@
 # Production readiness status
 
-Three passes are recorded here, newest first. Each supersedes the earlier ones
-where they disagree; the earlier ones are kept because their findings and
-evidence still stand.
+Four passes are recorded here. Parts 0 to 2 are newest first; Part 3, the
+System Owner and staff-invitation pass, is appended at the end and is the most
+recent of all. Each supersedes the earlier ones where they disagree; the earlier
+ones are kept because their findings and evidence still stand.
 
 ---
 
@@ -326,3 +327,134 @@ accepts a write or returns a row.
 * The five orphan ledger events were documented, not repaired or deleted. Their
   values cannot be reconstructed and inventing them would put fabricated numbers
   in a financial ledger.
+
+---
+
+# Part 3 — System Owner verification and staff invitation
+
+7 September 2026. Two questions: who provisions a System Owner, and how does a
+shop add an employee. The first needed answering, not building. The second was
+missing entirely.
+
+## Verdict
+
+**The invitation flow is implemented, deployed and verified at the database
+boundary. The end-to-end invitation email could not be sent, and the owner-side
+licence test remains BLOCKED — for the same reason as before, plus a new one.**
+
+## System Owner — how one is provisioned
+
+Nothing was built here, because the mechanism already exists and is the right
+one.
+
+`is_system_owner()` is an **email allowlist compiled into the function**, added
+by migration 008, whose header states the reason: it was kept as a function
+rather than a table "so the allowlist cannot be edited by anything reaching the
+database as a normal user — changing it takes a migration".
+
+* **To provision one:** add the address to that function in a new migration and
+  apply it. There is no other path, by design.
+* **The application cannot create or promote one.** No screen, store, RPC or
+  request body can add an address.
+* **A store ADMIN cannot become one.** Verified: `is_system_owner()` returns
+  false, all six `admin_*` RPCs answer 42501, and an ADMIN cannot insert itself
+  into another store.
+* **It is orthogonal to store membership.** One of the two current owners holds
+  `POS_ECOMMERCE` in a shop and full licence authority globally.
+* **The account already exists.** `ahmedshelby142@gmail.com` — the address this
+  work is being done under — is already on the allowlist. Owner-side licence
+  testing therefore needs no new mechanism: it needs that account to sign in.
+
+## Staff invitation — what was built
+
+الصلاحيات → **إضافة موظف** (email + one of the four roles) →
+`invite-staff` Edge Function → account created → membership written.
+
+Migration `023_staff_invitations.sql` (applied) adds:
+
+* `store_members_one_store_per_user`, a unique index on `user_id`. This makes
+  explicit what `getActiveStoreId()` has always assumed — it resolves the store
+  with `limit 1`, so a person in two shops would write rows into an arbitrary
+  one. Inviting someone who already runs a shop is exactly the operation that
+  would have caused it.
+* `staff_invite_context(email)`, `SECURITY DEFINER` with a pinned `search_path`,
+  `EXECUTE` revoked from `anon`. It refuses any caller who is not the ADMIN of a
+  store, derives the store from `auth.uid()`, and answers about one address:
+  `no_account` / `account_unlinked` / `already_member` / `belongs_elsewhere`. It
+  returns no email, no name, and NULL for the id of anyone in another tenant —
+  an existence check, not a directory.
+
+The function itself decides nothing. `verify_jwt` is on; the store id comes from
+that RPC and **the request body has no store field**; the service key is used for
+exactly one call (`inviteUserByEmail`) and touches no business table; and the
+membership INSERT runs as the caller under `write_store_members`, so RLS checks
+the store a second time and independently.
+
+## Measured, against the live system
+
+HTTP, against the deployed function:
+
+| Request | Result |
+| --- | --- |
+| No headers | 401 `UNAUTHORIZED_NO_AUTH_HEADER` |
+| apikey but no Authorization | 401 |
+| Forged bearer | 401 `UNAUTHORIZED_INVALID_JWT_FORMAT` |
+| The anon key used as the bearer | 403 — a valid JWT to the platform; the `REVOKE … FROM anon` stops it |
+| GET instead of POST | 401 (auth first), 405 thereafter |
+
+SQL, each in a transaction that rolled back, impersonating a real member with
+`request.jwt.claims`:
+
+| Caller | Attempt | Result |
+| --- | --- | --- |
+| QA store ADMIN | unknown address | `no_account`, store = their own, no user id |
+| QA store ADMIN | their own address | `already_member` |
+| QA store ADMIN | a member of another shop | `belongs_elsewhere`, **user id withheld** |
+| QA store ADMIN | same address, uppercased and padded | `already_member` (normalised) |
+| QA store ADMIN | `not-an-email` | rejected |
+| QA store ADMIN | INSERT a membership in another shop | 42501 |
+| QA store ADMIN | `role = 'SYSTEM_OWNER'` | refused by the column's CHECK |
+| QA store ADMIN | move another shop's user into theirs | refused by the one-store-per-user index |
+| Non-ADMIN member | call `staff_invite_context` | 42501 |
+| Non-ADMIN member | INSERT a membership | 42501 |
+| Signed in, member of no store | call `staff_invite_context` | 42501 "you do not belong to a store" |
+| No `auth.uid()` | call `staff_invite_context` | 42501 "not authenticated" |
+
+`scripts/check_invite_staff.mjs` (8 tests) holds the source-level half: no
+`service_role` anywhere in `src/` or under a public env prefix, the store id
+never read from the body, `store_members` never written with the service client,
+the role list identical to `src/lib/roles.ts`, the bearer check ahead of both
+clients, and the client never reporting success without `ok` from the server.
+
+Suite: **658 tests, 657 pass, 1 skipped, 0 fail.** `tsc --noEmit` clean. Build
+clean.
+
+## What is BLOCKED
+
+* **The end-to-end invitation.** Supabase's built-in SMTP is rate limited and
+  the project has already exhausted it — a signup probe returned
+  `email rate limit exceeded`, and `inviteUserByEmail` uses the same sender. No
+  invitation could be sent, so no account was created and no membership row was
+  written by the real path. Everything the invitation depends on was verified
+  separately; the send itself was not. Configure an SMTP provider and press the
+  button once.
+* **Driving the new dialog in a browser.** No authenticated QA session was
+  available this pass — the preview session had expired and no browser held one.
+  None was fabricated. The screen is covered by typecheck, build and the
+  source-level guards, not by a click.
+* **The owner-side licence test**, unchanged from Part 2: the six `admin_*` RPCs
+  check `auth.uid()`, so only a real sign-in as an allowlisted owner can
+  exercise them. That account exists and is the user's own.
+
+## Not changed, deliberately
+
+* No subscriptions, no billing, no BASIC/PRO gating — the licence model is still
+  manual.
+* No new permission system. The four roles and `is_system_owner()` were left
+  exactly as they are.
+* **Someone who already signed up on their own is not silently moved.** They
+  hold a membership in their own accidental shop; the invitation returns 409 and
+  says so. Reassigning a person between tenants is an administrative decision,
+  not something an invite button should make.
+* No name field. `store_members` has no name column and `list_store_members`
+  returns none, so asking for one would collect something with nowhere to go.

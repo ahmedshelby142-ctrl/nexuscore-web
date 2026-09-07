@@ -160,6 +160,12 @@ licence including their own, cannot see the manager screen, and cannot write
 To change who the system owners are, edit the allowlist in `is_system_owner()`
 via a migration. It is deliberately not configurable from the application.
 
+There is **no provisioning screen and no promotion path**, and that is the point:
+a migration is a reviewed, version-controlled change, whereas a table row is
+something a bug or an over-broad policy could write. A store ADMIN cannot become
+an owner, and being an owner is unrelated to store membership — one of the two
+current owners is only a `POS_ECOMMERCE` member of one shop.
+
 ## One thing left to confirm
 
 The audit could not press these buttons as a system owner — the functions accept
@@ -168,5 +174,7 @@ were verified three other ways: their refusal path against a real non-owner
 session, their arithmetic evaluated against real rows, and every state they
 produce driven through the customer gate.
 
-**Open the manager once and press Extend on a test shop.** That closes the last
-gap and takes ten seconds.
+**No new access is needed to close this.** The allowlist already contains the
+address this project is being developed under, so the owner account exists
+today. Sign in with it, open `/system-admin/licenses` and press Extend on a test
+shop. Ten seconds.

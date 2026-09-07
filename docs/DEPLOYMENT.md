@@ -44,11 +44,35 @@ than asking for credentials it cannot check. Treat it as a deployment fault.
 Everything in `.env.example` without a `VITE_`/`NEXT_PUBLIC_` prefix —
 `SUPABASE_SERVICE_ROLE_KEY`, `PAYMOB_*`, `SHIPPING_*`, `ONLINE_ORDER_*`,
 `LICENSE_SIGNING_SECRET`, `INTERNAL_API_KEY` — is for Supabase Edge Functions.
-None is bundled. **None of those functions is currently deployed**, so these are
-placeholders for future work, not live configuration.
+None is bundled. The integration functions they belong to are **not deployed**,
+so those are placeholders for future work rather than live configuration.
 
 Never put a service-role key in a `VITE_`-prefixed variable. It would ship to
 every browser and bypass every policy in this document.
+`scripts/check_invite_staff.mjs` fails the test run if `service_role` appears
+anywhere under `src/`, or under a public prefix in any env file.
+
+### Edge Functions
+
+One is deployed: **`invite-staff`**, with `verify_jwt: true`. It is what
+الصلاحيات → إضافة موظف calls, and the only place a service key exists.
+
+* Supabase injects `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
+  `SUPABASE_SERVICE_ROLE_KEY` into the function's environment. Nothing needs
+  setting by hand.
+* `verify_jwt` must stay **on**. With it off, the platform stops rejecting
+  anonymous requests and the function's guards become the only line — the
+  database would still refuse (that is the design), but there is no reason to
+  test it.
+* Redeploy after editing `supabase/functions/invite-staff/index.ts`; the
+  repository copy is not the deployed copy.
+
+**Invitations need working email.** The function calls
+`auth.admin.inviteUserByEmail`, which goes through whatever SMTP the Supabase
+project is configured with. The built-in sender is rate limited — a probe on
+7 September 2026 returned `email rate limit exceeded` — and the function answers
+429 in that case rather than pretending the invitation went out. Configure a real
+SMTP provider under Authentication → Emails before relying on it.
 
 ### Files
 

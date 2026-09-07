@@ -100,10 +100,10 @@ with no parent — cannot occur, and there are none.
 ## 5. No integration is live
 
 `/integrations` configures Paymob, shipping carriers and online-order intake.
-Four edge functions exist in `supabase/functions/`
+Four integration edge functions exist in `supabase/functions/`
 (`handle-ecommerce-order`, `handle-paymob-webhook`, `handle-shipping-webhook`,
-`handle-subscription-webhook`) but **none is deployed** — the Supabase project
-reports zero edge functions.
+`handle-subscription-webhook`) and **none of them is deployed**. The only
+deployed function is `invite-staff`, which has nothing to do with integrations.
 
 The screen therefore stores configuration and does not exchange traffic with any
 provider, and it now says so. The cards show a "not verified" state rather than a
@@ -276,21 +276,36 @@ business-data restore at all.
 
 ---
 
-## 15. There is no self-service way to add a member of staff
+## 15. Staff invitations depend on email delivery
+
+Solved since the roles audit, with one operational caveat.
 
 `claim_store` gives an account with no membership a shop **of its own**, as
-ADMIN of it. So an employee who signs up unprompted lands in a separate, empty
-tenant and never appears in their employer's member list — `list_store_members`
-only ever returns members of the caller's own store.
+ADMIN of it, so an employee who signs up unprompted lands in a separate empty
+tenant and never appears in their employer's member list. There used to be no
+way to add anyone at all; the `/users` screen described that signup as the
+joining procedure.
 
-Linking an account to an existing shop is a manual administrator step, like
-activating a licence: insert the `store_members` row (ideally *before* the
-employee signs up, so `claim_store` finds it and does not create a second shop),
-after which they appear in الصلاحيات and the store ADMIN can set their role.
+الصلاحيات → **إضافة موظف** now creates the account and the membership together,
+through the `invite-staff` Edge Function. Its authorization is described in
+`SECURITY.md`, and it is the *only* deployed function.
 
-The `/users` screen used to describe self-signup as sufficient on its own. It
-now states the linking step and warns what happens without it. Building an
-invite flow is a feature, not a fix, and was out of scope.
+What remains a limitation:
+
+* **The invitation is an email.** The project uses Supabase's built-in SMTP,
+  which is rate limited — a probe on 7 September 2026 came back
+  `email rate limit exceeded`, which also blocked the end-to-end test. When the
+  limit is hit the function answers 429 and the screen says so rather than
+  claiming the invitation went out. Configure a real SMTP provider in the
+  Supabase dashboard before relying on this.
+* **An employee who signed up on their own first cannot be invited afterwards.**
+  They already hold a membership in their own accidental shop, and
+  `store_members_one_store_per_user` refuses a second. The invitation returns
+  409 and says so. Moving them is a deliberate administrative act — delete the
+  stray membership (and the empty store) first.
+* **Nobody's name is stored.** `store_members` holds no name column and
+  `list_store_members` returns none, so the table shows email addresses and the
+  invite form asks for nothing else.
 
 ---
 

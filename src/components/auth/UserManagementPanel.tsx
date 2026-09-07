@@ -27,7 +27,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Users, Edit2, Trash2, ShieldCheck, Info } from "lucide-react";
+import { useRunOnce } from "@/hooks/useSubmitGate";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Users, Edit2, Trash2, ShieldCheck, Info, UserPlus } from "lucide-react";
+import { toast } from "sonner";
+
+/** Enough to catch a typo before a round trip. The database checks it again. */
+const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 /** The colour each role wears in the table. */
 const ROLE_TONE: Record<AppRole, string> = {
@@ -46,16 +53,56 @@ const ROLE_TONE: Record<AppRole, string> = {
  * heard of and will not honour.
  */
 export function UserManagementPanel() {
-  const { staffMembers, isLoading, error, fetchStaffMembers, updateUserRole, removeUser } =
-    useUsersStore();
+  const {
+    staffMembers,
+    isLoading,
+    error,
+    fetchStaffMembers,
+    inviteStaff,
+    updateUserRole,
+    removeUser,
+  } = useUsersStore();
 
   const [editing, setEditing] = useState<StaffMember | null>(null);
   const [role, setRole] = useState<AppRole>("POS_ECOMMERCE");
   const [removing, setRemoving] = useState<StaffMember | null>(null);
 
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<AppRole>("POS_ECOMMERCE");
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviting, setInviting] = useState(false);
+
   useEffect(() => {
     void fetchStaffMembers();
   }, [fetchStaffMembers]);
+
+  // A second click would try to create the account twice. Dropped, not queued.
+  const runOnce = useRunOnce();
+
+  const submitInvite = async () =>
+    runOnce(async () => {
+      const email = inviteEmail.trim().toLowerCase();
+      if (!EMAIL.test(email)) {
+        setInviteError("اكتب إيميل صحيح.");
+        return;
+      }
+
+      setInviteError(null);
+      setInviting(true);
+      const result = await inviteStaff(email, inviteRole);
+      setInviting(false);
+
+      // Only ever claimed on a confirmed server answer.
+      if (!result.ok) {
+        setInviteError(result.message);
+        return;
+      }
+      toast.success(result.message);
+      setInviteOpen(false);
+      setInviteEmail("");
+      setInviteRole("POS_ECOMMERCE");
+    });
 
   const openEdit = (member: StaffMember) => {
     setEditing(member);
@@ -86,31 +133,36 @@ export function UserManagementPanel() {
             أربع صلاحيات ثابتة — كل مستخدم بياخد واحدة منهم بس
           </p>
         </div>
+        <Button onClick={() => setInviteOpen(true)} className="gap-2">
+          <UserPlus className="size-4" />
+          إضافة موظف
+        </Button>
       </div>
 
       {/*
-        This used to say the employee signs up and "then appears here". They do
-        not. `claim_store` gives an account with no membership a shop OF ITS
-        OWN, as ADMIN of it — so a new hire who signs up unprompted ends up in a
-        separate, empty tenant, and never appears in this list, which only ever
-        shows members of the caller's own store.
+        This banner has been wrong twice. First it said an employee signs up and
+        "then appears here" — they do not: `claim_store` gives an account with
+        no membership a shop OF ITS OWN, as ADMIN of it, so a new hire who signs
+        up unprompted lands in a separate empty tenant and never appears in this
+        list. Then it said to ask إدارة النظام to link them by hand, which was
+        true but was a description of a missing feature.
 
-        Linking an account to an existing shop is a manual step, like activating
-        a licence: it is done by the system administrator, not from this screen.
-        Saying so is better than describing a self-service flow that silently
-        creates a second shop. Found in the roles audit, 2026-09-07.
+        The feature now exists (the `invite-staff` Edge Function), so the text
+        describes what the button actually does, and still warns about the
+        signing-up-first failure — that is the reason to use the button.
       */}
       <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-900 p-4 flex items-start gap-3">
         <Info className="size-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
         <div className="text-sm text-blue-900 dark:text-blue-200 space-y-1">
           <p className="font-semibold">إزاي تضيف موظف جديد؟</p>
           <p className="leading-relaxed">
-            كلّم إدارة النظام وابعتلهم إيميل الموظف عشان يربطوه بالمحل ده. بعد الربط
-            هيظهر في الجدول تحت وتقدر تحدد له الصلاحية من هنا.
+            اضغط <strong>إضافة موظف</strong>، اكتب إيميله واختار صلاحيته. هتوصله دعوة
+            على الإيميل يحط منها باسورد، وأول ما يدخل هيلاقي نفسه على المحل ده.
           </p>
           <p className="leading-relaxed">
-            <strong>مهم:</strong> لو الموظف عمل حساب بنفسه من شاشة الدخول قبل ما يتربط،
-            النظام بيفتحله محل جديد فاضي لوحده — مش هيدخل على محلك. الربط الأول أحسن.
+            <strong>مهم:</strong> ضيفه من هنا قبل ما يعمل حساب بنفسه. لو عمل حساب من
+            شاشة الدخول الأول، النظام بيفتحله محل جديد فاضي لوحده ومش هيقدر يتربط
+            بمحلك بعد كده.
           </p>
           <p className="leading-relaxed">
             الصلاحية بتتطبّق على السيرفر نفسه، مش على الشاشة بس.
@@ -165,7 +217,7 @@ export function UserManagementPanel() {
                   <TableCell colSpan={4} className="text-center py-10">
                     <Users className="size-10 mx-auto text-muted-foreground/50 mb-3" />
                     <p className="text-muted-foreground">
-                      مفيش مستخدمين مسجلين — الموظف بيعمل حساب من شاشة الدخول وبعدين يظهر هنا.
+                      مفيش مستخدمين غيرك — اضغط «إضافة موظف» عشان تبعت دعوة لموظف جديد.
                     </p>
                   </TableCell>
                 </TableRow>
@@ -208,6 +260,77 @@ export function UserManagementPanel() {
           </Table>
         </CardContent>
       </Card>
+
+      {/*
+        Add a member of staff. Email and role only — `store_members` holds no
+        name, and `list_store_members` returns none, so a name field here would
+        collect something the system has nowhere to put.
+      */}
+      <Dialog
+        open={inviteOpen}
+        onOpenChange={(open) => {
+          if (inviting) return; // never close mid-request
+          setInviteOpen(open);
+          if (!open) setInviteError(null);
+        }}
+      >
+        <DialogContent dir="rtl">
+          <DialogHeader>
+            <DialogTitle>إضافة موظف للمحل</DialogTitle>
+            <DialogDescription>
+              هيتبعت للموظف دعوة على إيميله، وهيتربط بالمحل ده بالصلاحية اللي تختارها.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="invite-email">البريد الإلكتروني</Label>
+              <Input
+                id="invite-email"
+                type="email"
+                dir="ltr"
+                autoComplete="off"
+                placeholder="employee@example.com"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void submitInvite();
+                }}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="invite-role">الصلاحية</Label>
+              <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as AppRole)}>
+                <SelectTrigger id="invite-role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {APP_ROLES.map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {ROLE_LABELS[r]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-sm text-muted-foreground">{ROLE_DESCRIPTIONS[inviteRole]}</p>
+            </div>
+
+            {inviteError && (
+              <p className="text-sm font-medium text-destructive">{inviteError}</p>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setInviteOpen(false)} disabled={inviting}>
+              إلغاء
+            </Button>
+            <Button onClick={() => void submitInvite()} disabled={inviting}>
+              {inviting ? "جاري الإرسال..." : "إرسال الدعوة"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Change a role — four options, never a free-text field */}
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>

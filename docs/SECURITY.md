@@ -248,22 +248,70 @@ SELECT EXISTS (SELECT 1 FROM auth.users u
 
 ### Adding a member of staff
 
-There is **no self-service join**. `claim_store` gives an account with no
-membership a shop *of its own*, as ADMIN of it — so an employee who signs up
-unprompted lands in a separate empty tenant and never appears in their
-employer's member list.
+There is **no self-service join**, and there must not be: `claim_store` gives an
+account with no membership a shop *of its own*, as ADMIN of it, so an employee
+who signs up unprompted lands in a separate empty tenant and never appears in
+their employer's member list. Until 7 September 2026 the app had no way to add
+anyone at all, and the `/users` screen described that signup as the joining
+procedure.
 
-The supported procedure is manual, like activating a licence:
+A store ADMIN now invites from الصلاحيات → **إضافة موظف** (email + one of the
+four roles). What happens behind it:
 
-1. The owner sends the employee's email address to the system administrator.
-2. The administrator inserts the `store_members` row for that store, with the
-   role. Doing this **before** the employee signs up is preferable: `claim_store`
-   then finds the existing membership and does not create a second shop.
-3. The employee signs up at the login screen with that address.
-4. They appear in الصلاحيات, where the store ADMIN can change their role.
+1. The browser calls the `invite-staff` Edge Function with the admin's own
+   session token. `verify_jwt` is on, so an unauthenticated request never
+   reaches the code.
+2. The function calls `staff_invite_context()` **as the caller**. That function
+   reads `store_members` for `auth.uid()`, refuses anyone who is not an ADMIN of
+   a store, and returns the store id it derived. **The request body has no store
+   field**, so a tampered client cannot aim the invitation at another tenant.
+3. Only then, and only to create the auth account, does the function use the
+   service key: `auth.admin.inviteUserByEmail`. It touches no business table.
+4. The membership row is inserted **as the caller**, under the ordinary
+   `write_store_members` policy. RLS therefore re-checks the store independently
+   of everything above.
 
-The `/users` screen previously described step 3 as sufficient on its own. It now
-states the linking step and warns what happens without it.
+The account is created before the invitation is accepted, so the membership is
+in place well before the employee's first sign-in — `claim_store` finds it and
+does not create a second shop.
+
+Refused by design, each verified against the live database on 7 September 2026:
+
+| Attempt | Result |
+| --- | --- |
+| No `Authorization` header | 401, before the function body runs |
+| Forged bearer token | 401 (`UNAUTHORIZED_INVALID_JWT_FORMAT`) |
+| The anon key used as the bearer | 403 — the platform admits it as a valid JWT, and `REVOKE … FROM anon` on `staff_invite_context` stops it |
+| Caller is a member but not ADMIN | 42501 → 403 |
+| Caller belongs to no store | 42501 → 403 |
+| A store id supplied in the request | Ignored — there is no such field, and RLS re-checks |
+| ADMIN inserts a membership in another shop | 42501 |
+| `role: "SYSTEM_OWNER"` (or any invented role) | 400, and the column's own CHECK refuses it regardless |
+| Inviting someone who already belongs to another shop | 409, and the one-store-per-user index refuses it regardless |
+| Inviting an existing member | 409 — change their role in the table instead |
+| A malformed address | Rejected by `staff_invite_context` |
+
+`staff_invite_context` is deliberately narrow: it answers about one address the
+admin typed, returns no email, no name and no other store's id — `user_id` is
+NULL for an address that belongs elsewhere — and refuses non-admins outright. It
+is an existence check, not a directory.
+
+**One person belongs to one shop.** `store_members_one_store_per_user` (a unique
+index on `user_id`) makes explicit what `getActiveStoreId()` has always assumed:
+it resolves the caller's store with `limit 1`, so a person in two stores would
+get an arbitrary one and write rows into whichever the database happened to
+return. Inviting someone who already runs a shop is exactly the operation that
+would have caused that, so it fails loudly instead.
+
+**Nothing here can grant System Owner.** That is an email allowlist compiled
+into `is_system_owner()`; changing it takes a migration, and the role column
+cannot hold the value anyway.
+
+**Invitations depend on email delivery.** The project uses Supabase's built-in
+SMTP, which is rate limited — a probe on 7 September 2026 came back
+`email rate limit exceeded`. When the limit is hit the function answers 429 and
+the screen says so rather than claiming an invitation was sent. Configure a real
+SMTP provider in the Supabase dashboard before relying on this in production.
 
 ### Role changes
 
@@ -398,8 +446,14 @@ shadow the objects they reference.
   contains exactly one JWT-shaped string, and its payload is `role: anon`. No
   service-role key, no private key, no provider secret in any built asset.
 * Every `service_role` occurrence in the repository is a *reference by name* —
-  documentation, a `Deno.env.get(…)` in an undeployed edge function, or a test
-  script reading `process.env`. No literal value.
+  documentation, a `Deno.env.get(…)` in an edge function, or a test script
+  reading `process.env`. No literal value.
+* **`src/` mentions `service_role` nowhere at all**, and no public prefix
+  (`VITE_`/`NEXT_PUBLIC_`) carries it. `scripts/check_invite_staff.mjs` walks the
+  whole of `src/` on every test run to keep it that way: the one place a service
+  key exists is inside the `invite-staff` Edge Function, where Supabase injects
+  it, and a key in a Vite bundle would be a public key that bypasses every
+  policy in the database.
 * `.env`, `.env.local` and `.env.*.local` are gitignored; only `.env.example` is
   tracked.
 * Integration secrets are never persisted. `useIntegrationsStore` strips them
@@ -417,8 +471,10 @@ These are real and are not claimed to be solved. Full detail in
   form, not the Supabase Auth API, so an account created by any other path skips
   it. Enabling the project setting requires a paid plan.
 * **No cloud password-change flow**, as described above.
-* **No self-service way to add a member of staff.** Linking an account to an
-  existing shop is a manual administrator step; see "Adding a member of staff".
+* **Staff invitations depend on Supabase's built-in SMTP**, which is rate
+  limited; a probe on 7 September 2026 returned `email rate limit exceeded`.
+  Configure a real SMTP provider before relying on invitations. See "Adding a
+  member of staff".
 * **Roles are global to the store, never per branch.** Nothing in the schema or
   the client scopes a permission to a branch.
 * **The client half of role enforcement updates on the next page load**, not

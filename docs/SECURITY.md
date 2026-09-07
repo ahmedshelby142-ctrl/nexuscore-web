@@ -4,9 +4,10 @@ The client is the attacker's machine. Every rule that matters is enforced in
 Postgres, and the frontend guards exist to make the product usable, not to make
 it safe.
 
-Everything below was verified against the live project during the audit of
-6 September 2026. Where a claim rests on reading code rather than exercising it,
-that is stated.
+Verified against the live project across two passes: the hardening audit of
+6 September 2026, and the roles and permissions audit of 7 September 2026 (the
+"Roles and permissions" section). Where a claim rests on reading code rather
+than exercising it, that is stated.
 
 ## Authentication
 
@@ -90,6 +91,206 @@ k-anonymity range API.
 This is advisory. It is not an authentication boundary and must not be treated
 as one.
 
+## Roles and permissions
+
+Audited 7 September 2026. Every cell in the matrix below was produced by
+executing the write against the live database as that role, not by reading
+policy definitions.
+
+### The four roles
+
+There are exactly four, hardcoded in `src/lib/roles.ts` and constrained in the
+database by a CHECK on `store_members.role`. There is no role builder, and no
+`CASHIER` or `MANAGER` role — those names exist only in `LEGACY_ROLE_MAP`, which
+folds old stored strings onto the fixed four (`CASHIER` → `POS_ECOMMERCE`,
+`MANAGER` → `ADMIN`).
+
+| Role | Label | Lands on | Responsibility |
+| --- | --- | --- | --- |
+| `ADMIN` | مدير النظام | `/` | Everything in the shop |
+| `POS_ECOMMERCE` | كاشير وأونلاين | `/pos` | The till, orders, the storefront, customers |
+| `ECOMMERCE_ONLY` | أونلاين فقط | `/orders` | Orders and the storefront; stock read-only |
+| `ACCOUNTANT` | محاسب ومخازن | `/purchasing` | Buying, suppliers, stock, treasury |
+
+An unknown or missing role resolves to `ECOMMERCE_ONLY`, the least privileged —
+a typo in a row must not open the safe.
+
+**System Owner is not one of these.** It is a separate, global authority; see
+below.
+
+### Enforcement layers
+
+| Layer | What it does | What it is worth |
+| --- | --- | --- |
+| Sidebar | Hides links via `canAccess` | Cosmetic |
+| `RequireAccess` | Redirects a blocked route to `homeFor(role)` | Client-side; editable with dev tools |
+| RLS policies | Decides what may be read and written | **The boundary** |
+| `products` trigger | Decides which product *columns* a role may change | **The boundary** |
+| `is_system_owner()` | Gates the six licence RPCs | **The boundary** |
+
+The Sidebar and the router call the *same* `canAccess`, so a visible link and an
+open URL cannot drift apart. Both are a courtesy to honest users; nothing above
+the RLS line stops a crafted request.
+
+### Verified write matrix
+
+Each row is the result of attempting the operation as that role, in a
+transaction that rolled back. Reproduce with `scripts/role_matrix_probe.sql`.
+
+| Capability | ADMIN | ACCOUNTANT | POS_ECOMMERCE | ECOMMERCE_ONLY |
+| --- | :-: | :-: | :-: | :-: |
+| Create product | ✅ | ✅ | ❌ | ❌ |
+| Change product price / name / codes | ✅ | ✅ | ❌ | ❌ |
+| Update product stock mirror | ✅ | ✅ | ✅ | ✅ |
+| Delete product | ✅ | ✅ | ❌ | ❌ |
+| Suppliers | ✅ | ✅ | ❌ | ❌ |
+| Branches | ✅ | ✅ | ❌ | ❌ |
+| Expenses | ✅ | ✅ | ❌ | ❌ |
+| Orders | ✅ | ❌ | ✅ | ✅ |
+| Customers | ✅ | ❌ | ✅ | ✅ |
+| Discount codes | ✅ | ❌ | ✅ | ✅ |
+| Assign roles (`store_members`) | ✅ | ❌ | ❌ | ❌ |
+| Change own licence | ❌ | ❌ | ❌ | ❌ |
+| Read another store | ❌ | ❌ | ❌ | ❌ |
+| Write another store | ❌ | ❌ | ❌ | ❌ |
+| Global licence RPCs | ❌ | ❌ | ❌ | ❌ |
+
+Two rows deserve their reasons:
+
+**The stock mirror is writable by every role, deliberately.** `applyStockMoves`
+writes `products.quantity` from الطلبات, which POS_ECOMMERCE and ECOMMERCE_ONLY
+own — dispatching or returning an order updates it. Restricting `products`
+UPDATE by role would break order handling for exactly the roles whose screen it
+is. The mirror is also not authoritative: stock is `SUM(qty_delta)` over
+`ledger_lines`, so a tampered mirror misleads nobody and corrects itself.
+
+**Nobody can change their own licence,** not even ADMIN. `store_licenses` has
+`false` for INSERT, UPDATE and DELETE on every client role.
+
+### The hole this audit closed
+
+Six tables carried a role-gated `ALL` policy **and** a permissive INSERT/UPDATE
+policy keyed only on `is_store_member`:
+
+```sql
+write_products    FOR ALL    USING has_role(store_id,'ADMIN','ACCOUNTANT')
+insert_products   FOR INSERT WITH CHECK is_store_member(store_id)   -- defeats it
+update_products   FOR UPDATE USING      is_store_member(store_id)   -- defeats it
+```
+
+Postgres OR-s permissive policies, so the role gate governed nothing but DELETE.
+Measured before the fix, as a `POS_ECOMMERCE` member:
+
+| Attempt | Before | After |
+| --- | --- | --- |
+| `products` INSERT | **ALLOWED** | denied (42501) |
+| `products` UPDATE of price | **5 rows repriced** | denied (42501) |
+| `products` UPDATE of quantity mirror | allowed | allowed (still works) |
+| `branches` INSERT | **ALLOWED** | denied (42501) |
+| `suppliers` INSERT | **ALLOWED** | denied (42501) |
+| `expenses` INSERT | denied | denied |
+| `products` DELETE | denied | denied |
+| Self-escalation to ADMIN | denied | denied |
+
+The till operator has no Products screen — `/products` is ADMIN-only — so the UI
+hid a door the database had left unlocked. The price columns are what made it
+serious: set a price to zero, sell, set it back.
+
+Closed by `docs/migrations/022_role_write_enforcement.sql`, which drops the
+eleven redundant policies and adds a `BEFORE UPDATE` trigger on `products` that
+refuses a change to any defining column (name, sku, barcode, category,
+description, image, both prices, both stock thresholds, isActive, isBundle,
+bundleItems, deleted_at, store_id) unless the caller is ADMIN or ACCOUNTANT.
+
+The trigger compares **values**, not which columns appeared in the SET list, so
+the sync layer's whole-row upsert passes untouched — verified: a full-row
+`mirrorRow` upsert as POS_ECOMMERCE succeeds, while the same shape with a
+changed price is refused.
+
+### Privilege escalation
+
+All attempted as a real role, all refused:
+
+| Attempt | Result |
+| --- | --- |
+| Non-ADMIN sets its own role to ADMIN | 0 rows |
+| Non-ADMIN sets another member's role | 0 rows |
+| Store ADMIN inserts itself into another store | denied (42501) |
+| Store ADMIN calls `admin_list_stores` | denied (42501) |
+| Store ADMIN calls `admin_set_license` / `extend` / `suspend` / `reactivate` | denied (42501) |
+| Store ADMIN suspends **another** store's licence | denied (42501) |
+| Any role writes with a forged `store_id` | denied (42501) |
+| Any role reads another store's products | 0 rows |
+| `is_system_owner()` for a store ADMIN | `false` |
+
+### System Owner
+
+A global authority, independent of `store_members`. It is an **email allowlist
+compiled into `is_system_owner()`**:
+
+```sql
+SELECT EXISTS (SELECT 1 FROM auth.users u
+               WHERE u.id = auth.uid()
+                 AND u.email_confirmed_at IS NOT NULL
+                 AND lower(u.email) IN (…));
+```
+
+* **How one is provisioned:** by editing that function in a migration and
+  applying it. There is no other path.
+* **The application cannot create or promote one.** No screen, store, RPC or
+  payload can add an address to the list.
+* **A store ADMIN cannot become one** — verified above, at the database layer.
+* Being a System Owner is orthogonal to store membership: one of the two current
+  owners holds `POS_ECOMMERCE` in a shop and full licence authority globally.
+* The six `admin_*` RPCs re-check it in their first statement and refuse a
+  service-role SQL connection too, because the check is on `auth.uid()` rather
+  than a database role.
+
+### Adding a member of staff
+
+There is **no self-service join**. `claim_store` gives an account with no
+membership a shop *of its own*, as ADMIN of it — so an employee who signs up
+unprompted lands in a separate empty tenant and never appears in their
+employer's member list.
+
+The supported procedure is manual, like activating a licence:
+
+1. The owner sends the employee's email address to the system administrator.
+2. The administrator inserts the `store_members` row for that store, with the
+   role. Doing this **before** the employee signs up is preferable: `claim_store`
+   then finds the existing membership and does not create a second shop.
+3. The employee signs up at the login screen with that address.
+4. They appear in الصلاحيات, where the store ADMIN can change their role.
+
+The `/users` screen previously described step 3 as sufficient on its own. It now
+states the linking step and warns what happens without it.
+
+### Role changes
+
+`store_members.role` is read on every application boot (`useRealtimeSync`
+reconciles the session and re-reads the membership) and by every RLS check on
+every request.
+
+* **Database side: immediate.** The next request uses the new role; no
+  re-login, because `has_role` reads the table rather than a token claim.
+* **Client side: on next load.** `useAuthStore.userRole` is set at boot, so the
+  sidebar and route guard keep the old role until the page reloads or the
+  session is re-established.
+
+A demotion therefore takes effect at the boundary that matters straight away,
+while the demoted user may still *see* stale links until they reload — and
+clicking one gets them a redirect from the router or a refusal from Postgres.
+This was verified at the database layer; the client half is covered by the unit
+tests over `canAccess`.
+
+### Branches
+
+`branches` is a directory of shop locations, and roles are **global to the
+store, not per branch**. There is no branch-scoped permission anywhere in the
+schema or the client: no policy references a branch, and no record is filtered
+by one. A user with a role has that role across every branch of their store.
+Do not read the Branches screen as an access-control boundary.
+
 ## Row-level security
 
 RLS is enabled on **all 24 tables** in `public`.
@@ -98,7 +299,7 @@ RLS is enabled on **all 24 tables** in `public`.
 | --- | --- |
 | `SELECT USING (is_store_member(store_id))` | every tenant table |
 | `ALL USING/WITH CHECK (has_role(store_id, …))` | writes, per role set |
-| `INSERT WITH CHECK (is_store_member(store_id))` | tables where any member may create |
+| `INSERT WITH CHECK (is_store_member(store_id))` | ~~tables where any member may create~~ — removed by migration 022; see Roles and permissions |
 | `UPDATE/DELETE USING (false)` | `ledger_events`, `ledger_lines` — append-only |
 | `INSERT/UPDATE/DELETE (false)`, SELECT for members | `store_licenses` |
 | RLS on, **no policy** (deny-all) | `store_counters`, `users`, `store_alias`, `auth_sessions`, `auth_login_attempts` |
@@ -216,6 +417,12 @@ These are real and are not claimed to be solved. Full detail in
   form, not the Supabase Auth API, so an account created by any other path skips
   it. Enabling the project setting requires a paid plan.
 * **No cloud password-change flow**, as described above.
+* **No self-service way to add a member of staff.** Linking an account to an
+  existing shop is a manual administrator step; see "Adding a member of staff".
+* **Roles are global to the store, never per branch.** Nothing in the schema or
+  the client scopes a permission to a branch.
+* **The client half of role enforcement updates on the next page load**, not
+  instantly. The database half is immediate. See "Role changes".
 * **No tenant-level backup or restore of business data.** See
   `KNOWN_LIMITATIONS.md`.
 * **Five ledger events with no lines** exist in the production store from

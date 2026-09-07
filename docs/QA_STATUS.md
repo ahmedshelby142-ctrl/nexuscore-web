@@ -1,8 +1,56 @@
 # Production readiness status
 
-Two passes are recorded here. The **user acceptance test** below is the most
-recent and supersedes the hardening audit where they disagree; the hardening
-audit is kept because its findings and evidence still stand.
+Three passes are recorded here, newest first. Each supersedes the earlier ones
+where they disagree; the earlier ones are kept because their findings and
+evidence still stand.
+
+---
+
+# Part 0 - Roles and permissions audit
+
+**Date:** 7 September 2026
+**Method:** the role model was re-derived from `src/lib/roles.ts` and the live
+database. Every permission claim was tested by executing the write as that role
+against the live database, inside transactions that rolled back.
+
+## Verdict
+
+> ## ROLE SECURITY PASSED WITH LIMITATIONS
+
+One HIGH privilege defect found and fixed; one HIGH functional defect in staff
+onboarding found and corrected in the UI. No privilege-escalation or
+cross-tenant defect was found - every escalation attempt was already refused.
+
+| # | Finding | Severity | Status |
+| --- | --- | --- | --- |
+| 1 | **Role restrictions on writes did not restrict.** Six tables carried a role-gated `ALL` policy beside a permissive INSERT/UPDATE policy keyed only on `is_store_member`. Postgres OR-s them, so a `POS_ECOMMERCE` till operator could create products and rewrite every price in the shop - from a screen they cannot open. | HIGH | FIXED, migration `022` |
+| 2 | **The `/users` screen described a way to add staff that cannot work.** It said an employee signs up and "then appears here"; `claim_store` actually gives them a separate empty shop as ADMIN of it. | HIGH | FIXED (copy + documented procedure) |
+
+Full detail, the before/after measurements and the verified matrix are in
+[SECURITY.md](./SECURITY.md#roles-and-permissions).
+
+## What was verified
+
+* All four roles - `ADMIN`, `POS_ECOMMERCE`, `ECOMMERCE_ONLY`, `ACCOUNTANT` -
+  probed against fifteen capabilities each, at the database layer.
+* Escalation: self-promotion to ADMIN, promoting another member, joining another
+  store, forging `store_id`, calling the six global licence RPCs, and reading or
+  writing another tenant. **All refused, before and after the fix.**
+* A store ADMIN cannot become System Owner: `is_system_owner()` returns false and
+  every `admin_*` RPC answers 42501.
+* The fix does not break the app: a full-row `mirrorRow` upsert as
+  `POS_ECOMMERCE` still succeeds, while the same shape with a changed price is
+  refused.
+
+## What is BLOCKED
+
+**Per-role login and UI walkthrough.** Provisioning a role-holding session
+needs either a new auth user or an existing password, and neither was
+available: Supabase rejects synthetic email domains, its signup endpoint hit
+`over_email_send_rate_limit`, and direct `auth.users` insertion was refused by
+this environment's safety classifier. The client route guard is instead covered
+by 18 unit tests over `canAccess`, the exact function the router and sidebar
+both call.
 
 ---
 

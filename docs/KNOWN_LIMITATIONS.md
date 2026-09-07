@@ -1,7 +1,8 @@
 # Known limitations
 
 Items 1-10 were confirmed during the hardening audit of 6 September 2026;
-items 11-14 were added by the user acceptance test of 7 September 2026. Nothing on
+items 11-14 by the user acceptance test of 7 September 2026; items 15-17 by the
+roles and permissions audit of 7 September 2026. Nothing on
 this page is speculation, and nothing that was actually fixed is listed as a
 limitation.
 
@@ -272,3 +273,49 @@ inspection and by its whitelist, not by execution.
 
 This is separate from limitation 1, which is the larger point: there is no
 business-data restore at all.
+
+---
+
+## 15. There is no self-service way to add a member of staff
+
+`claim_store` gives an account with no membership a shop **of its own**, as
+ADMIN of it. So an employee who signs up unprompted lands in a separate, empty
+tenant and never appears in their employer's member list — `list_store_members`
+only ever returns members of the caller's own store.
+
+Linking an account to an existing shop is a manual administrator step, like
+activating a licence: insert the `store_members` row (ideally *before* the
+employee signs up, so `claim_store` finds it and does not create a second shop),
+after which they appear in الصلاحيات and the store ADMIN can set their role.
+
+The `/users` screen used to describe self-signup as sufficient on its own. It
+now states the linking step and warns what happens without it. Building an
+invite flow is a feature, not a fix, and was out of scope.
+
+---
+
+## 16. Roles are global to the store, never per branch
+
+`branches` is a directory of shop locations. No RLS policy references a branch,
+no record is filtered by one, and no permission is scoped to one. A user with a
+role holds it across every branch of their store.
+
+This is worth stating because the Branches screen looks like an access-control
+boundary and is not one. If branch-level separation is ever needed it is new
+work, not a configuration change.
+
+---
+
+## 17. The client half of role enforcement lags by one page load
+
+`store_members.role` is authoritative and is read by every RLS check on every
+request, so a role change takes effect **immediately** at the boundary that
+matters.
+
+The client copy — `useAuthStore.userRole`, which drives the sidebar and the
+route guard — is set at boot. A user demoted while logged in keeps seeing the
+old links until they reload, and clicking one gets a redirect from the router or
+a refusal from Postgres. Nothing is exposed; the menu is briefly wrong.
+
+Verified at the database layer. A live per-role UI walkthrough could not be run
+this pass — see the BLOCKED note in `QA_STATUS.md`.

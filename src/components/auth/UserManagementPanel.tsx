@@ -88,15 +88,32 @@ export function UserManagementPanel() {
         </div>
       </div>
 
-      {/* How a person joins. Saying this plainly beats an invite button that
-          cannot actually create an account from the browser. */}
+      {/*
+        This used to say the employee signs up and "then appears here". They do
+        not. `claim_store` gives an account with no membership a shop OF ITS
+        OWN, as ADMIN of it — so a new hire who signs up unprompted ends up in a
+        separate, empty tenant, and never appears in this list, which only ever
+        shows members of the caller's own store.
+
+        Linking an account to an existing shop is a manual step, like activating
+        a licence: it is done by the system administrator, not from this screen.
+        Saying so is better than describing a self-service flow that silently
+        creates a second shop. Found in the roles audit, 2026-09-07.
+      */}
       <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-900 p-4 flex items-start gap-3">
         <Info className="size-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
         <div className="text-sm text-blue-900 dark:text-blue-200 space-y-1">
           <p className="font-semibold">إزاي تضيف موظف جديد؟</p>
           <p className="leading-relaxed">
-            الموظف بيعمل حساب بنفسه من شاشة الدخول بالبريد الإلكتروني، وبعدين يظهر هنا وتحدد له
-            الصلاحية. الصلاحية بتتطبّق على السيرفر نفسه، مش على الشاشة بس.
+            كلّم إدارة النظام وابعتلهم إيميل الموظف عشان يربطوه بالمحل ده. بعد الربط
+            هيظهر في الجدول تحت وتقدر تحدد له الصلاحية من هنا.
+          </p>
+          <p className="leading-relaxed">
+            <strong>مهم:</strong> لو الموظف عمل حساب بنفسه من شاشة الدخول قبل ما يتربط،
+            النظام بيفتحله محل جديد فاضي لوحده — مش هيدخل على محلك. الربط الأول أحسن.
+          </p>
+          <p className="leading-relaxed">
+            الصلاحية بتتطبّق على السيرفر نفسه، مش على الشاشة بس.
           </p>
         </div>
       </div>

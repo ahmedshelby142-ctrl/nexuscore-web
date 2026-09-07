@@ -168,3 +168,54 @@ test("a query string is not a way past the guard", () => {
   assert.equal(canAccess("POS_ECOMMERCE", "/settings?tab=general"), false);
   assert.equal(canAccess("ACCOUNTANT", "/users?x=1"), false);
 });
+
+test("the users screen does not promise a self-service join that does not exist", async () => {
+  // It used to read: "الموظف بيعمل حساب بنفسه من شاشة الدخول... وبعدين يظهر هنا".
+  // They do not appear here. `claim_store` gives an account with no membership
+  // a shop OF ITS OWN, as ADMIN of it, so an unprompted signup lands in a
+  // separate empty tenant — and `list_store_members` only ever returns members
+  // of the caller's own store, so the new hire is invisible to their employer.
+  //
+  // Linking an account to an existing shop is a manual step, like activating a
+  // licence. The screen has to say that rather than describe a flow that
+  // silently creates a second shop. Found in the roles audit, 2026-09-07.
+  const { readFileSync } = await import("node:fs");
+  const panel = readFileSync(
+    new URL("../src/components/auth/UserManagementPanel.tsx", import.meta.url),
+    "utf8",
+  )
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "")   // JSX comments explain the old copy
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+
+  assert.ok(
+    !/يظهر هنا وتحدد له/.test(panel),
+    "the screen claims a signed-up employee appears in this list — they do not",
+  );
+  assert.match(
+    panel,
+    /إدارة النظام/,
+    "the screen must point at the manual linking step that actually adds someone",
+  );
+  assert.match(
+    panel,
+    /محل جديد|محل فاضي/,
+    "it must warn that an unlinked signup creates a separate shop",
+  );
+});
+
+test("claim_store still hands an unlinked signup its own shop", async () => {
+  // The reason the copy above has to say what it says. If this ever changes —
+  // if signup starts joining an existing store — the warning becomes wrong and
+  // this test is where that gets noticed.
+  const { readFileSync } = await import("node:fs");
+  const sql = readFileSync(
+    new URL("../docs/migrations/019_claim_store_onboarding.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(sql, /INSERT INTO public\.stores \(id, name\)/, "signup creates a store");
+  assert.match(
+    sql,
+    /INSERT INTO public\.store_members[\s\S]{0,80}'ADMIN'/,
+    "and makes the signer ADMIN of it",
+  );
+});

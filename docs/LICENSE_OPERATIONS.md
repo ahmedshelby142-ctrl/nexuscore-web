@@ -93,6 +93,58 @@ the same key and the same expiry. Refuses anything that is not suspended — on 
 expired licence it would appear to work and change nothing, and you would think
 the shop was open when it was not. That case is Extend.
 
+## Public signup, and who grants first access
+
+Signup is open to anyone. Using the ERP is not. NEXUS CORE is sold by hand, and
+the **System Owner is the only authority that grants a new store its first
+access** — there is no trial, no self-service activation and no billing hook
+that could grant one.
+
+The lifecycle, end to end:
+
+| # | Step | State |
+| --- | --- | --- |
+| 1 | Visitor completes public signup (leaked-password check, then Supabase Auth) | account exists |
+| 2 | On first sign-in `claim_store` creates the store and an ADMIN membership | store exists, **UNLICENSED** |
+| 3 | Every business route redirects to the lockout screen | cannot use the ERP |
+| 4 | Every business **write** is refused by Postgres | cannot use the API either |
+| 5 | The store appears in `/system-admin/licenses` as **بدون ترخيص** | visible to the owner |
+| 6 | Owner presses **تفعيل**, issues a key and an expiry | **ACTIVE** |
+| 7 | The lockout screen's poll notices within a minute and lets them in | working ERP |
+
+**`TRIAL_DAYS` is 0 and must stay 0** unless a trial is an explicit product
+decision. `claim_store` writes a licence row *only* when it is greater than
+zero, so at 0 a new store has no row at all — and no row is `UNLICENSED`. That
+is the whole mechanism; there is no separate approval flag to keep in step with
+it.
+
+### What the customer sees while waiting
+
+The lockout screen, headed **«المتجر لسه متفعّلش»**:
+
+> الحساب والمتجر اتعملوا بنجاح، وبياناتك كلها في مكانها. لسه محتاج تفعيل
+> الاشتراك عشان تقدر تستخدم الشاشات — كلّم الدعم وهيتفعّل.
+
+It says the account was created and nothing was lost, offers logout, and polls
+every 60 seconds so that activation needs no second phone call. It does **not**
+say the licence expired, does not claim a payment was taken, and does not
+mention the System Owner's screens. The four states each have their own copy —
+a new signup is never told its licence "ran out", which would send an owner
+looking for a renewal button that does not apply to them.
+
+### The other three states
+
+| State | How it is reached | Customer sees | Writes |
+| --- | --- | --- | --- |
+| **UNLICENSED** | never activated | "المتجر لسه متفعّلش" | refused |
+| **SUSPENDED** | owner pressed إيقاف | "تم إيقاف الوصول مؤقتاً" — data untouched | refused |
+| **EXPIRED** | `valid_until` passed, or owner set it | "انتهت صلاحية الترخيص" | refused |
+| **ACTIVE** | owner activated / extended / reactivated | the app | allowed |
+
+Reactivating or extending returns the store to ACTIVE and access resumes on the
+next poll. Nothing is deleted in any state: suspension and expiry stop access,
+never data.
+
 ## Day-to-day procedure
 
 **A new customer pays.** Find the shop — it will be UNLICENSED, and searching by

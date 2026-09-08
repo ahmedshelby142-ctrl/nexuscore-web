@@ -151,6 +151,24 @@ fallback for an outage only, and expires after three days.
 
 No billing, no subscriptions, no plan-based feature gating.
 
+**Since migration 024 the licence is an authorization boundary, not only a
+route.** `store_licensed(store_id)` is true only for a row that is `active` and
+not past `valid_until`, and `has_role()` — which every business write policy is
+built on — ANDs it in. So UNLICENSED, SUSPENDED and EXPIRED refuse writes at the
+database, not merely in the bundle. Before that, a store whose licence had been
+removed could still create products and orders through PostgREST with its own
+legitimate token; the lock was a routing decision inside code the customer
+controls.
+
+Reads stay ungated on purpose: `select_store_licenses` is keyed on membership,
+and a shop that could not read its own licence row could not be told *why* it is
+locked out. Measured before/after in [SECURITY.md](./SECURITY.md).
+
+This is what makes public signup safe to leave open. A visitor gets a real
+account and a real store that owns nothing it can use until the System Owner
+activates it; `claim_store` is `SECURITY DEFINER` and bypasses these policies,
+which is what lets that customer exist at all.
+
 ## PWA
 
 `vite-plugin-pwa` (Workbox), `registerType: "autoUpdate"`.

@@ -1,7 +1,7 @@
 # Production readiness status
 
-Six passes are recorded here. Parts 0 to 2 are newest first; Parts 3 to 5 are
-appended at the end in order, and Part 5 is the most recent of all. Each
+Seven passes are recorded here. Parts 0 to 2 are newest first; Parts 3 to 6
+are appended at the end in order, and Part 6 is the most recent of all. Each
 supersedes the earlier ones where they disagree; the earlier ones are kept
 because their findings and evidence still stand.
 
@@ -662,3 +662,123 @@ enter passwords. The components exercised are the real ones and the guards are
 untouched, but the integration — drawer inside `Layout` inside `ProtectedRoute`
 inside `LicenseGate` — was not walked by hand. One mobile pass after signing in
 closes it.
+
+---
+
+# Part 6 — Public signup access control
+
+8 September 2026. NEXUS CORE is sold by manual activation, so the question
+"may this brand-new store use the ERP?" is a security question. This pass asked
+whether the answer was actually enforced.
+
+## Verdict
+
+> ## PUBLIC SIGNUP ACCESS CONTROL = PASS WITH LIMITATIONS
+
+The client half already worked and needed no change. The database half did not
+exist and now does. The limitation is one stated, deliberate boundary and one
+test that could not be run end to end.
+
+## What was already true, and what was not
+
+The brief assumed a new signup could enter and use the ERP immediately. Half of
+that was wrong and the dangerous half was right.
+
+| Layer | Before this pass |
+| --- | --- |
+| `claim_store` with `TRIAL_DAYS = 0` | writes **no** licence row — correct |
+| `evaluateLicense(null)` | `unlicensed`; `isUsable` false — correct |
+| `LicenseGate` | redirects every business route to the lockout screen — correct |
+| Lockout copy for `unlicensed` | "المتجر لسه متفعّلش", with logout and a 60s poll — correct |
+| `/system-admin/licenses` | outside `LicenseGate`; owner never blocked — correct |
+| Owner's view of a store with no licence row | `licenseState` → UNLICENSED, `actionsFor` → `["activate"]` — correct |
+| **RLS** | **never consulted `store_licenses` at all** |
+
+So the UI was locked and the database was open. Measured as the ADMIN of a store
+whose licence row had been deleted, in a transaction that rolled back:
+
+| Attempt | Before | After migration 024 |
+| --- | --- | --- |
+| Create product | **ALLOWED** | denied 42501 |
+| Create order | **ALLOWED** | denied 42501 |
+| Create customer / expense / supplier | **ALLOWED** | denied 42501 |
+| Update the stock mirror | **ALLOWED** | 0 rows |
+| Rename own store | **ALLOWED** | 0 rows |
+| Invite a staff member | **ALLOWED** | denied 42501 |
+| Self-issue a licence | denied | denied 42501 |
+| `admin_set_license` on self | denied | denied 42501 |
+| `admin_list_stores` | denied | denied 42501 |
+| `is_system_owner()` | false | false |
+| Read another store | 0 rows | 0 rows |
+| Read own licence row | 0 rows | 0 rows (→ screen says UNLICENSED) |
+
+The lock was a routing decision inside a bundle the customer controls. Anyone
+willing to send their own PostgREST requests — with their own legitimate token,
+no forgery needed — had a working ERP without ever being approved.
+
+## The fix
+
+One migration, no application code. `store_licensed(store_id)` (SECURITY
+DEFINER, pinned `search_path`, EXECUTE revoked from `anon`) is true only for
+`status = 'active' AND valid_until > now()`. `has_role()` ANDs it in, and every
+business write policy is built on `has_role`, so one function reaches all of
+them. The two write policies keyed on `is_store_member` — `update_products` (the
+stock mirror) and `insert_ledger_lines` — were amended directly.
+
+## Regression: a licensed store is untouched
+
+Measured as the ADMIN of the production store (ACTIVE until 2027), same method:
+
+```
+store_licensed()      t          create expense       ALLOWED
+has_role(ADMIN)       t          add staff member     RLS passed
+create product        ALLOWED    stock mirror         4 rows
+create order          ALLOWED    read own products    4 rows
+```
+
+Staff invitation is explicitly unaffected — the mandate's separate workflow.
+
+## The other three states, each in its own transaction
+
+`store_licensed` is STABLE, so a cached result inside one transaction could mask
+a genuine allow; each state was tested separately.
+
+| State | Writes | Can still read its own licence row |
+| --- | --- | --- |
+| SUSPENDED | denied 42501 | yes → screen says "تم إيقاف الوصول مؤقتاً" |
+| EXPIRED (date passed, status still `active`) | denied 42501 | yes → screen says "انتهت صلاحية الترخيص" |
+| UNLICENSED | denied 42501 | no row → screen says "المتجر لسه متفعّلش" |
+| ACTIVE | allowed | yes |
+
+The predicate itself was verified across six inputs before it gated anything:
+active/future `t`; suspended `f`; status `expired` `f`; active/past-date `f`; no
+row `f`; unknown store id `f`.
+
+## The limitations, stated plainly
+
+1. **Reads are not gated, deliberately.** `select_store_licenses` is
+   `USING (is_store_member(store_id))`. Had membership required a licence, a
+   suspended or expired shop could not read the row explaining why it is locked
+   out, and the screen would tell it "not activated yet" — collapsing exactly the
+   states `evaluate.ts` was written to keep apart. So an unlicensed store cannot
+   write anything and cannot open any screen, but a hand-made request can still
+   `SELECT` its own tables. For a new store those are empty; for a suspended one
+   the rows are the customer's own. Nothing cross-tenant is readable either way.
+
+2. **The end-to-end signup was not run.** Creating a real QA signup needs a
+   confirmation email, and email delivery from this project has been failing
+   since 7 September (Part 4) — four messages accepted by Supabase Auth, none
+   delivered. Rather than leave an unconfirmable orphan account behind, the
+   UNLICENSED state was reproduced exactly by removing a licence row inside a
+   rolled-back transaction, which is the same state `claim_store` leaves a new
+   store in. Steps A–E and H–J of the brief's test plan therefore rest on the
+   state model, not on a live signup.
+
+## Not changed
+
+* No application code. The client gate, the lockout copy, the owner screen and
+  the activation dialog were already correct.
+* No second state machine. UNLICENSED is derived from the absence of a licence
+  row, which `admin_list_stores` already surfaces through a LEFT JOIN.
+* `TRIAL_DAYS` stays 0. No trial, no automatic licence.
+* Staff invitation untouched.

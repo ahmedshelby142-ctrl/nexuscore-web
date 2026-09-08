@@ -4,10 +4,11 @@ The client is the attacker's machine. Every rule that matters is enforced in
 Postgres, and the frontend guards exist to make the product usable, not to make
 it safe.
 
-Verified against the live project across two passes: the hardening audit of
-6 September 2026, and the roles and permissions audit of 7 September 2026 (the
-"Roles and permissions" section). Where a claim rests on reading code rather
-than exercising it, that is stated.
+Verified against the live project across three passes: the hardening audit of
+6 September 2026, the roles and permissions audit of 7 September 2026 (the
+"Roles and permissions" section), and the signup access-control audit of
+8 September 2026 ("Licensing is an authorization boundary"). Where a claim rests
+on reading code rather than exercising it, that is stated.
 
 ## Authentication
 
@@ -127,6 +128,7 @@ below.
 | RLS policies | Decides what may be read and written | **The boundary** |
 | `products` trigger | Decides which product *columns* a role may change | **The boundary** |
 | `is_system_owner()` | Gates the six licence RPCs | **The boundary** |
+| `store_licensed()` | Requires an active licence for every business write | **The boundary** |
 
 The Sidebar and the router call the *same* `canAccess`, so a visible link and an
 open URL cannot drift apart. Both are a courtesy to honest users; nothing above
@@ -136,6 +138,11 @@ the RLS line stops a crafted request.
 
 Each row is the result of attempting the operation as that role, in a
 transaction that rolled back. Reproduce with `scripts/role_matrix_probe.sql`.
+
+**Every ✅ below also requires an ACTIVE licence.** Since migration 024
+`has_role()` is `member_role(...) = ANY(roles) AND store_licensed(store)`, so an
+unlicensed, suspended or expired store turns this entire matrix into ❌ — see
+"Licensing is an authorization boundary" below.
 
 | Capability | ADMIN | ACCOUNTANT | POS_ECOMMERCE | ECOMMERCE_ONLY |
 | --- | :-: | :-: | :-: | :-: |
@@ -437,6 +444,83 @@ account):
 The licence functions also refuse a **service-role SQL connection**, because the
 check is `is_system_owner()` on `auth.uid()` rather than a database role. Only a
 real system-owner session passes.
+
+## Licensing is an authorization boundary, not a screen
+
+NEXUS CORE is sold by manual activation, so "has this store been approved?" is a
+security question, not a UX one. It is answered in Postgres.
+
+### The hole this closed
+
+Public signup is open, and `claim_store` gives a new account a store with itself
+as ADMIN. `TRIAL_DAYS = 0`, so no licence row is written — the client evaluates
+`unlicensed` and `LicenseGate` redirects every business route to the lockout
+screen. That part always worked.
+
+**RLS, however, never consulted `store_licenses` at all.** Measured 8 September
+2026 as the ADMIN of a store whose licence row had been removed:
+
+| Attempt | Before | After migration 024 |
+| --- | --- | --- |
+| Create product | **ALLOWED** | denied (42501) |
+| Create order | **ALLOWED** | denied (42501) |
+| Create customer / expense / supplier | **ALLOWED** | denied (42501) |
+| Update the stock mirror | **ALLOWED** | 0 rows |
+| Rename own store | **ALLOWED** | 0 rows |
+| Add a staff member | **ALLOWED** | denied (42501) |
+| Self-issue a licence | denied | denied (42501) |
+| `admin_set_license` on self | denied | denied (42501) |
+| Read another store | 0 rows | 0 rows |
+
+So the lock was a routing decision inside a bundle the customer controls.
+Anyone willing to send their own PostgREST requests — with their own legitimate
+token, no forgery required — had a fully working ERP without ever being
+approved. For a product whose entire commercial control is manual activation,
+that was the control missing.
+
+### Where the check lives
+
+`store_licensed(store_id)` — `SECURITY DEFINER`, pinned `search_path`, `EXECUTE`
+revoked from `anon` — is true only for a row with `status = 'active'` **and**
+`valid_until > now()`. Status and date in that order, matching `licenseState()`
+on the client: a suspension bites while the paid period runs, and a date that
+has passed expires a row whose status still says `active`.
+
+Every business write policy in the schema is built on `has_role(store_id, …)`,
+so the licence was added there — one function, inherited by products, orders,
+customers, expenses, suppliers, branches, wholesale, purchase invoices, returns,
+shipping rates, transactions, discount codes, ledger events, `store_members` and
+`stores`. Two write policies keyed on `is_store_member` instead
+(`update_products`, the stock mirror, and `insert_ledger_lines`) were amended
+directly.
+
+This also makes SUSPENDED and EXPIRED real at the database, not just in the
+router. Verified: a suspended store and a store whose `valid_until` has passed
+are both refused writes, in separate transactions.
+
+### Reads are deliberately left open
+
+`select_store_licenses` is `USING (is_store_member(store_id))`. Had membership
+required a licence, a suspended or expired shop could no longer read the row
+explaining why it is locked out — and the screen would tell it "not activated
+yet" instead. Collapsing those states is the exact bug `lib/license/evaluate.ts`
+was written to prevent.
+
+The consequence, stated plainly: an UNLICENSED store **cannot write anything**
+through the API and cannot open any screen, but a hand-made request can still
+`SELECT` its own tables. For a brand-new store those tables are empty, and for a
+suspended one the rows are the customer's own. Nothing cross-tenant is readable
+in either case — verified above.
+
+### What signup still cannot do
+
+`claim_store` is `SECURITY DEFINER` and does not pass through these policies,
+which is what lets a brand-new customer exist at all while owning nothing they
+can use. It creates exactly one store and one ADMIN membership, and the unique
+index `store_members_one_store_per_user` stops a second. Nothing in the signup
+path can issue a licence: `store_licenses` is `false` for INSERT, UPDATE and
+DELETE on every client role, and the six `admin_*` RPCs gate on
+`is_system_owner()`.
 
 ## SECURITY DEFINER functions
 

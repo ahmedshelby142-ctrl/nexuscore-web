@@ -811,7 +811,16 @@ export default function CheckoutForm() {
       {/* Speed lane on the right (RTL: first), the basket pinned beside it.
           Nothing below changes what a sale DOES — same handlers, same one
           `appendEvent`. This is where the cashier looks, not what runs. */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-[calc(100vh-80px)] overflow-hidden items-start">
+      {/*
+        The fixed height and `overflow-hidden` are a DESKTOP device: two columns
+        side by side, each scrolling internally. On a phone the columns stack,
+        so that same height pushed the cart panel to bottom:950 against an 844px
+        fold — and it trapped the sticky totals bar inside a containing block
+        that already extended past the viewport, which is why pinning the bar
+        alone did not bring "إتمام البيع" into reach. Below `lg` the grid is
+        auto-height and scrolls with the page.
+      */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:h-[calc(100vh-80px)] lg:overflow-hidden items-start">
         {/* =======================
             RIGHT COLUMN: Working Area (lg:col-span-8)
             ======================= */}
@@ -1004,7 +1013,7 @@ export default function CheckoutForm() {
         {/* =======================
             LEFT COLUMN: Ticket / Cart (lg:col-span-4)
             ======================= */}
-        <div className="col-span-1 lg:col-span-4 flex flex-col h-[calc(100vh-120px)] bg-card border-l border-r border-border shadow-[0_0_15px_rgba(0,0,0,0.05)] rounded-lg">
+        <div className="col-span-1 lg:col-span-4 flex flex-col lg:h-[calc(100vh-120px)] bg-card border-l border-r border-border shadow-[0_0_15px_rgba(0,0,0,0.05)] rounded-lg">
           
           {/* Header: Treasury & CRM */}
           <div className="p-4 border-b border-border bg-muted/30 shrink-0 space-y-3">

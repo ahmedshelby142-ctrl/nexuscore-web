@@ -166,3 +166,18 @@ test("action rows reflow instead of running off the RTL start edge", () => {
     assert.match(read(file), re, `${file} must wrap its action row`);
   }
 });
+
+test("the till stacks and scrolls on a phone, and only pins on desktop", () => {
+  // The POS grid carried h-[calc(100vh-80px)] + overflow-hidden unconditionally.
+  // That is a desktop device — two columns each scrolling internally. Stacked
+  // on a phone it pushed the cart panel to bottom:950 against an 844px fold and
+  // trapped the sticky totals bar inside a containing block that already
+  // extended past the viewport, so pinning the bar alone did not bring
+  // "إتمام البيع" into reach. Both are now lg:-only.
+  assert.match(pos, /lg:h-\[calc\(100vh-80px\)\] lg:overflow-hidden/);
+  assert.match(pos, /flex flex-col lg:h-\[calc\(100vh-120px\)\]/);
+  assert.ok(
+    !/gap-4 h-\[calc\(100vh-80px\)\] overflow-hidden/.test(pos),
+    "the unconditional desktop height is the bug",
+  );
+});

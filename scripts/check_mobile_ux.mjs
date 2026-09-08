@@ -138,10 +138,16 @@ test("phones get two KPI columns, not seven stacked cards", () => {
   assert.match(dash, /grid-cols-1 min-\[360px\]:grid-cols-2 lg:grid-cols-3/);
 });
 
-test("the till's total and checkout stay within thumb reach", () => {
+test("the till's total and checkout travel together", () => {
   // Measured live at 390x844 with an EMPTY cart: "الإجمالي المطلوب" at y=818
   // and "إتمام البيع" at y=870 against a 771px fold — and every line added to
   // the cart pushed them further down.
+  //
+  // What this asserts is that the pair stay TOGETHER and pin once reached. It
+  // does NOT assert they are visible from anywhere: `position: sticky` cannot
+  // pull an element up from further down the page, and after the layout fix
+  // checkout rests at y=1497. A persistently visible bar needs `position:
+  // fixed`; that is open work, recorded in QA_STATUS Part 8.
   assert.match(pos, /sticky bottom-0 z-10 -mx-4 mt-2 space-y-4 border-t border-border bg-card\/95/);
   // `lg:contents` removes the wrapper from layout on desktop, so the desktop
   // composition is untouched rather than merely "probably fine".

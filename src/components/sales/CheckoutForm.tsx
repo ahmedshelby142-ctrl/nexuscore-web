@@ -1223,11 +1223,21 @@ export default function CheckoutForm() {
               every line added, because the cart grows above them. The more you
               sell, the further the button runs away.
 
-              So on mobile they ride together in a sticky bar at the bottom of
-              the scroll container. `lg:contents` removes this wrapper from the
-              layout entirely from `lg` up, so the desktop composition is byte
-              for byte what it was — the cart column is tall enough there that
-              nothing was ever out of reach.
+              So on mobile they ride together in one bar that pins to the
+              bottom of the scroll container ONCE REACHED. Be precise about
+              what that buys: `position: sticky` stops the pair scrolling away
+              while you work in the cart, but it does NOT pull them up from
+              further down the page — measured after the layout change,
+              "إتمام البيع" rests at y=1497 on a 390x844 screen and is reached
+              by scrolling, not by pinning. A bar that is visible from anywhere
+              needs `position: fixed` plus bottom padding on the scroll
+              container so it does not sit over the last cart line. That is the
+              remaining piece; see QA_STATUS Part 8.
+
+              `lg:contents` removes this wrapper from the layout entirely from
+              `lg` up, so the desktop composition is byte for byte what it was —
+              the cart column is tall enough there that nothing was ever out of
+              reach.
 
               No POS state or handler is touched: this is composition only.
             */}

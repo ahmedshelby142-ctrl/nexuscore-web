@@ -1,7 +1,7 @@
 # Production readiness status
 
-Eight passes are recorded here. Parts 0 to 2 are newest first; Parts 3 to 7
-are appended at the end in order, and Part 7 is the most recent of all. Each
+Nine passes are recorded here. Parts 0 to 2 are newest first; Parts 3 to 8
+are appended at the end in order, and Part 8 is the most recent of all. Each
 supersedes the earlier ones where they disagree; the earlier ones are kept
 because their findings and evidence still stand.
 
@@ -919,3 +919,112 @@ rewrite section 24 forbids, and there would be no way to verify the result.
 
 Both fixes above were made in shared primitives precisely because those *can* be
 exercised in isolation and benefit every screen at once.
+
+---
+
+# Part 8 — Mobile UX pass, with a real authenticated session
+
+8 September 2026. The first pass with a live signed-in session, so every
+finding below came from opening the screen in the running application rather
+than from reading source. Audited with the UX/UI Pro Max skill.
+
+**Session:** `ahmedshelby142@gmail.com`, ADMIN of `المحل التجاري` — the
+**production** store, not the disposable QA one. Nothing was written to it: no
+sale, no purchase, no record. The one business interaction exercised (adding a
+product to the POS cart) is local state; `إتمام البيع` was never pressed.
+
+## The systemic defect
+
+A `flex` row of controls that does not wrap overflows the **start** edge under
+`dir="rtl"`. That is worse than ordinary overflow: the controls go *negative*
+rather than sitting past the right margin, so horizontal scrolling does not
+reveal them and nothing indicates they exist. Measured at 390px:
+
+| Screen | Element | Measurement | Consequence |
+| --- | --- | --- | --- |
+| الطلبات | tab list | 578px, no scroll | `مرتجع مع المندوب` and `ملغي` unreachable |
+| نظرة عامة | period filter | 542px, month picker at right:-5 | date filter unreachable |
+| المشتريات | header actions | 335px at left:-99 | `تسجيل فاتورة مشتريات` cut in half |
+| الجرد | toolbar + date row | 420px at left:-365 | date range unreachable |
+| النسخ الاحتياطي | action row | 761px at left:-394 | all three actions off screen |
+| قاعدة العملاء | customer header | 131px at left:-25 | `تعديل` clipped |
+
+All fixed by wrapping. The skill argued against my first instinct here: its
+"Chip Collection Reflow" rule (High) says wrap the collection rather than force
+it into one clipped row, and it rates horizontal scrolling High separately — a
+scrolling row hides the same controls behind a gesture with no affordance.
+`TabsList` was fixed in the primitive, so all eight tabbed screens got it at
+once. I did **not** blanket-replace the 22 `flex items-center justify-between`
+occurrences in the tree: most are two-item rows like `الإجمالي المطلوب | ١٥٠
+ج.م` where wrapping would be wrong. Each change was measured overflowing first.
+
+## نقطة البيع — the till
+
+Two defects, the second only visible after fixing the first.
+
+**Totals and checkout below the fold.** At 390x844 with an EMPTY cart:
+`الإجمالي المطلوب` at y=818, `إتمام البيع` at y=870, against a 771px fold. Every
+line added to the cart pushed them further down — the more you sell, the
+further the button runs away. They now ride in a sticky bar; `lg:contents`
+removes that wrapper from layout at `lg` and up, so desktop is untouched.
+
+**The bar was trapped.** With a real item in the cart the bar was pinning
+correctly (position:sticky, total visible at y=802) and `إتمام البيع` was still
+at y=858. The POS grid carried `h-[calc(100vh-80px)] overflow-hidden`
+unconditionally, and the cart column `h-[calc(100vh-120px)]` — a desktop device
+for two columns each scrolling internally. Stacked on a phone it put the cart
+panel at top:664 bottom:950, and a sticky element cannot leave its containing
+block. Both heights are now `lg:`-only, so the till stacks and scrolls below
+`lg`, which is the correct mobile composition and is verified.
+
+**The checkout button is still not reachable from anywhere, and this is open.**
+Re-measured after that change: `إتمام البيع` rests at y=1497 on 390x844. This
+is my own earlier claim corrected — `position: sticky` keeps the total and the
+button together and stops them scrolling away once reached, but it cannot pull
+them up from further down the page. A bar visible from anywhere needs
+`position: fixed` plus bottom padding on the scroll container so it does not
+cover the last cart line. I did not implement that: the authenticated session
+had minutes left and a fixed overlay changes every screen's bottom edge, which
+is not a change to ship unverified. The code comment and the regression test
+were corrected to say what they actually guarantee rather than what I first
+claimed. **This is the highest-value remaining item in the mandate.**
+
+## نظرة عامة — KPI density
+
+`grid-cols-1 sm:grid-cols-2` never gave a phone two columns, because every
+phone is below Tailwind's `sm` (640px): seven full-width cards and 2.66 screens
+of scrolling before the chart. Two columns were simulated in the live DOM
+first — nothing clipped, the card wraps rather than truncating — then applied
+from `min-[360px]`. Result 2048px → 1743px, 2.66 → 2.26 screens. 320 keeps one
+column.
+
+## Verified after deploy
+
+96 screen/width combinations — 16 screens × 320/360/375/390/414/430 —
+**zero horizontal overflow**. Real interaction: `ملغي`, previously entirely off
+screen, now selects and switches the panel; POS search returns 64px touch
+targets and adds to the cart.
+
+Desktop regression at 1024/1280/1440: sidebar renders, tab lists stay a single
+36px row, KPIs return to three columns (217.6px at 1024, 356px at 1440), the
+POS sticky wrapper computes `display: contents`, no overflow anywhere.
+
+**A note on verifying after deploy.** The first verification pass showed *no*
+fix had taken effect, because the service worker served the precached shell —
+the page held `index-B5WEKORZ.js` while the origin served `index-BVixfduU.js`.
+The fixes were live; the browser was not. That is `autoUpdate` behaving as
+designed (it applies on the next visit), but it means a post-deploy check must
+confirm which bundle it is looking at before believing a result.
+
+## Not done
+
+**Wide tables are still tables.** Products (1013px, 9 columns), Wholesale
+(606px, 8), Users (560px), Discounts (568px), Bundles (485px), Courier (443px)
+and Inventory (718px) all render a desktop table inside a horizontally
+scrolling wrapper at 390px. No row is readable without scrolling sideways.
+Nothing overflows the page and no data or action is lost, so this is a
+readability problem rather than a functional one — but §24 asks for a
+list/card pattern and it has not been done. Each conversion is a per-screen
+decision about which two or three fields are primary, and doing seven of them
+blind, against a production store, inside one session was not something I could
+verify properly. It is the largest remaining piece of this mandate.

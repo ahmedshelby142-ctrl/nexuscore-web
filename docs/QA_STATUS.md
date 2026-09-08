@@ -787,9 +787,10 @@ row `f`; unknown store id `f`.
 
 # Part 7 — Mobile UX pass (partial)
 
-8 September 2026. Audited with the UX/UI Pro Max skill as the reference. Two
-defects found and fixed in shared primitives; the per-screen redesign work is
-recorded as BLOCKED below.
+8 September 2026. Audited with the UX/UI Pro Max skill as the reference. Four
+defects found and fixed — three in shared primitives, so they reach every
+screen at once, and one on `/login`, the only full screen reachable without a
+session. The per-screen redesign work is recorded as BLOCKED below.
 
 ## What the skill changed about the standard applied
 
@@ -839,6 +840,70 @@ defaults `inputMode="decimal"` for number inputs, overridable per field.
 
 `text-base md:text-sm` was already correct and was left alone: 16px on mobile is
 what stops iOS zooming the page on focus.
+
+## Defect 3 — destructive confirmations were unreachable (class A, functional)
+
+The same defect as Defect 1, in `alert-dialog.tsx`: `fixed`, centred with a
+-50% translate, no `max-height`, no `overflow`. It carries more weight because
+this primitive is every destructive confirmation in the app — delete a product,
+remove a member, factory-reset a device.
+
+Measured at 320x720 with a realistic confirmation, using the real primitive:
+`إلغاء` at y=809 and `تأكيد` at y=765, both below a 720px fold, on a `fixed`
+element the page cannot scroll. **A delete you cannot cancel is worse than one
+you cannot confirm.**
+
+Capped identically — `max-h-[calc(100dvh-2rem)]` + `overflow-y-auto`. That made
+the buttons reachable, which exposed the second half: reaching them took 166px
+of scrolling, by which point the sentence naming what was being deleted had
+scrolled away. `AlertDialogFooter` is therefore now `sticky bottom-0` with its
+own background and top border.
+
+`DialogFooter` is deliberately **not** sticky: a form is read downwards and the
+save button belongs after the last field. Asserted both ways in
+`scripts/check_mobile_ux.mjs`.
+
+| | Before | After |
+| --- | --- | --- |
+| Dialog height at 320x720 | overflowed both ends | 688px, fits, scrolls |
+| Cancel button | y=809, below the fold | visible immediately |
+| Title while buttons visible | scrolled away | footer pinned, body scrolls under it |
+| Desktop 1440x900 | — | 827px, no scroll, footer still a row |
+
+Verified in the **real application**, not only a harness: `/login`'s
+factory-reset confirmation at 320px opens, fits at 333px, keeps `إلغاء`
+visible, traps focus, closes on Escape, and logs no console error. Cancelled,
+never confirmed.
+
+## Defect 4 — the front door's fields had no labels (class A, accessibility)
+
+`/login` is the one full screen a mobile user meets that is not behind auth,
+and the only one this pass could audit end to end.
+
+Both fields carried a **visible** `<Label>` that was never associated —
+`input.labels.length === 0`, no `aria-label`, no `aria-labelledby`. Each
+announced as an unlabelled box, and on a phone the placeholder that was
+carrying the meaning disappears the moment you type. The skill rates this High
+("Form Labels — Don't: placeholder-only inputs").
+
+Fixed with `htmlFor`/`id` on all three fields (username, password, new
+password). **Nothing moves visually.** The email field also gained
+`type`/`inputMode` `email`, and the card heading now follows `authMode` — it
+read `تسجيل الدخول` on the create-account form, contradicting the button
+underneath it, which is worst on a phone where those two are often all that is
+on screen at once.
+
+Verified live at 320/360/375/390/414/430 and on production after deploy:
+`labels: 1`, `inputMode: email`, 44px targets, 16px font, page fits, no
+horizontal overflow, no console errors. Desktop unregressed at 1024 and 1440,
+where the two fields still lay out as a 2-column grid.
+
+### Left alone, on the skill's advice
+
+* The signup link is 20px tall but **inline in a sentence**, which is the
+  WCAG 2.5.8 inline exception. Enlarging it would have broken the sentence.
+* Icon buttons are 32-36px, above the 24px web floor (WCAG 2.2 AA), so the
+  show/hide-password control and the row actions were not touched.
 
 ## BLOCKED — the per-screen mobile redesign
 

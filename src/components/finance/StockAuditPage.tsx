@@ -377,7 +377,9 @@ export function StockAuditPage() {
         <Button variant="outline" onClick={handleExportPdf}>
           <FileText className="size-4 ml-2" /> تصدير PDF
         </Button>
-        <div className="flex items-center gap-2">
+        {/* The inner date row needs to wrap too: wrapping only the outer
+            toolbar left this 420px pair at left:-53, still off the edge. */}
+        <div className="flex flex-wrap items-center gap-2">
           <Label htmlFor="startDate">من تاريخ:</Label>
           <Input
             id="startDate"

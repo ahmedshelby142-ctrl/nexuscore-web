@@ -17,6 +17,8 @@ import { readFileSync } from "node:fs";
 const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 const dialog = read("../src/components/ui/dialog.tsx");
 const input = read("../src/components/ui/input.tsx");
+const alertDialog = read("../src/components/ui/alert-dialog.tsx");
+const login = read("../src/pages/Login.tsx");
 const table = read("../src/components/ui/table.tsx");
 const sheet = read("../src/components/ui/sheet.tsx");
 
@@ -61,4 +63,50 @@ test("the navigation drawer stays a Sheet with a named close", () => {
   // owns the focus trap and restoration.
   assert.match(sheet, /closeLabel = "Close"/);
   assert.match(sheet, /aria-label=\{closeLabel\}/);
+});
+
+test("a confirmation dialog fits the phone, like the form dialog does", () => {
+  // Same defect as DialogContent, found in the same audit: `fixed`, centred
+  // with a -50% translate, no height cap. A long confirmation overflowed both
+  // ends and a `fixed` element cannot be scrolled by the page. It matters more
+  // here — this primitive is every destructive confirmation in the app, and a
+  // delete you cannot cancel is worse than one you cannot confirm.
+  assert.match(alertDialog, /max-h-\[calc\(100dvh-2rem\)\]/);
+  assert.match(alertDialog, /overflow-y-auto/);
+  // dvh, not vh: the keyboard and browser chrome shrink the visual viewport.
+  assert.ok(!/max-h-\[calc\(100vh/.test(alertDialog), "vh ignores the keyboard");
+});
+
+test("the confirmation's buttons stay on screen while you read it", () => {
+  // Measured at 320x720 before this: "إلغاء" sat at y=809 and only appeared
+  // after scrolling 166px, by which point the sentence naming what was being
+  // deleted had scrolled away. Sticky costs nothing when nothing scrolls, so
+  // short dialogs and every desktop width are unchanged.
+  const footer = alertDialog.match(/const AlertDialogFooter[\s\S]*?\n\);/)[0];
+  assert.match(footer, /sticky bottom-0/);
+  assert.match(footer, /bg-background/, "a transparent sticky bar shows text through it");
+  // The form dialog is deliberately NOT sticky: you read a form downwards and
+  // the save button belongs after the last field.
+  const dialogFooter = dialog.match(/const DialogFooter[\s\S]*?\n\);/)[0];
+  assert.ok(!/sticky/.test(dialogFooter), "form footers stay in flow, on purpose");
+});
+
+test("every field on the front door is actually labelled", () => {
+  // The labels were visible but not associated, so each field announced as an
+  // unlabelled box — and on a phone the placeholder that was carrying the
+  // meaning disappears as soon as you type. Verified live: labels 0 → 1.
+  for (const id of ["login-username", "login-password", "login-new-password"]) {
+    assert.match(login, new RegExp(`htmlFor="${id}"`), `${id} needs its label`);
+    assert.match(login, new RegExp(`id="${id}"`), `${id} needs its input`);
+  }
+});
+
+test("the email field opens an email keyboard", () => {
+  assert.match(login, /inputMode=\{opMode === "cloud_sync" \? "email" : "text"\}/);
+});
+
+test("the heading names the form you are actually on", () => {
+  // It read تسجيل الدخول on the create-account form, contradicting the button
+  // below it — worst on a phone, where the two are often all that is visible.
+  assert.match(login, /authMode === "signup"\s*\n\s*\? "إنشاء حساب جديد"/);
 });

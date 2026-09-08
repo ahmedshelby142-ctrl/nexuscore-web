@@ -481,13 +481,24 @@ export function Login() {
           </div>
 
           <div>
+            {/* The heading follows `authMode`. It used to read تسجيل الدخول on
+                the create-account form too, so the one line naming the screen
+                contradicted the button underneath it — worst on a phone, where
+                the heading and the primary action are often the only two things
+                on screen at once. */}
             <h2 className="text-2xl font-bold text-white tracking-tight">
-              {mustChangePassword ? "تغيير كلمة المرور" : "تسجيل الدخول"}
+              {mustChangePassword
+                ? "تغيير كلمة المرور"
+                : authMode === "signup"
+                  ? "إنشاء حساب جديد"
+                  : "تسجيل الدخول"}
             </h2>
             <p className="text-sm text-white/55 mt-1.5 leading-relaxed">
               {mustChangePassword
                 ? "كلمة المرور الحالية مؤقتة — اختر واحدة جديدة للمتابعة."
-                : "أدخل بياناتك واختر ملف النشاط التجاري للبدء."}
+                : authMode === "signup"
+                  ? "اعمل حساب جديد واختر ملف النشاط التجاري. المتجر هيتفعّل بعد مراجعة الإدارة."
+                  : "أدخل بياناتك واختر ملف النشاط التجاري للبدء."}
             </p>
           </div>
 
@@ -499,10 +510,18 @@ export function Login() {
               <div className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label className="text-slate-300 text-sm">
+                    {/* `htmlFor`/`id`: the label was visible but not associated,
+                        so the field announced as an unlabelled text box — and on
+                        a phone the placeholder, which was carrying the meaning,
+                        disappears the moment you start typing. Nothing here
+                        changes visually. */}
+                    <Label htmlFor="login-username" className="text-slate-300 text-sm">
                       {opMode === "cloud_sync" ? "البريد الإلكتروني" : "اسم المستخدم"}
                     </Label>
                     <Input
+                      id="login-username"
+                      type={opMode === "cloud_sync" ? "email" : "text"}
+                      inputMode={opMode === "cloud_sync" ? "email" : "text"}
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       onKeyDown={handleKeyDown}
@@ -512,9 +531,12 @@ export function Login() {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-slate-300 text-sm">كلمة المرور</Label>
+                    <Label htmlFor="login-password" className="text-slate-300 text-sm">
+                      كلمة المرور
+                    </Label>
                     <div className="relative">
                       <Input
+                        id="login-password"
                         type={showPassword ? "text" : "password"}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
@@ -638,9 +660,12 @@ export function Login() {
                   </p>
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-slate-300 text-sm">كلمة المرور الجديدة</Label>
+                  <Label htmlFor="login-new-password" className="text-slate-300 text-sm">
+                    كلمة المرور الجديدة
+                  </Label>
                   <div className="relative">
                     <Input
+                      id="login-new-password"
                       type={showPassword ? "text" : "password"}
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}

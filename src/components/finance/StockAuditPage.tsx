@@ -364,7 +364,13 @@ export function StockAuditPage() {
       </div>
 
       {/* Toolbar */}
-      <div className="flex items-center gap-4">
+      {/*
+        `flex-wrap`. Measured live at 390px: this toolbar ran to left:-365, so
+        in RTL the من تاريخ / إلى تاريخ range sat almost entirely off the start
+        edge — the screen is a stock AUDIT and its date range was unreachable
+        on a phone.
+      */}
+      <div className="flex flex-wrap items-center gap-4">
         <Button onClick={() => setIsAuditOpen(true)}>
           <Plus className="size-4 ml-2" /> بدء مراجعة جرد
         </Button>

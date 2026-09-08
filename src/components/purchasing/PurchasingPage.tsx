@@ -337,12 +337,18 @@ export function PurchasingPage() {
     <>
     <div className="space-y-6 print:hidden">
       {/* Header and Actions */}
-      <div className="flex items-center justify-between">
+      {/*
+        `flex-wrap` on both rows. Measured live at 390px: the action row was
+        335px but sat at left:-99, so in RTL it ran off the START edge and the
+        PRIMARY action — تسجيل فاتورة مشتريات — was cut in half. The screen's
+        main verb was the thing you could not press.
+      */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-display font-bold">المشتريات والموردين</h1>
           <p className="text-muted-foreground mt-1">إدارة فواتير المشتريات، الموردين وتوريد المخزون</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={openReturnModal}>
             <RotateCcw className="ml-2 size-4" />
             مرتجع مورد

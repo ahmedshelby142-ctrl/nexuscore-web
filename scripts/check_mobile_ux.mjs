@@ -147,3 +147,22 @@ test("the till's total and checkout stay within thumb reach", () => {
   // composition is untouched rather than merely "probably fine".
   assert.match(pos, /lg:contents/);
 });
+
+test("action rows reflow instead of running off the RTL start edge", () => {
+  // The systemic defect of this pass. A non-wrapping `flex` row of controls
+  // overflows the START edge in RTL, so the controls do not merely sit past
+  // the right margin where a horizontal scroll would reveal them — they go
+  // negative and off screen. Measured live at 390px:
+  //
+  //   المشتريات header actions   335px at left:-99   (primary action cut off)
+  //   الجرد toolbar              420px at left:-365  (date range unreachable)
+  //   النسخ الاحتياطي actions     761px at left:-394  (every action off screen)
+  const cases = [
+    ["../src/components/purchasing/PurchasingPage.tsx", /<div className="flex flex-wrap items-center justify-between gap-3">/],
+    ["../src/components/finance/StockAuditPage.tsx", /<div className="flex flex-wrap items-center gap-4">/],
+    ["../src/routes/backups.tsx", /<div className="flex flex-wrap items-center gap-2">/],
+  ];
+  for (const [file, re] of cases) {
+    assert.match(read(file), re, `${file} must wrap its action row`);
+  }
+});

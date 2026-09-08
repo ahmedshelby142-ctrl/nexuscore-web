@@ -192,7 +192,9 @@ export function BackupsPage() {
             السحابة، مش في الملف ده.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        {/* `flex-wrap`: measured at 390px this row was 761px at left:-394 —
+            every backup action, including إنشاء نسخة احتياطية, off screen. */}
+        <div className="flex flex-wrap items-center gap-2">
           <input
             ref={fileInput}
             type="file"

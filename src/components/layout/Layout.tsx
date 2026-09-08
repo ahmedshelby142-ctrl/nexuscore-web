@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { Outlet, useLocation } from "react-router-dom";
-import { FileDown, CheckCircle2, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { FileDown, CheckCircle2 } from "lucide-react";
 import { Sidebar } from "@/components/dashboard/Sidebar";
+import { MobileNav } from "@/components/layout/MobileNav";
 import { DevRoleSwitcher } from "@/components/auth/DevRoleSwitcher";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useThemeStore } from "@/store/useThemeStore";
@@ -21,7 +22,6 @@ const HEADER_TITLES: Record<string, string> = {
 
 export function Layout() {
   const { businessType, operationMode } = useAuthStore();
-  const { sidebarCollapsed, toggleSidebar } = useThemeStore();
   const { wholesaleInvoices, transactions } = useBusinessStore();
   const online = useOnline();
   const [refreshing, setRefreshing] = useState(false);
@@ -140,20 +140,15 @@ export function Layout() {
         <header className="flex-shrink-0 border-b border-border bg-card px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              {/* Mobile toggle hint — visible only on small screens */}
-              <button
-                onClick={toggleSidebar}
-                aria-label={sidebarCollapsed ? "فتح القائمة" : "طي القائمة"}
-                aria-expanded={!sidebarCollapsed}
-                className="lg:hidden size-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted transition-colors"
-              >
-                {sidebarCollapsed ? (
-                  <PanelRightOpen className="size-4" />
-                ) : (
-                  <PanelRightClose className="size-4" />
-                )}
-              </button>
-              <h1 className="text-2xl font-display font-bold">{headerTitle}</h1>
+              {/*
+                This used to be a `lg:hidden` button calling `toggleSidebar()`.
+                Below `lg` the sidebar is `hidden`, so it flipped a value
+                nothing rendered: a labelled, focusable control that did
+                nothing, on the one viewport where navigation was impossible
+                without it. `MobileNav` is the drawer it implied.
+              */}
+              <MobileNav />
+              <h1 className="text-xl lg:text-2xl font-display font-bold truncate">{headerTitle}</h1>
             </div>
             <div className="flex items-center gap-3">
               {operationMode === "offline_local" && (

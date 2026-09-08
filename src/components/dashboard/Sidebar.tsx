@@ -38,7 +38,7 @@ import logoLight from "@/assets/logo-light.png";
 import logoDark from "@/assets/logo-dark.png";
 import { logout as serverLogout } from "@/lib/api/authServer";
 
-interface NavItem {
+export interface NavItem {
   label: string;
   prefLabel?: string; // alternate label for non-owner roles
   icon: React.ElementType;
@@ -166,6 +166,78 @@ const allNavItems: NavItem[] = [
   },
 ];
 
+/**
+ * The navigation this user may actually reach — the single source for BOTH
+ * the desktop sidebar and the mobile drawer.
+ *
+ * It exists as a hook rather than a copied array precisely so the mobile menu
+ * cannot drift: `canAccess` here is the SAME function the router's
+ * `RequireAccess` calls, so a link that appears can never lead to a redirect,
+ * and a link that is filtered out can never be reachable from the menu. A
+ * second, hand-maintained list in the drawer is how a POS_ECOMMERCE user ends
+ * up looking at an ADMIN route.
+ *
+ * The label swap for non-ADMIN roles lives here too, so both surfaces name the
+ * same screen the same way.
+ */
+export function useNavItems(): NavItem[] {
+  const { userRole, activeBusinessProfile } = useAuthStore();
+  const featureFlags = useFeatureStore();
+
+  return allNavItems
+    .filter(
+      (item) =>
+        canAccess(userRole, item.path) &&
+        item.profiles.includes(activeBusinessProfile) &&
+        (!item.featureKey || featureFlags[item.featureKey]),
+    )
+    .map((item) =>
+      toAppRole(userRole) !== "ADMIN" && item.prefLabel
+        ? { ...item, label: item.prefLabel }
+        : item,
+    );
+}
+
+/**
+ * Signing out, shared by the sidebar and the mobile drawer.
+ *
+ * Extracted rather than copied because the order matters and the reason is not
+ * obvious: `logout()` alone only clears the local flag, leaving the Supabase
+ * refresh token in localStorage — and the boot reconciliation then signs the
+ * user straight back in. A second copy of this in the drawer would be a second
+ * chance to get that wrong.
+ */
+export function useSidebarLogout(): () => Promise<void> {
+  const navigate = useNavigate();
+  const logout = useAuthStore((s) => s.logout);
+
+  return async () => {
+    // Best-effort server-side logout. If the server is unreachable we still
+    // clear local state so the user is not stuck on the app.
+    try {
+      const token = useAuthStore.getState().sessionToken;
+      if (token) {
+        await serverLogout({ data: { token } }).catch(() => undefined);
+      }
+    } catch {
+      // ignore
+    }
+
+    // END THE SUPABASE SESSION, not just the local flag. `signOut` clears the
+    // stored session even when the network call fails, so local state is
+    // consistent either way.
+    try {
+      const { getSupabaseClient } = await import("@/lib/supabase");
+      await getSupabaseClient()?.auth.signOut();
+    } catch {
+      // Never strand the user on the app because sign-out failed.
+    }
+
+    logout();
+    navigate("/login", { replace: true });
+  };
+}
+
 const personaSubLabels: Record<BusinessType, string> = {
   retail: "منظومة إدارة المحلات التجارية",
   ecommerce: "منظومة المتجر الإلكتروني",
@@ -218,22 +290,14 @@ function NavLink({
 
 export function Sidebar() {
   const location = useLocation();
-  const navigate = useNavigate();
-  const { userRole, businessType, operationMode, username, logout, activeBusinessProfile } =
-    useAuthStore();
+  const { businessType, operationMode } = useAuthStore();
   const { mode, sidebarCollapsed, toggleSidebar } = useThemeStore();
-  const featureFlags = useFeatureStore();
   const logoSrc = mode === "dark" ? logoDark : logoLight;
   const collapsed = sidebarCollapsed;
 
-  // `canAccess` is the SAME function the router calls, so a visible link can
-  // never lead to a redirect and a hidden one can never be reachable by URL.
-  const navItems = allNavItems.filter(
-    (item) =>
-      canAccess(userRole, item.path) &&
-      item.profiles.includes(activeBusinessProfile) &&
-      (!item.featureKey || featureFlags[item.featureKey]),
-  );
+  // Shared with the mobile drawer — see `useNavItems`.
+  const navItems = useNavItems();
+  const signOut = useSidebarLogout();
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -291,18 +355,14 @@ export function Sidebar() {
             collapsed ? "px-2 py-4 space-y-1" : "px-3 py-4 space-y-0.5",
           )}
         >
-          {navItems.map((item) => {
-            const label =
-              toAppRole(userRole) !== "ADMIN" && item.prefLabel ? item.prefLabel : item.label;
-            return (
-              <NavLink
-                key={item.path}
-                item={{ ...item, label }}
-                collapsed={collapsed}
-                active={location.pathname === item.path}
-              />
-            );
-          })}
+          {navItems.map((item) => (
+            <NavLink
+              key={item.path}
+              item={item}
+              collapsed={collapsed}
+              active={location.pathname === item.path}
+            />
+          ))}
         </nav>
 
         <div className={collapsed ? "px-2 pb-2" : "px-3 pb-2"}>
@@ -355,42 +415,7 @@ export function Sidebar() {
           <Tooltip delayDuration={300}>
             <TooltipTrigger asChild>
               <button
-                onClick={async () => {
-                  // Best-effort server-side logout. If the server is
-                  // unreachable we still clear local state so the user
-                  // is not stuck on the app.
-                  try {
-                    const token = useAuthStore.getState().sessionToken;
-                    if (token) {
-                      await serverLogout({ data: { token } }).catch(() => undefined);
-                    }
-                  } catch {
-                    // ignore
-                  }
-
-                  // END THE SUPABASE SESSION, not just the local flag.
-                  //
-                  // `logout()` only clears `isAuthenticated`. The refresh token
-                  // stayed in localStorage, so pressing تسجيل الخروج left a
-                  // live session behind — and the boot reconciliation, which
-                  // exists to restore a valid session whose local flag was
-                  // lost, faithfully signed the user straight back in.
-                  // Reproduced: log out, walk to /inventory, and you are in
-                  // with full access and no credentials. On a shared machine
-                  // that is the whole point of logging out, defeated.
-                  //
-                  // `signOut` clears the stored session even when the network
-                  // call fails, so the local state is consistent either way.
-                  try {
-                    const { getSupabaseClient } = await import("@/lib/supabase");
-                    await getSupabaseClient()?.auth.signOut();
-                  } catch {
-                    // Never strand the user on the app because sign-out failed.
-                  }
-
-                  logout();
-                  navigate("/login", { replace: true });
-                }}
+                onClick={() => void signOut()}
                 aria-label={collapsed ? "تسجيل الخروج" : undefined}
                 className={cn(
                   "flex items-center rounded-lg text-sm font-medium text-red-500/70 hover:text-red-500 hover:bg-red-500/10 transition-all duration-200",

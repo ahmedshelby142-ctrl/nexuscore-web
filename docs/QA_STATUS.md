@@ -1,7 +1,7 @@
 # Production readiness status
 
-Five passes are recorded here. Parts 0 to 2 are newest first; Parts 3 and 4
-are appended at the end in order, and Part 4 is the most recent of all. Each
+Six passes are recorded here. Parts 0 to 2 are newest first; Parts 3 to 5 are
+appended at the end in order, and Part 5 is the most recent of all. Each
 supersedes the earlier ones where they disagree; the earlier ones are kept
 because their findings and evidence still stand.
 
@@ -579,3 +579,86 @@ sitting.
 * **Driving `/set-password` with a real invitation token.** The empty-session
   branch was verified in a browser (it correctly refuses and offers the login
   screen); the password-setting branch needs a live link, which needs delivery.
+
+---
+
+# Part 5 — Mobile navigation
+
+8 September 2026. Found by real-user testing on a phone: the app was
+width-responsive but had no way to change screen.
+
+## The defect
+
+The sidebar is `hidden lg:flex` — below 1024px it does not render at all. The
+header still showed a hamburger, labelled فتح القائمة, wired to
+`toggleSidebar()`, which flips `sidebarCollapsed` — a value only the desktop
+`<aside>` reads. On a phone the control was present, labelled, focusable and
+**did nothing**. A user who reached a screen had no way off it.
+
+By this project's own UAT rule — a control that appears clickable but does
+nothing is a FAIL — that is a defect, not a missing feature.
+
+## The fix
+
+`src/components/layout/MobileNav.tsx`: the existing Radix Sheet, opened by the
+existing header button, filled with the existing navigation.
+
+The part that matters is what it does *not* contain. `useNavItems()` was
+extracted from `Sidebar.tsx` and is now the single source for both surfaces —
+it filters with `canAccess`, the same function `RequireAccess` uses in the
+router, plus business profile and feature flags. The drawer names no route of
+its own; a guard fails the suite if it ever does. A hand-kept second list is
+precisely how a till operator ends up shown an ADMIN screen.
+
+One real accessibility bug was found and fixed mid-implementation: wired as a
+plain button with `onClick`, Radix never learns which element opened the dialog,
+so closing the drawer dropped focus onto `<body>`. Using `SheetTrigger` restores
+focus to the hamburger — measured both ways.
+
+`sheet.tsx` gained an optional `closeLabel` (default `"Close"`) so the close
+button could be named إغلاق القائمة, and its close moved from `right-4` to the
+logical `start-4`.
+
+## Measured
+
+Driven with dispatched pointer-event sequences — not bare `.click()` — against
+the real components mounted in a temporary harness, since no authenticated
+session was available and passwords are not entered by the agent.
+
+| Width | Hamburger | Drawer opens | Fits viewport | Overflow | Labels clipped | Tap → route | Drawer closed |
+| ---: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| 320 | ✅ | ✅ 272px | ✅ | none | none | ✅ | ✅ |
+| 360 | ✅ | ✅ 280px | ✅ | none | none | ✅ | ✅ |
+| 375 | ✅ | ✅ 280px | ✅ | none | none | ✅ | ✅ |
+| 390 | ✅ | ✅ 280px | ✅ | none | none | ✅ | ✅ |
+| 414 | ✅ | ✅ 280px | ✅ | none | none | ✅ | ✅ |
+| 430 | ✅ | ✅ 280px | ✅ | none | none | ✅ | ✅ |
+| 1440 | hidden | — | — | none | — | — | desktop aside 260px, right-hand, 16 links |
+
+Navigation walkthrough at 390px: `/pos → /products → /settings → /inventory`,
+reopening between each. The drawer closed on every one. Escape closes; the close
+button closes; tapping the overlay closes; `body` returns to
+`pointer-events: auto` afterwards.
+
+Role filtering, read out of the live drawer per role:
+
+| Role | Routes offered |
+| --- | --- |
+| ADMIN | all 16 |
+| POS_ECOMMERCE | `/pos`, `/orders`, `/ecommerce-orders`, `/crm`, `/preferences` |
+| ECOMMERCE_ONLY | `/orders`, `/ecommerce-orders`, `/inventory`, `/preferences` |
+| ACCOUNTANT | `/purchasing`, `/partners`, `/inventory`, `/stock-audit`, `/preferences` |
+| unknown string | falls back to ECOMMERCE_ONLY's set |
+
+Matches `ROUTE_ACCESS` exactly. `/users`, `/branches`, `/backups` and
+`/system-admin/licenses` appear in no menu at any width — they are not in the
+navigation data at all.
+
+## Not verified
+
+**The drawer inside the authenticated app.** Every screen carrying the sidebar
+sits behind `ProtectedRoute`, no session was available, and the agent does not
+enter passwords. The components exercised are the real ones and the guards are
+untouched, but the integration — drawer inside `Layout` inside `ProtectedRoute`
+inside `LicenseGate` — was not walked by hand. One mobile pass after signing in
+closes it.

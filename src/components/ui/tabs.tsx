@@ -12,7 +12,22 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground",
+      // `flex-wrap` + `min-h-9` instead of a fixed `h-9` single row.
+      //
+      // Measured in the live app on الطلبات at 390px: this list was 578px
+      // wide, did not scroll, and two of its five tabs — "مرتجع مع المندوب"
+      // and "ملغي" — sat entirely off screen. Two order statuses a shop
+      // genuinely uses were unreachable on a phone, with no affordance saying
+      // anything was missing.
+      //
+      // Wrapping rather than `overflow-x-auto` follows the same reasoning as
+      // the dashboard period filter: a scrolling row hides the same controls
+      // behind an invisible gesture. Eight screens use Tabs, so this is fixed
+      // once here rather than eight times.
+      //
+      // `min-h-9` keeps the height identical whenever the row does not wrap,
+      // which is every desktop width — verified unchanged at 1024/1280/1440.
+      "inline-flex min-h-9 flex-wrap items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground",
       className,
     )}
     {...props}

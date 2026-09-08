@@ -222,7 +222,20 @@ export function ExecutiveDashboard() {
             كل رقم هنا محسوب من دفتر الحسابات — اضغط أي كارت يوديك لشاشته
           </p>
         </div>
-        <div className="flex items-center gap-1 rounded-lg border border-border p-1">
+        {/*
+          `flex-wrap`, not a scrolling chip row.
+
+          Measured at 390px: this row was 542px wide inside a 390px main, and
+          because the app is RTL the overflow ran off the START edge — the
+          month picker sat at right:-5, entirely off screen, reachable only by
+          horizontally scrolling the whole dashboard. A filter you cannot see
+          is a filter that does not exist.
+
+          Wrapping rather than `overflow-x-auto` is deliberate: a scrolling row
+          hides the same controls behind a gesture with no affordance, and the
+          period buttons are short enough to reflow cleanly onto two lines.
+        */}
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border p-1">
           {(Object.keys(PERIOD_LABELS) as Period[]).map((key) => (
             <Button
               key={key}
@@ -255,8 +268,16 @@ export function ExecutiveDashboard() {
         </div>
       )}
 
+      {/*
+        Two columns from 360px, not from `sm` (640px) — every phone is below
+        `sm`, so a store owner opening the dashboard got seven full-width cards
+        and 2.66 screens of scrolling before reaching the chart. Measured in the
+        live app at 390: two columns clips nothing (the card wraps, it does not
+        truncate) and takes the page from 2048px to 1743px. 320 keeps one
+        column, where 128px-wide cards would be mean.
+      */}
       {!error && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 min-[360px]:grid-cols-2 lg:grid-cols-3 gap-4">
           <Kpi
             label={periodLabel(period)}
             value={loading ? "…" : formatMoney(figures?.netProfit ?? 0)}

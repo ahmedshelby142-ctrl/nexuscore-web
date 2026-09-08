@@ -1205,6 +1205,24 @@ export default function CheckoutForm() {
               </div>
             )}
 
+            {/*
+              On a phone the total and the checkout button are the two things a
+              cashier needs constantly, and they were the two furthest away.
+              Measured in the live app at 390x844 with an EMPTY cart: "الإجمالي
+              المطلوب" at y=818 and "إتمام البيع" at y=870, against a 771px
+              fold — 90px of scrolling to finish a sale, and it gets worse with
+              every line added, because the cart grows above them. The more you
+              sell, the further the button runs away.
+
+              So on mobile they ride together in a sticky bar at the bottom of
+              the scroll container. `lg:contents` removes this wrapper from the
+              layout entirely from `lg` up, so the desktop composition is byte
+              for byte what it was — the cart column is tall enough there that
+              nothing was ever out of reach.
+
+              No POS state or handler is touched: this is composition only.
+            */}
+            <div className="sticky bottom-0 z-10 -mx-4 mt-2 space-y-4 border-t border-border bg-card/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 lg:contents">
             {/* Totals */}
             <div className={cn("pt-3 border-t border-border/50 space-y-4", isWholesaleReturn && "hidden")}>
               <div className="flex items-center justify-between text-base font-semibold text-gray-700 dark:text-gray-300">
@@ -1289,6 +1307,7 @@ export default function CheckoutForm() {
                 </Button>
               );
             })()}
+            </div>
           </div>
         </div>
       </div>

@@ -19,6 +19,9 @@ const dialog = read("../src/components/ui/dialog.tsx");
 const input = read("../src/components/ui/input.tsx");
 const alertDialog = read("../src/components/ui/alert-dialog.tsx");
 const login = read("../src/pages/Login.tsx");
+const tabs = read("../src/components/ui/tabs.tsx");
+const dash = read("../src/components/dashboard/ExecutiveDashboard.tsx");
+const pos = read("../src/components/sales/CheckoutForm.tsx");
 const table = read("../src/components/ui/table.tsx");
 const sheet = read("../src/components/ui/sheet.tsx");
 
@@ -109,4 +112,38 @@ test("the heading names the form you are actually on", () => {
   // It read تسجيل الدخول on the create-account form, contradicting the button
   // below it — worst on a phone, where the two are often all that is visible.
   assert.match(login, /authMode === "signup"\s*\n\s*\? "إنشاء حساب جديد"/);
+});
+
+test("no tab is stranded off the side of a phone", () => {
+  // Measured live on الطلبات at 390px: the tab list was 578px wide, did not
+  // scroll, and "مرتجع مع المندوب" and "ملغي" sat entirely off screen — two
+  // order statuses unreachable, with nothing indicating they existed.
+  assert.match(tabs, /flex-wrap/);
+  // A fixed h-9 would clip the second row once it wraps.
+  assert.match(tabs, /min-h-9/);
+  assert.ok(!/"inline-flex h-9 /.test(tabs), "fixed single-row height is the bug");
+});
+
+test("the dashboard period filter reflows instead of running off the edge", () => {
+  // 542px inside a 390px main, and because the app is RTL it overflowed the
+  // START edge — the month picker sat at right:-5, off screen entirely.
+  const row = dash.match(/<div className="flex flex-wrap items-center gap-1 rounded-lg border border-border p-1">/);
+  assert.ok(row, "the period filter must wrap");
+});
+
+test("phones get two KPI columns, not seven stacked cards", () => {
+  // Every phone is below Tailwind's `sm`, so `sm:grid-cols-2` never applied on
+  // a phone: seven full-width cards, 2.66 screens before the chart. Two columns
+  // measured 2048px -> 1743px with nothing clipped.
+  assert.match(dash, /grid-cols-1 min-\[360px\]:grid-cols-2 lg:grid-cols-3/);
+});
+
+test("the till's total and checkout stay within thumb reach", () => {
+  // Measured live at 390x844 with an EMPTY cart: "الإجمالي المطلوب" at y=818
+  // and "إتمام البيع" at y=870 against a 771px fold — and every line added to
+  // the cart pushed them further down.
+  assert.match(pos, /sticky bottom-0 z-10 -mx-4 mt-2 space-y-4 border-t border-border bg-card\/95/);
+  // `lg:contents` removes the wrapper from layout on desktop, so the desktop
+  // composition is untouched rather than merely "probably fine".
+  assert.match(pos, /lg:contents/);
 });

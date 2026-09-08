@@ -1,7 +1,7 @@
 # Production readiness status
 
-Seven passes are recorded here. Parts 0 to 2 are newest first; Parts 3 to 6
-are appended at the end in order, and Part 6 is the most recent of all. Each
+Eight passes are recorded here. Parts 0 to 2 are newest first; Parts 3 to 7
+are appended at the end in order, and Part 7 is the most recent of all. Each
 supersedes the earlier ones where they disagree; the earlier ones are kept
 because their findings and evidence still stand.
 
@@ -782,3 +782,75 @@ row `f`; unknown store id `f`.
   row, which `admin_list_stores` already surfaces through a LEFT JOIN.
 * `TRIAL_DAYS` stays 0. No trial, no automatic licence.
 * Staff invitation untouched.
+
+---
+
+# Part 7 — Mobile UX pass (partial)
+
+8 September 2026. Audited with the UX/UI Pro Max skill as the reference. Two
+defects found and fixed in shared primitives; the per-screen redesign work is
+recorded as BLOCKED below.
+
+## What the skill changed about the standard applied
+
+* **Target size for web is 24 CSS px (WCAG 2.2 AA)**, not the native 44pt/48dp
+  figure. The `icon` button variant is `h-9 w-9` = 36px, comfortably over it, so
+  **icon buttons were left alone** — changing them would have been churn against
+  a rule that does not apply to a web PWA.
+* **Tables: horizontal scroll *or* card layout.** The `Table` primitive already
+  wraps in `overflow-auto`, so the 19 table screens are not an overflow bug.
+  They are a readability problem, which is a different and lower-severity class.
+* Sheet is the right primitive for side panels and Radix should own focus —
+  which is what the navigation drawer already does.
+
+## Defect 1 — tall dialogs were unreachable (class A, functional)
+
+`DialogContent` is `fixed`, centred with a −50% translate, and had **no
+`max-height` and no `overflow`**. Anything taller than the viewport overflowed
+both ends, and a fixed element cannot be scrolled by the page.
+
+Measured at 320×720 with a twelve-field form, using the real primitive:
+
+| | Before | After |
+| --- | --- | --- |
+| Dialog height | 1102px | 688px |
+| Title position | y = **−191** (off-screen) | visible |
+| Primary action | y = **806**, 86px below the fold | reachable |
+| Scrollable | **false** | true |
+| `max-height` / `overflow-y` | `none` / `visible` | capped / `auto` |
+
+Twelve files relied on the uncapped primitive, `CheckoutForm.tsx` — the POS
+checkout — among them. Fixed in one place:
+`max-h-[calc(100dvh-2rem)] overflow-y-auto`. `dvh` rather than `vh` because the
+mobile keyboard and browser chrome shrink the visual viewport and `vh` ignores
+both.
+
+Verified at 320, 360, 375, 390, 414 and 430: fits, scrolls, primary action
+reachable, no horizontal page overflow. At 1440×900 the same form is capped at
+868px — so this was clipping dialogs on **desktop** too, and now scrolls instead
+of hiding content. `max-w-lg` (512px) and centring unchanged.
+
+## Defect 2 — number fields opened the wrong keyboard (class C)
+
+51 `type="number"` inputs; four set `inputMode`. On Android `type="number"`
+commonly opens a keypad with no decimal separator — the wrong keyboard for a
+price, in an app whose main mobile surface is a till. The `Input` primitive now
+defaults `inputMode="decimal"` for number inputs, overridable per field.
+
+`text-base md:text-sm` was already correct and was left alone: 16px on mobile is
+what stops iOS zooming the page on focus.
+
+## BLOCKED — the per-screen mobile redesign
+
+Sections 5, 6, 7, 13, 14, 15 and 21 of the brief (dashboard, POS, tables →
+cards, settings, orders/CRM/inventory, purchasing/wholesale/returns/expenses,
+and the real interaction pass) were **not** done.
+
+Every one of those screens sits behind `ProtectedRoute` + `LicenseGate`. No
+authenticated session is available and the agent does not enter passwords, so
+none of them can be opened, driven, or seen with real data. Redesigning POS or
+nineteen table screens without ever running them would be the uncontrolled
+rewrite section 24 forbids, and there would be no way to verify the result.
+
+Both fixes above were made in shared primitives precisely because those *can* be
+exercised in isolation and benefit every screen at once.

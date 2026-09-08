@@ -38,7 +38,21 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-lg",
+        // `max-h` + `overflow-y-auto` are load-bearing on a phone, not polish.
+        //
+        // The dialog is `fixed` and centred by a -50% translate, so anything
+        // taller than the viewport overflows BOTH ends — and a fixed element
+        // cannot be scrolled by the page. Measured at 320x720 with a twelve
+        // field form: 1102px tall, title clipped at y=-191, and the save button
+        // at y=806, 86px below the fold with no way to reach it. Every form
+        // dialog in the app was unusable on a phone, the POS checkout included.
+        //
+        // `dvh`, not `vh`: mobile browser chrome and the on-screen keyboard
+        // shrink the visual viewport, and `vh` ignores both.
+        //
+        // Desktop is untouched — a dialog shorter than the viewport never hits
+        // the cap, and `max-w-lg`, padding, radius and position are unchanged.
+        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg max-h-[calc(100dvh-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto border bg-background p-6 shadow-lg duration-200 sm:rounded-lg",
         className,
       )}
       {...props}

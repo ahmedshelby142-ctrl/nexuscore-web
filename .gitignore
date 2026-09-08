@@ -44,3 +44,6 @@ recovery-codes.txt
 
 # Accidentally committed nested repo (orphan gitlink)
 nexuscore2/
+
+# Supabase CLI scratch
+supabase/.temp/

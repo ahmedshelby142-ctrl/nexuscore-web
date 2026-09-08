@@ -531,9 +531,19 @@ test("every cloud submit is gated against a double click", () => {
       const lines = codeLines(src);
       for (let i = 0; i < lines.length; i++) {
         if (!BUSY.test(lines[i])) continue;
-        // The gate must be claimed on one of the few lines above the flag.
+        // Two accepted forms, both a synchronous ref:
+        //
+        //   `gate.enter()`  — claimed on one of the few lines above the flag.
+        //   `runOnce(async` — wraps the WHOLE handler, so the claim sits at the
+        //                     top of the body rather than next to the flag, and
+        //                     the release is in a `finally` no path can skip.
+        //
+        // The second is the stronger of the two and is what `useSubmitGate.ts`
+        // recommends; the window for it is wider because the wrapper opens the
+        // handler and the busy flag usually comes after the validation returns.
         const near = lines.slice(Math.max(0, i - 6), i + 1).join(NL);
-        if (!near.includes(".enter()")) {
+        const wrapped = lines.slice(Math.max(0, i - 40), i + 1).join(NL);
+        if (!near.includes(".enter()") && !wrapped.includes("runOnce(async")) {
           offenders.push(e.name + ":" + lines[i].trim());
         }
       }

@@ -60,6 +60,11 @@ One is deployed: **`invite-staff`**, with `verify_jwt: true`. It is what
 * Supabase injects `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
   `SUPABASE_SERVICE_ROLE_KEY` into the function's environment. Nothing needs
   setting by hand.
+* **`APP_URL` is optional but recommended.** The invitation link is built as
+  `${APP_URL}/set-password`. With it unset the function falls back to the
+  inviting admin's browser origin — so an invitation sent from a local preview
+  mails the employee a `localhost` link. Set it to the production origin under
+  Edge Functions → Secrets.
 * `verify_jwt` must stay **on**. With it off, the platform stops rejecting
   anonymous requests and the function's guards become the only line — the
   database would still refuse (that is the design), but there is no reason to
@@ -67,12 +72,53 @@ One is deployed: **`invite-staff`**, with `verify_jwt: true`. It is what
 * Redeploy after editing `supabase/functions/invite-staff/index.ts`; the
   repository copy is not the deployed copy.
 
-**Invitations need working email.** The function calls
-`auth.admin.inviteUserByEmail`, which goes through whatever SMTP the Supabase
-project is configured with. The built-in sender is rate limited — a probe on
-7 September 2026 returned `email rate limit exceeded` — and the function answers
-429 in that case rather than pretending the invitation went out. Configure a real
-SMTP provider under Authentication → Emails before relying on it.
+### The invitation redirect must be allowlisted
+
+The link goes to `/set-password`, the screen that turns an invitation into an
+account. Supabase replaces any `redirect_to` outside the project's allowlist
+with the Site URL, which would drop the employee on a page that cannot consume
+their token. Under Authentication → URL Configuration:
+
+* **Site URL** — the production origin.
+* **Redirect URLs** — must include the `/set-password` path of every origin an
+  invitation can be sent from (production, and the local preview if you test
+  from it).
+
+### Email delivery is a separate thing from the invite API
+
+`POST /auth/v1/invite` returning 200 does **not** mean an email arrived. Treat
+these as five stages: the invite accepted, the auth user created, the message
+generated, SMTP accepting it, and the mailbox receiving it. The first three are
+visible in `auth.users` (`invited_at`, `confirmation_sent_at`); the last two are
+only visible in the dashboard's Auth logs and in the recipient's mailbox.
+
+**Measured on 8 September 2026: stages 1-3 pass and stage 5 fails.** An
+invitation at 01:16:28 UTC and an independent password-recovery message at
+02:08:39 UTC were both accepted by Supabase Auth and neither was ever delivered
+to the recipient's Gmail — verified directly in that mailbox, including spam and
+trash. See `QA_STATUS.md` Part 4.
+
+**Gmail SMTP is for testing, not production.** It is a consumer mailbox, not a
+transactional email service: it enforces per-day send caps, silently throttles
+automated mail, rewrites the `From` header to the authenticated account, and
+gives no delivery telemetry. If invitations matter, use a transactional provider
+(Resend, Postmark, SES, SendGrid). If Gmail is kept, it is
+**WORKING FOR TESTING / NOT RECOMMENDED FOR PRODUCTION** — and as of the above
+date it was not verified working even for testing.
+
+When checking a Gmail SMTP configuration, the things that actually break it:
+
+| Setting | Requirement |
+| --- | --- |
+| Host / port | `smtp.gmail.com`, port `587` (STARTTLS) |
+| Password | A 16-character **App Password**, 2-Step Verification enabled. An account password fails with `535-5.7.8 Username and Password not accepted` |
+| Username | The full Gmail address |
+| Sender email | **Must equal the username.** Gmail rejects or rewrites a different `From` (`553-5.7.1 … not allowed`) |
+| Minimum interval | Leave at the default; Gmail throttles bursts |
+
+"Successfully updated settings" in the dashboard means the form was saved. It is
+not evidence that the credentials authenticate or that a message was delivered.
+The only proof is a message arriving in a mailbox you can open.
 
 ### Files
 

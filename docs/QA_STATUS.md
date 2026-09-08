@@ -1,9 +1,9 @@
 # Production readiness status
 
-Four passes are recorded here. Parts 0 to 2 are newest first; Part 3, the
-System Owner and staff-invitation pass, is appended at the end and is the most
-recent of all. Each supersedes the earlier ones where they disagree; the earlier
-ones are kept because their findings and evidence still stand.
+Five passes are recorded here. Parts 0 to 2 are newest first; Parts 3 and 4
+are appended at the end in order, and Part 4 is the most recent of all. Each
+supersedes the earlier ones where they disagree; the earlier ones are kept
+because their findings and evidence still stand.
 
 ---
 
@@ -458,3 +458,124 @@ clean.
   not something an invite button should make.
 * No name field. `store_members` has no name column and `list_store_members`
   returns none, so asking for one would collect something with nowhere to go.
+
+---
+
+# Part 4 — Invitation email delivery
+
+8 September 2026. The invite backend was already proven. The email was not
+arriving. This pass traced the five stages between "API returned 200" and "the
+employee has a message".
+
+## Verdict
+
+**INVITATION EMAIL = FAIL.** The message is accepted by Supabase Auth and never
+delivered. The cause is outside the application: no change to `invite-staff`,
+the role system, RLS or the invite flow can affect it.
+
+Two application-side gaps were found on the way and fixed, because an invitation
+that *did* arrive would still not have completed onboarding.
+
+## The five stages
+
+| Stage | Result | Evidence |
+| --- | --- | --- |
+| A. Invite API accepted | PASS | `POST /auth/v1/invite` → 200 |
+| B. Auth user created | PASS | `auth.users` `36fec474-…`, `ahmedpoyo54@gmail.com`, created `2026-09-08 01:16:28Z` |
+| C. Message generated | PASS | `invited_at` and `confirmation_sent_at` both set to that instant |
+| D. SMTP accepted it | **UNOBSERVABLE** | The Auth log is the only record and it could not be reached — see below |
+| E. Mailbox received it | **FAIL** | The recipient mailbox was read directly. Inbox, spam and trash contain nothing from this project or from the configured sender, ever |
+
+### The exact target address, end to end
+
+Asked because a wrong recipient would explain everything. It does not — every
+layer agrees:
+
+| Layer | Value |
+| --- | --- |
+| Entered in the form | `ahmedpoyo54@gmail.com` |
+| Sent by the client | `email.trim().toLowerCase()` — `src/store/useUsersStore.ts` |
+| Received by the function | same, normalised again: `String(body?.email ?? "").trim().toLowerCase()` |
+| Passed to `inviteUserByEmail` | the same `email` variable, unmodified |
+| Landed in `auth.users` | `ahmedpoyo54@gmail.com` |
+
+### Why stage D could not be observed
+
+Supabase's Auth log holds the SMTP transaction. Through the tooling available
+here, `auth_logs`, `edge_logs` and `postgres_logs` all answer
+`Table "…" does not exist`, and no management API token exists on this machine
+(`supabase projects list` → `Access token not provided`). The dashboard's
+Logs → Auth view is the place to read it.
+
+### The second, independent send
+
+To separate "the invite path is broken" from "email is broken", one
+password-recovery message was pushed down the same GoTrue → SMTP → Gmail path at
+**02:08:39 UTC**. It created no user, no membership and no invitation.
+
+`POST /auth/v1/recover` → **200**, empty body. Nothing arrived, then or in the
+following half hour.
+
+So the failure is not specific to invitations. Any Auth email from this project
+is being accepted and not delivered.
+
+### What this rules out
+
+* **Not the built-in sender's team-address restriction.** Supabase's docs say
+  the default sender *refuses* a non-team address with "Email address not
+  authorized" — an error. Both sends returned 200 and the invite created its
+  user row, so that refusal did not happen.
+* **Not the application.** The recipient address is correct at every layer, and
+  nothing in `invite-staff` or the client touches SMTP.
+* **Not spam filtering.** The recipient's spam and trash folders are empty.
+* **Not a bounce the recipient could see.** A bounce would return to the sender
+  address, which was not readable during this pass.
+
+## Fixed here (application side)
+
+Both were real defects that would have surfaced the moment mail started
+arriving.
+
+**1. An invitation link had nowhere to land.** Nothing in the app handled
+`type=invite`, a recovery token, or setting a password. supabase-js has
+`detectSessionInUrl` on by default, so an invited employee would have been
+signed in to an account **with no password** and no screen anywhere able to set
+one — locked out permanently once that session expired.
+
+`src/pages/SetPassword.tsx` and the route `/set-password` close it: read the
+session the link established, set a password (same leaked-password check as
+signup), read the role from `store_members`, go to that role's home screen. It
+**never calls `claim_store`** — that is what would hand an invited employee
+their own empty shop, and the guard suite fails if it ever appears there.
+
+**2. The invitation pointed at the wrong place.** The function used
+`redirectTo: req.headers.get("origin")` — the *inviting admin's* browser origin,
+and the site root. An invitation sent from the local preview mailed a
+`localhost` link. It is now `${APP_URL || origin}/set-password`, with `APP_URL`
+as an Edge Function secret so the link no longer depends on where the admin was
+sitting.
+
+## Configuration required, and only you can do it
+
+1. **Read Logs → Auth** in the dashboard for `2026-09-08 02:08:39 UTC` — that
+   recovery probe exists specifically to be the labelled event to look at. It
+   will say whether SMTP connected, authenticated, and what it returned.
+2. **Verify the Gmail SMTP settings actually authenticate** — the checks are
+   tabulated in `DEPLOYMENT.md`. The one that catches most people: the password
+   must be a 16-character App Password with 2-Step Verification on, and the
+   sender address must equal the SMTP username.
+3. **Add `/set-password` to Auth → URL Configuration → Redirect URLs**, or
+   Supabase will replace the link's destination with the Site URL.
+4. **Optionally set `APP_URL`** as an Edge Function secret.
+5. **Move off Gmail before production.** It is a consumer mailbox, not a
+   transactional email service.
+
+## Still BLOCKED
+
+* **The controlled end-to-end invitation.** It was not spent: with delivery
+  failing for two independent message types, an invitation would only have
+  produced a third undelivered message and a third auth user. Run it once the
+  Auth log shows a clean SMTP send.
+* **Driving `/set-password` with a real invitation token.** The empty-session
+  branch was verified in a browser (it correctly refuses and offers the login
+  screen); the password-setting branch needs a live link, which needs delivery.

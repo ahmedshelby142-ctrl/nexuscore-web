@@ -38,6 +38,7 @@ class RouteBoundary extends Component<{ children: ReactNode }, { hasError: boole
 }
 import { Login } from "@/pages/Login";
 import { LicenseExpired } from "@/pages/LicenseExpired";
+import { SetPassword } from "@/pages/SetPassword";
 import { SystemAdminLicenses } from "@/routes/system-admin-licenses";
 import { Dashboard } from "@/routes/dashboard";
 import { Products } from "@/routes/products";
@@ -85,6 +86,11 @@ export function App() {
       <Toaster position="top-center" dir="rtl" richColors closeButton />
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Where an invitation link lands. Outside <ProtectedRoute> because the
+            invited employee has a Supabase session but nothing in this app's own
+            auth store yet — gating it would bounce them to /login, which is the
+            one screen they cannot use until they have set a password. */}
+        <Route path="/set-password" element={<SetPassword />} />
         <Route element={<ProtectedRoute />}>
           {/* Outside <LicenseGate> on purpose: the gate redirects here, so a
               locked shop that could not reach this route would bounce forever. */}

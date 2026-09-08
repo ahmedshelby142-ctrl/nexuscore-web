@@ -164,3 +164,57 @@ test("the screen no longer tells staff to sign up on their own", () => {
   assert.ok(!/بيعمل حساب من شاشة الدخول وبعدين يظهر هنا/.test(panel));
   assert.match(panel, /إضافة موظف/);
 });
+
+/**
+ * The other half: what happens when the employee clicks the link.
+ *
+ * `invite-staff` creates the account and the membership; until 8 September 2026
+ * nothing in the app answered the link Supabase mails. The invited employee
+ * landed on the root with `#access_token=…&type=invite`, supabase-js turned it
+ * into a session (`detectSessionInUrl` defaults to on), and they were signed in
+ * to an account with NO password and no screen anywhere that could set one.
+ */
+
+const setPassword = strip(read("../src/pages/SetPassword.tsx"));
+const app = strip(read("../src/App.tsx"));
+
+test("an invitation link has somewhere to land", () => {
+  assert.match(app, /path="\/set-password"/);
+  // Outside ProtectedRoute: the invited employee has a Supabase session but
+  // nothing in this app's auth store, and /login is the one screen they cannot
+  // use until they have a password.
+  const route = app.indexOf('path="/set-password"');
+  const protectedRoute = app.indexOf("<ProtectedRoute />");
+  assert.ok(route < protectedRoute, "/set-password must not sit behind ProtectedRoute");
+});
+
+test("accepting an invitation never creates a second shop", () => {
+  // `claim_store` gives an account with no membership a shop OF ITS OWN, as
+  // ADMIN of it. /login calls it deliberately; calling it here would hand an
+  // invited employee their own empty tenant — the exact failure the invitation
+  // flow exists to prevent.
+  assert.ok(
+    !/claim_store/.test(setPassword),
+    "SetPassword must never call claim_store",
+  );
+  // No membership means they are not an invited employee. Say so; do not
+  // improvise a store for them.
+  assert.match(setPassword, /if \(!membership\)/);
+
+  // The role comes from the table RLS reads, never from the link.
+  assert.match(setPassword, /\.from\("store_members"\)[\s\S]{0,120}\.select\("role"\)/);
+  assert.match(setPassword, /toAppRole\(membership\.role\)/);
+});
+
+test("the password set here is held to the same standard as signup", () => {
+  assert.match(setPassword, /await checkLeakedPassword\(password\)/);
+  assert.match(setPassword, /password !== confirm/);
+  assert.match(setPassword, /password\.length < 8/);
+});
+
+test("the invitation link points at the screen that can consume it", () => {
+  assert.match(fn, /new URL\("\/set-password", base\)/);
+  // The admin's origin is a fallback, not the source of truth: inviting from a
+  // local preview would otherwise mail a localhost link.
+  assert.match(fn, /Deno\.env\.get\("APP_URL"\) \|\| req\.headers\.get\("origin"\)/);
+});

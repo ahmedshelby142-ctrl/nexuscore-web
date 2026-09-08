@@ -51,6 +51,30 @@ const CORS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+/**
+ * Where the invitation link should land the employee.
+ *
+ * It used to be the bare request origin, which was wrong twice over. The origin
+ * is the ADMIN's browser, so inviting from a local preview mailed the employee a
+ * `localhost` link they could never open; and the root path answers nothing —
+ * `/set-password` is the screen that turns the link into an account.
+ *
+ * `APP_URL` wins when it is set (a function secret, so it does not depend on
+ * where the admin happened to be sitting). Otherwise fall back to the caller's
+ * origin, which is right in the ordinary case of inviting from the live site.
+ * Supabase still has the final say: a URL outside the project's redirect
+ * allowlist is replaced with the Site URL.
+ */
+function acceptUrl(req: Request): string | undefined {
+  const base = Deno.env.get("APP_URL") || req.headers.get("origin");
+  if (!base) return undefined;
+  try {
+    return new URL("/set-password", base).toString();
+  } catch {
+    return undefined;
+  }
+}
+
 /** One shape for every answer, so the client never has to guess. */
 function reply(status: number, body: Record<string, unknown>) {
   return new Response(JSON.stringify(body), {
@@ -136,7 +160,7 @@ Deno.serve(async (req: Request) => {
   if (status === "no_account") {
     const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
     const { data: created, error: inviteError } = await admin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: req.headers.get("origin") ?? undefined,
+      redirectTo: acceptUrl(req),
     });
 
     if (inviteError || !created?.user?.id) {

@@ -276,9 +276,10 @@ business-data restore at all.
 
 ---
 
-## 15. Staff invitations depend on email delivery
+## 15. The invitation email is not being delivered
 
-Solved since the roles audit, with one operational caveat.
+**Open, and the one thing standing between staff onboarding and working.** The
+application side is complete and verified; the email is not arriving.
 
 `claim_store` gives an account with no membership a shop **of its own**, as
 ADMIN of it, so an employee who signs up unprompted lands in a separate empty
@@ -292,12 +293,25 @@ through the `invite-staff` Edge Function. Its authorization is described in
 
 What remains a limitation:
 
-* **The invitation is an email.** The project uses Supabase's built-in SMTP,
-  which is rate limited — a probe on 7 September 2026 came back
-  `email rate limit exceeded`, which also blocked the end-to-end test. When the
-  limit is hit the function answers 429 and the screen says so rather than
-  claiming the invitation went out. Configure a real SMTP provider in the
-  Supabase dashboard before relying on this.
+* **The email does not arrive.** Measured 8 September 2026. An invitation at
+  01:16:28 UTC created the auth user and set both `invited_at` and
+  `confirmation_sent_at`; an independent password-recovery message at 02:08:39
+  UTC also returned 200. **Neither was ever delivered** — checked directly in
+  the recipient's Gmail, inbox, spam and trash, which have never received
+  anything from this project or from the configured sender address.
+
+  Supabase Auth reports success in both cases, so the break is at or after the
+  SMTP handoff. The Auth log is the only place that records it, and it is not
+  reachable from the tooling used here (`auth_logs`, `edge_logs` and
+  `postgres_logs` all report "does not exist" through MCP, and no management
+  token was available). **This is a configuration problem, not an application
+  one** — nothing in `invite-staff` or the app influences whether SMTP delivers.
+  Full evidence and the exact checks in `DEPLOYMENT.md` and `QA_STATUS.md`
+  Part 4.
+
+  Gmail SMTP is in any case **WORKING FOR TESTING / NOT RECOMMENDED FOR
+  PRODUCTION**: a consumer mailbox with daily caps, silent throttling of
+  automated mail and no delivery telemetry.
 * **An employee who signed up on their own first cannot be invited afterwards.**
   They already hold a membership in their own accidental shop, and
   `store_members_one_store_per_user` refuses a second. The invitation returns

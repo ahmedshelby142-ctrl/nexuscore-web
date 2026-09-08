@@ -275,6 +275,18 @@ The account is created before the invitation is accepted, so the membership is
 in place well before the employee's first sign-in — `claim_store` finds it and
 does not create a second shop.
 
+The link lands on **`/set-password`** (`src/pages/SetPassword.tsx`), which reads
+the session the link established, sets a password, and sends the employee to
+their role's home screen. That screen deliberately does **not** call
+`claim_store`: someone arriving there without a membership is not an invited
+employee, and improvising a store for them is the exact failure this flow
+exists to prevent. The password is held to the same leaked-password check as
+signup.
+
+**Delivery of the invitation email is a separate matter from all of the above,
+and as of 8 September 2026 it does not work.** See `KNOWN_LIMITATIONS.md` §15
+and `QA_STATUS.md` Part 4.
+
 Refused by design, each verified against the live database on 7 September 2026:
 
 | Attempt | Result |

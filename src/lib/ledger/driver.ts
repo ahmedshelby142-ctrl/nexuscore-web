@@ -12,7 +12,16 @@
  * pretending the sale landed.
  */
 
-import type { Balance, BalanceQuery, EventQuery, Identity, LedgerEvent, SyncStatus } from "./types";
+import type {
+  Balance,
+  BalanceQuery,
+  EventQuery,
+  Identity,
+  LedgerEvent,
+  RefBalance,
+  RefBalanceQuery,
+  SyncStatus,
+} from "./types";
 import { getSupabaseClient } from "@/lib/supabase";
 import { getSyncIdentity } from "@/services/api/storeContext";
 
@@ -54,6 +63,8 @@ export interface LedgerDriver {
   append(event: WireEvent): Promise<void>;
   /** Aggregate. Never reads a stored total — always sums lines. */
   balances(query: BalanceQuery): Promise<Balance[]>;
+  /** The same aggregate, split by the document each event points at. */
+  balancesByRef(query: RefBalanceQuery): Promise<RefBalance[]>;
   events(query: EventQuery): Promise<LedgerEvent[]>;
   /** Fetch the lines of a specific event */
   eventLines(eventId: string): Promise<WireLine[]>;
@@ -189,6 +200,63 @@ const supabaseDriver: LedgerDriver = {
       subjectId,
       qty: t.qty,
       // Piastres in the column, EGP at the boundary.
+      amount: fromPiastres(t.amount),
+    }));
+  },
+
+  /**
+   * The same aggregation, but grouped by the DOCUMENT the event points at.
+   *
+   * `balances` collapses every event into one total per subject, which is the
+   * right answer for "how much stock is there" and the wrong one for "how much
+   * of THIS invoice has already gone back". A supplier return is capped per
+   * purchase invoice, so the cap has to be able to name the invoice.
+   *
+   * Deriving it from the ledger rather than from a stored counter is not a
+   * stylistic choice here: `return_records` may only be written by ADMIN /
+   * POS_ECOMMERCE / ECOMMERCE_ONLY, and the role that actually does purchasing
+   * is ACCOUNTANT. A ceiling kept there would silently stop working for the one
+   * user who needs it. The ledger is readable by every store member and its
+   * `purchase` events are writable by exactly ADMIN and ACCOUNTANT — the same
+   * pair `/purchasing` admits — so the cap lives where the movement does, and
+   * is append-only and atomic by construction.
+   */
+  async balancesByRef(query) {
+    const sb = requireClient();
+    const storeId = await requireStoreId();
+
+    const rows = await pageAll<JoinedLine & { ledger_events: { ref_id: string | null } }>(
+      (from, to) => {
+        let q = sb
+          .from("ledger_lines")
+          .select(
+            "subject_id, qty_delta, amount_delta, ledger_events!inner(kind, ref_type, ref_id)",
+          )
+          .eq("store_id", storeId)
+          .eq("account", query.account)
+          .eq("ledger_events.ref_type", query.refType);
+
+        if (query.kind) q = q.eq("ledger_events.kind", query.kind);
+        if (query.refId) q = q.eq("ledger_events.ref_id", query.refId);
+
+        return q.range(from, to);
+      },
+    );
+
+    const totals = new Map<string, { refId: string; subjectId: string; qty: number; amount: number }>();
+    for (const r of rows) {
+      const refId = String((r as any).ledger_events?.ref_id ?? "");
+      const key = `${refId} ${r.subject_id}`;
+      const t = totals.get(key) ?? { refId, subjectId: r.subject_id, qty: 0, amount: 0 };
+      t.qty += Number(r.qty_delta) || 0;
+      t.amount += Number(r.amount_delta) || 0;
+      totals.set(key, t);
+    }
+
+    return [...totals.values()].map((t) => ({
+      refId: t.refId,
+      subjectId: t.subjectId,
+      qty: t.qty,
       amount: fromPiastres(t.amount),
     }));
   },

@@ -173,12 +173,14 @@ interface BusinessState {
   addSupplier: (supplier: Omit<Supplier, "id" | "createdAt" | "updatedAt">) => Promise<Supplier>;
   updateSupplier: (id: string, updates: Partial<Supplier>) => Promise<void>;
   addPurchaseInvoice: (invoice: Omit<PurchaseInvoice, "id" | "createdAt" | "updatedAt">) => Promise<PurchaseInvoice>;
+  updatePurchaseInvoice: (id: string, updates: Partial<PurchaseInvoice>) => Promise<void>;
+  removePurchaseInvoice: (id: string) => Promise<void>;
   recordSupplierPayment: (invoiceId: string, amount: number) => Promise<void>;
 
   // Returns & Exchanges actions
   // The field is `created_at`, not `createdAt` — the old signature omitted a
   // key that does not exist, so callers were asked for one the store fills in.
-  addReturnRecord: (record: Omit<ReturnRecord, "id" | "created_at">) => Promise<void>;
+  addReturnRecord: (record: Omit<ReturnRecord, "id" | "created_at">) => Promise<ReturnRecord>;
 
   // Discounts
   addPromoDiscount: (discount: Omit<PromoDiscount, "id" | "createdAt">) => Promise<void>;
@@ -522,6 +524,40 @@ export const useBusinessStore = create<BusinessState>()(
         } as PurchaseInvoice);
       },
 
+      /**
+       * Undo a purchase invoice that never got its ledger event.
+       *
+       * Hard delete, unusually — the rule against hard-deleting documents with
+       * ledger history does not apply precisely because this one has none. It
+       * is the compensation half of `receive()`: the receipt is written first
+       * so the unique-number check can refuse it cheaply, and if the money then
+       * fails to move, a receipt claiming stock we never took and a debt we
+       * never owe must not survive.
+       */
+      removePurchaseInvoice: async (id) => {
+        await removeRow(set, 'purchase_invoices', 'purchaseInvoices', id);
+      },
+
+      /**
+       * Patch a purchase invoice document.
+       *
+       * The FULL merged row goes out, never the caller's partial patch — an
+       * upsert of `{id, items}` alone would blank every other column. Used by
+       * the supplier-return path to record what went back on each line; the
+       * ledger, not this, is what caps a return.
+       */
+      updatePurchaseInvoice: async (id, updates) => {
+        const current = get().purchaseInvoices.find((i) => i.id === id);
+        if (!current) return;
+        await commitRow(set, 'purchase_invoices', 'purchaseInvoices', {
+          ...current,
+          ...updates,
+          id,
+          updatedAt: new Date(),
+          updated_at: Date.now(),
+        } as PurchaseInvoice);
+      },
+
       // Updates the invoice document only — how much of THIS invoice is still
       // open. The money moved by the `supplier_payment` event the caller
       // appends: wallet down, payable_supplier down.
@@ -554,7 +590,10 @@ export const useBusinessStore = create<BusinessState>()(
           created_at: new Date(),
           updated_at: Date.now(),
         };
-        await commitRow(set, 'return_records', 'returnRecords', newRecord, "prepend");
+        // The saved row is handed back, not swallowed: a wholesale return needs
+        // its id so `commitWholesaleReturn` can undo the record when the ledger
+        // event that was supposed to follow it is refused.
+        return commitRow(set, 'return_records', 'returnRecords', newRecord, "prepend");
       },
 
       addPromoDiscount: async (discount) => {

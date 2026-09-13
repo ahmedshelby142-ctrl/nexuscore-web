@@ -22,6 +22,15 @@
         "--strictPort"
       ],
       "port": 4173
+    },
+    {
+      "name": "nexuscore-mobile",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:mobile"
+      ],
+      "port": 3100
     }
   ]
 }

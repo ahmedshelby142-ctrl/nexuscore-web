@@ -11,6 +11,7 @@
  */
 
 import type { NewLine } from "./types";
+import { lineCostOf, stockLinesFor, cogsLinesFor } from "./bundles.ts";
 
 export interface SaleCartItem {
   productId: string;
@@ -55,38 +56,21 @@ export function buildSaleLines(sale: SaleInput): NewLine[] {
 
   for (const item of sale.items) {
     const lineRevenue = item.unitPrice * item.quantity;
-    const lineCost = item.unitCost * item.quantity;
+    // Bundle-aware: a بوكس costs its COMPONENTS. `item.unitCost` for a bundle
+    // is `costOf(bundleId)`, which is 0 because a virtual box has no purchases
+    // and no stock of its own — so the old `item.unitCost * quantity` made
+    // every bundle sale book full revenue against zero cost. See `lineCostOf`.
+    const lineCost = lineCostOf(item);
     revenue += lineRevenue;
     cogs += lineCost;
 
-    // Stock leaves, carrying its value out with it.
-    if (item.isBundle && item.bundleItems) {
-      for (const comp of item.bundleItems) {
-        lines.push({
-          account: "stock",
-          subjectId: comp.productId,
-          qty: -(comp.quantity * item.quantity),
-          amount: -(comp.unitCost * comp.quantity * item.quantity),
-        });
-      }
-    } else {
-      lines.push({
-        account: "stock",
-        subjectId: item.productId,
-        qty: -item.quantity,
-        amount: -lineCost,
-      });
-    }
+    // Stock leaves, carrying its value out with it. A بوكس charges its
+    // components; it has no shelf of its own.
+    lines.push(...stockLinesFor(item, -1));
 
-    // Cost of what left, per product, at its real cost price.
-    if (lineCost !== 0) {
-      lines.push({
-        account: "cogs",
-        subjectId: item.productId,
-        amount: lineCost,
-        unitCost: item.unitCost,
-      });
-    }
+    // Cost of what left, per REAL product — components for a bundle, so a
+    // margin report reads the same product on both sides of the entry.
+    lines.push(...cogsLinesFor(item, 1));
   }
 
   const discount = sale.discountAmount ?? 0;

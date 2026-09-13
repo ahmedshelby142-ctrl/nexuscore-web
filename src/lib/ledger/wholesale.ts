@@ -11,6 +11,7 @@
  */
 
 import type { NewLine } from "./types";
+import { lineCostOf, stockLinesFor, cogsLinesFor } from "./bundles.ts";
 
 export interface WholesaleLineItem {
   productId: string;
@@ -79,7 +80,8 @@ export function buildWholesaleInvoiceLines(invoice: WholesaleInvoiceInput): NewL
     }
 
     const lineRevenue = item.unitPrice * item.quantity;
-    const lineCost = item.unitCost * item.quantity;
+    // Bundle-aware — see `lineCostOf`.
+    const lineCost = lineCostOf(item);
     goodsRevenue += lineRevenue;
     cogs += lineCost;
 
@@ -90,33 +92,14 @@ export function buildWholesaleInvoiceLines(invoice: WholesaleInvoiceInput): NewL
     // missing here, so a bundle sold through الجملة booked stock against a
     // virtual product with no shelf while the real goods walked out untracked.
     if (!invoice.skipStockDeduction) {
-      if (item.isBundle && item.bundleItems?.length) {
-        for (const comp of item.bundleItems) {
-          lines.push({
-            account: "stock",
-            subjectId: comp.productId,
-            qty: -(comp.quantity * item.quantity),
-            amount: -(comp.unitCost * comp.quantity * item.quantity),
-          });
-        }
-      } else {
-        lines.push({
-          account: "stock",
-          subjectId: item.productId,
-          qty: -item.quantity,
-          amount: -lineCost,
-        });
-      }
+      lines.push(...stockLinesFor(item, -1));
     }
 
-    if (lineCost !== 0) {
-      lines.push({
-        account: "cogs",
-        subjectId: item.productId,
-        amount: lineCost,
-        unitCost: item.unitCost,
-      });
-    }
+    // Bundle-aware, like the stock lines above it. This was the other half of
+    // the same hole: the stock branch charged the components while the COGS
+    // line used `item.unitCost`, which is 0 for a virtual box — so a بوكس sold
+    // through الجملة booked full revenue against no cost at all.
+    lines.push(...cogsLinesFor(item, 1));
   }
 
   const shippingCharge = invoice.shippingCharge ?? 0;
@@ -198,12 +181,385 @@ export function wholesaleTotal(items: WholesaleLineItem[], shippingCharge = 0): 
   return items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0) + shippingCharge;
 }
 
+// ── Invoice-driven wholesale returns ────────────────────────────────────────
+//
+// ## The hole this section closes
+//
+// `buildWholesaleReturnLines` used to take an arbitrary `items` array with an
+// arbitrary `unitPrice`, and both offline screens fed it exactly that: شاشة
+// الجملة from a free product search, نقطة البيع from a cart of negative
+// quantities. Nothing anywhere asked whether the trader had ever BOUGHT the
+// thing coming back. Three separate ways to invent money followed:
+//
+//   1. A product the client never bought could be "returned" — stock appeared
+//      on the shelf, revenue reversed, and the client's debt fell by a number
+//      that corresponded to no sale.
+//   2. A genuine return was credited at TODAY's wholesale price. Ten units
+//      invoiced at 100 and returned after a rise to 140 credited 1400 against
+//      a 1000 sale: 400 of debt written off that was never owed.
+//   3. Nothing subtracted what had already come back, so the same ten units
+//      could be returned over and over, once per click of the button.
+//
+// The fix is that a return is no longer described — it is RESOLVED against the
+// invoice it came from. `resolveWholesaleReturn` is the only producer of the
+// value `buildWholesaleReturnLines` accepts, so no screen can hand the ledger
+// a product and a price it made up.
+
+/**
+ * One line of a wholesale invoice DOCUMENT, in every shape the app has written.
+ *
+ * Three writers exist — شاشة الجملة, نقطة البيع in وضع الجملة, and الطلبات on
+ * a wholesale delivery — and they disagreed about the price field's name
+ * (`wholesalePrice` vs `unitPrice`). Both are read here rather than picking a
+ * winner and silently valuing half the invoices in the database at zero.
+ */
+export interface WholesaleInvoiceLine {
+  /** Stable per-line id. Every writer sets one; older rows may not. */
+  id?: string;
+  productId: string;
+  productName?: string;
+  variantName?: string;
+  quantity: number;
+  /** شاشة الجملة / POS. */
+  wholesalePrice?: number;
+  /** الطلبات. Same meaning. */
+  unitPrice?: number;
+  /**
+   * The cost the goods left at, captured on the invoice.
+   *
+   * Absent on invoices written before this fix — see `resolveWholesaleReturn`
+   * for what happens then.
+   */
+  unitCost?: number;
+  isBundle?: boolean;
+  bundleItems?: { productId: string; quantity: number; unitCost: number }[];
+}
+
+/** A wholesale invoice document, as `wholesale_invoices` stores it. */
+export interface WholesaleInvoiceDoc {
+  id: string;
+  invoiceNumber?: string;
+  clientId: string;
+  items?: WholesaleInvoiceLine[];
+  /** List value of the goods, before any discount code. */
+  goodsTotal?: number;
+  /** Money taken off the goods. Shipping is never discounted. */
+  discountAmount?: number;
+  createdAt?: unknown;
+}
+
+/**
+ * A return already recorded, as `return_records` stores it.
+ *
+ * Reuses the retail return document rather than inventing a wholesale one:
+ * `original_order_id` is untyped text with no foreign key, so it holds the
+ * wholesale INVOICE id here, and `type` says which it is. Same table, same
+ * sync path, same RLS — and the ceiling is derived from documents that are
+ * already written rather than from a stored counter that can drift.
+ */
+export interface PriorWholesaleReturn {
+  type?: string;
+  original_order_id?: string | null;
+  returned_items?: { line_id?: string; product_id?: string; quantity?: number }[];
+}
+
+/** `return_records.type` for a wholesale return. */
+export const WHOLESALE_RETURN_TYPE = "wholesale_return";
+
+/** Two decimal places, without dragging decimal.js into the ledger. */
+const money = (value: number): number => Math.round(value * 100) / 100;
+
+/**
+ * How a line is addressed across the invoice, the return record and the UI.
+ *
+ * The id when the line has one. The product + variant otherwise, which is
+ * unique within an invoice because every writer merges a repeated
+ * product/variant into the existing line instead of appending a second one.
+ */
+export function wholesaleLineKey(line: WholesaleInvoiceLine): string {
+  return line.id ?? `${line.productId}::${line.variantName ?? ""}`;
+}
+
+/** The per-unit price the invoice carries, whichever field it used. */
+export function wholesaleLinePrice(line: WholesaleInvoiceLine): number {
+  const price = line.wholesalePrice ?? line.unitPrice ?? 0;
+  return Number.isFinite(price) ? price : 0;
+}
+
+/**
+ * The ratio between what an invoice's lines LIST for and what was charged.
+ *
+ * The mirror of `discountFactor` in `lib/exchange`, and it exists for the same
+ * reason: a discount code lives at the invoice level while each line still
+ * carries its list price, so crediting `quantity × unitPrice` hands back more
+ * than was ever taken. Wholesale can be exact where retail has to infer —
+ * `goodsTotal` and `discountAmount` are both stored on the document.
+ *
+ * Never above 1, and never below 0.
+ */
+export function wholesaleDiscountFactor(invoice: WholesaleInvoiceDoc): number {
+  const goods = Number(invoice.goodsTotal);
+  const discount = Number(invoice.discountAmount);
+  if (!Number.isFinite(goods) || goods <= 0) return 1;
+  if (!Number.isFinite(discount) || discount <= 0) return 1;
+  if (discount >= goods) return 0;
+  return (goods - discount) / goods;
+}
+
+/** One invoice line, with what is still returnable on it. */
+export interface ReturnableWholesaleLine {
+  key: string;
+  line: WholesaleInvoiceLine;
+  productId: string;
+  productName: string;
+  variantName?: string;
+  /** What the invoice sold. */
+  sold: number;
+  /** What has already come back, across every prior return. */
+  returned: number;
+  /** `sold − returned`, floored at zero. */
+  remaining: number;
+  /** List price per unit, as printed on the invoice. */
+  listUnitPrice: number;
+  /** What the client actually PAID per unit — list, scaled by the discount. */
+  netUnitPrice: number;
+}
+
+/**
+ * Every line of one invoice with its returnable ceiling.
+ *
+ * Returns ALL lines, fully-returned ones included, because a screen that wants
+ * to show "0 متبقي" next to a line the trader is asking about needs the line —
+ * callers filter. The ceiling itself is derived from the prior return records,
+ * never stored, for the reason `remainingQuantities` gives in `lib/exchange`:
+ * a stored counter is a second truth to keep in step with the documents.
+ */
+export function remainingWholesaleLines(
+  invoice: WholesaleInvoiceDoc,
+  priorReturns: readonly PriorWholesaleReturn[] = [],
+): ReturnableWholesaleLine[] {
+  const factor = wholesaleDiscountFactor(invoice);
+
+  const returnedByKey = new Map<string, number>();
+  for (const record of priorReturns) {
+    if (record.original_order_id !== invoice.id) continue;
+    if (record.type !== WHOLESALE_RETURN_TYPE) continue;
+    for (const item of record.returned_items ?? []) {
+      // `line_id` is what this writer stores. `product_id` is the fallback for
+      // a record written against a line that never had an id.
+      const key = item.line_id ?? `${item.product_id ?? ""}::`;
+      const qty = Number(item.quantity);
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+      returnedByKey.set(key, (returnedByKey.get(key) ?? 0) + qty);
+    }
+  }
+
+  return (invoice.items ?? []).map((line) => {
+    const key = wholesaleLineKey(line);
+    const sold = Number.isFinite(line.quantity) ? Math.max(0, line.quantity) : 0;
+    // Matched by id first, then by the product-only fallback key, so a record
+    // written either way still counts against the line.
+    const returned =
+      (returnedByKey.get(key) ?? 0) +
+      (line.id ? (returnedByKey.get(`${line.productId}::`) ?? 0) : 0);
+    const listUnitPrice = wholesaleLinePrice(line);
+    return {
+      key,
+      line,
+      productId: line.productId,
+      productName: line.productName ?? line.productId,
+      variantName: line.variantName,
+      sold,
+      returned,
+      // Never below zero: a record claiming more than went out is corrupt
+      // data, and a negative here would enlarge the NEXT line's ceiling.
+      remaining: Math.max(0, sold - returned),
+      listUnitPrice,
+      netUnitPrice: money(listUnitPrice * factor),
+    };
+  });
+}
+
+/** What the operator asked to send back: one line of one invoice. */
+export interface WholesaleReturnRequest {
+  invoiceId: string;
+  /** `wholesaleLineKey` of the line on that invoice. */
+  lineKey: string;
+  quantity: number;
+}
+
+/** One resolved line — the invoice's own facts, not the screen's. */
+export interface ResolvedWholesaleReturnLine {
+  invoiceId: string;
+  invoiceNumber: string;
+  lineKey: string;
+  productId: string;
+  productName: string;
+  variantName?: string;
+  quantity: number;
+  /** What the client paid per unit on THAT invoice, net of its discount. */
+  unitPrice: number;
+  /** The cost the goods left at, or today's WAC when the invoice omitted it. */
+  unitCost: number;
+  isBundle?: boolean;
+  bundleItems?: { productId: string; quantity: number; unitCost: number }[];
+}
+
+/**
+ * A return that has been proved against real invoices.
+ *
+ * `buildWholesaleReturnLines` takes this and nothing else, and only
+ * `resolveWholesaleReturn` produces it — that is the whole enforcement. A
+ * screen cannot assemble one by hand without going through the checks, because
+ * the checks are what fill in `unitPrice`.
+ */
+export interface ResolvedWholesaleReturn {
+  clientId: string;
+  lines: ResolvedWholesaleReturnLine[];
+  /** What the client is credited, EGP — the sum of the resolved lines. */
+  returnValue: number;
+}
+
+export interface ResolveWholesaleReturnInput {
+  /** Whose account this settles against. Every invoice must belong to them. */
+  clientId: string;
+  requests: readonly WholesaleReturnRequest[];
+  /** The client's invoices, already store-scoped by RLS on the way in. */
+  invoices: readonly WholesaleInvoiceDoc[];
+  /** Every return record in the store. Filtered per invoice inside. */
+  priorReturns?: readonly PriorWholesaleReturn[];
+  /** Today's weighted-average cost, for invoices written without one. */
+  costOf: (productId: string) => number;
+}
+
+/**
+ * Turn what the operator picked into what the ledger may book — or refuse it.
+ *
+ * Every rule in the brief's §4 is checked HERE rather than in a screen,
+ * because three screens start wholesale returns and a guard in one of them is
+ * not a rule. The checks:
+ *
+ *   * the invoice exists
+ *   * it belongs to THIS client (a forged id from another trader is refused)
+ *   * the line exists on that invoice
+ *   * the quantity is a positive number
+ *   * it does not exceed what is still returnable on that line
+ *   * no line is asked for twice in one return, which would let two requests
+ *     of 6 each pass a ceiling of 10 by checking themselves independently
+ *
+ * Store isolation needs no check of its own: `invoices` comes from a store
+ * -scoped query, so an invoice from another store is simply not in the list
+ * and fails the first rule.
+ *
+ * ## The two prices
+ *
+ * `unitPrice` is what the client PAID on that invoice — list price scaled by
+ * the invoice's own discount. That is the customer-side reversal, and it is
+ * deliberately not today's wholesale price and not the retail price.
+ *
+ * `unitCost` is the inventory side and answers a different question: what did
+ * these goods cost us when they left. The invoice carries it from now on;
+ * where it does not, today's WAC is the only figure available and is used with
+ * that limitation stated rather than silently pretending it is the same thing.
+ */
+export function resolveWholesaleReturn(
+  input: ResolveWholesaleReturnInput,
+): ResolvedWholesaleReturn {
+  const { clientId, requests, invoices, priorReturns = [], costOf } = input;
+
+  if (!clientId) throw new Error("wholesale return: no client chosen");
+  if (!requests.length) throw new Error("wholesale return: nothing selected to return");
+
+  // Cached per invoice so ten lines of one invoice do not re-scan the records
+  // ten times, and so the ceiling every line sees is the same snapshot.
+  const returnableCache = new Map<string, Map<string, ReturnableWholesaleLine>>();
+  const returnableFor = (invoice: WholesaleInvoiceDoc) => {
+    let byKey = returnableCache.get(invoice.id);
+    if (!byKey) {
+      byKey = new Map(remainingWholesaleLines(invoice, priorReturns).map((l) => [l.key, l]));
+      returnableCache.set(invoice.id, byKey);
+    }
+    return byKey;
+  };
+
+  const seen = new Set<string>();
+  const lines: ResolvedWholesaleReturnLine[] = [];
+  let returnValue = 0;
+
+  for (const request of requests) {
+    const invoice = invoices.find((i) => i.id === request.invoiceId);
+    if (!invoice) {
+      throw new Error(`wholesale return: invoice ${request.invoiceId} is not this store's`);
+    }
+    if (invoice.clientId !== clientId) {
+      throw new Error(
+        `wholesale return: invoice ${invoice.invoiceNumber ?? invoice.id} belongs to another client`,
+      );
+    }
+
+    const dedupe = `${request.invoiceId}::${request.lineKey}`;
+    if (seen.has(dedupe)) {
+      throw new Error(`wholesale return: line ${request.lineKey} appears twice in the same return`);
+    }
+    seen.add(dedupe);
+
+    const returnable = returnableFor(invoice).get(request.lineKey);
+    if (!returnable) {
+      throw new Error(
+        `wholesale return: ${request.lineKey} is not a line on invoice ${invoice.invoiceNumber ?? invoice.id}`,
+      );
+    }
+
+    const quantity = Number(request.quantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error(`wholesale return: quantity for ${returnable.productName} must be positive`);
+    }
+    if (quantity > returnable.remaining) {
+      throw new Error(
+        `wholesale return: ${returnable.productName} — only ${returnable.remaining} left to return on ${invoice.invoiceNumber ?? invoice.id}`,
+      );
+    }
+
+    const line = returnable.line;
+    // The cost the goods left at. Today's average is the fallback, not the
+    // rule: reversing at a cost the goods never carried moves inventory value
+    // that never moved.
+    const unitCost = Number.isFinite(line.unitCost as number)
+      ? (line.unitCost as number)
+      : costOf(returnable.productId);
+
+    const resolved: ResolvedWholesaleReturnLine = {
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber ?? invoice.id,
+      lineKey: returnable.key,
+      productId: returnable.productId,
+      productName: returnable.productName,
+      variantName: returnable.variantName,
+      quantity,
+      unitPrice: returnable.netUnitPrice,
+      unitCost,
+      ...(line.isBundle && line.bundleItems?.length
+        ? { isBundle: true, bundleItems: line.bundleItems }
+        : {}),
+    };
+
+    lines.push(resolved);
+    returnValue += resolved.unitPrice * quantity;
+  }
+
+  return { clientId, lines, returnValue: money(returnValue) };
+}
+
 // ── Wholesale returns: goods back, debt down, and maybe cash either way ──────
 
 export interface WholesaleReturnInput {
-  /** What is coming back, at the price it went out at and the cost it left at. */
-  items: WholesaleLineItem[];
-  clientId: string;
+  /**
+   * The proved return. Produced ONLY by `resolveWholesaleReturn`, which is what
+   * makes "this product came from a real invoice to this client, and there is
+   * still that much of it left to send back" a precondition of the ledger
+   * write rather than a hope about the screen.
+   */
+  resolved: ResolvedWholesaleReturn;
   /** The till any cash movement touches. Required if money actually moves. */
   wallet?: string;
   /**
@@ -247,8 +603,12 @@ export interface WholesaleReturnInput {
 export function buildWholesaleReturnLines(ret: WholesaleReturnInput): NewLine[] {
   const lines: NewLine[] = [];
 
+  if (!ret.resolved?.lines?.length) {
+    throw new Error("wholesale return: nothing resolved to return");
+  }
+
   let returnedValue = 0;
-  for (const item of ret.items) {
+  for (const item of ret.resolved.lines) {
     if (item.quantity <= 0) {
       throw new Error(`wholesale return: quantity for ${item.productId} must be positive`);
     }
@@ -257,39 +617,20 @@ export function buildWholesaleReturnLines(ret: WholesaleReturnInput): NewLine[] 
     }
 
     const lineValue = item.unitPrice * item.quantity;
-    const lineCost = item.unitCost * item.quantity;
     returnedValue += lineValue;
 
     // The goods are back, carrying their value back into inventory. A بوكس
     // comes back as its components — it has no shelf of its own.
-    if (item.isBundle && item.bundleItems?.length) {
-      for (const comp of item.bundleItems) {
-        lines.push({
-          account: "stock",
-          subjectId: comp.productId,
-          qty: comp.quantity * item.quantity,
-          amount: comp.unitCost * comp.quantity * item.quantity,
-        });
-      }
-    } else {
-      lines.push({
-        account: "stock",
-        subjectId: item.productId,
-        qty: item.quantity,
-        amount: lineCost,
-      });
-    }
+    lines.push(...stockLinesFor(item, 1));
 
-    // And their cost stops being a cost of goods sold.
-    if (lineCost !== 0) {
-      lines.push({
-        account: "cogs",
-        subjectId: item.productId,
-        amount: -lineCost,
-        unitCost: item.unitCost,
-      });
-    }
+    // And their cost stops being a cost of goods sold — components included.
+    lines.push(...cogsLinesFor(item, -1));
   }
+
+  // Rounded exactly as `resolveWholesaleReturn` rounds `returnValue`, so the
+  // number the تسوية panel showed the operator and the number the ledger books
+  // cannot differ by a discount-scaling fraction of a piastre.
+  returnedValue = money(returnedValue);
 
   const debt = ret.currentDebt ?? 0;
   if (!Number.isFinite(debt) || debt < 0) {
@@ -315,7 +656,11 @@ export function buildWholesaleReturnLines(ret: WholesaleReturnInput): NewLine[] 
   const cashRefund = Math.max(0, returnedValue - debt);
   const debtReduction = Math.min(returnedValue, debt) + paidNow;
   if (debtReduction > 0) {
-    lines.push({ account: "receivable_client", subjectId: ret.clientId, amount: -debtReduction });
+    lines.push({
+      account: "receivable_client",
+      subjectId: ret.resolved.clientId,
+      amount: -debtReduction,
+    });
   }
 
   // One net wallet line: money in from the repayment, out for the surplus.

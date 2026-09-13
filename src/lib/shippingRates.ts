@@ -73,6 +73,115 @@ export function shippedGovernorates(rows: ShippingRateRow[]): string[] {
  */
 export const RETURN_PENALTY_MULTIPLIER = 2;
 
+// ── Responsibility: who caused the movement, and therefore who pays ─────────
+
+/**
+ * Who caused a return or exchange. Migration 026; mirrors the CHECK constraint
+ * on `orders.return_cause` and `return_records.return_cause`.
+ *
+ * This is the axis the model was missing. `movement` (return/exchange) and
+ * `returnType` (rto/refund) both describe the JOURNEY — what travelled and
+ * when — and neither can express whether the shop sent the wrong item or the
+ * customer changed their mind.
+ */
+export type ReturnCause = "customer" | "shop" | "unknown";
+
+export const RETURN_CAUSES: readonly ReturnCause[] = ["customer", "shop", "unknown"] as const;
+
+/** What the operator picks. Arabic only — this reaches the user. */
+export const RETURN_CAUSE_LABELS: Record<ReturnCause, string> = {
+  customer: "العميل",
+  shop: "المحل",
+  unknown: "غير محدد",
+};
+
+/** One line of help under each choice, so the money consequence is visible. */
+export const RETURN_CAUSE_HINTS: Record<ReturnCause, string> = {
+  customer: "العميل هو السبب — الشحن عليه، والرحلة الضائعة تتحسب عليه",
+  shop: "غلطة من المحل — الشحن علينا، ومش هيتحسب على العميل",
+  unknown: "مش متأكد — الحسبة هتمشي بالقاعدة الافتراضية ومش هيتسجّل على العميل",
+};
+
+/**
+ * The same three choices, for the WALK-IN counter return.
+ *
+ * `RETURN_CAUSE_HINTS` above promises "الشحن عليه، والرحلة الضائعة تتحسب عليه",
+ * and on the two courier paths that is exactly what happens. On the counter
+ * return it is not: that handler passes `returnFee: 0` and records no wasted
+ * trip, deliberately — the delivery already SUCCEEDED, the customer has the
+ * goods and walked them back in, so no courier journey was wasted and none is
+ * owed for. Showing the courier wording there told the operator the customer
+ * had just been charged shipping and penalised on their next order, and
+ * neither had happened.
+ *
+ * The cause is still recorded on the document, which is why the choice stays:
+ * it is the responsibility axis reports read, not a shipping charge.
+ */
+export const COUNTER_RETURN_CAUSE_HINTS: Record<ReturnCause, string> = {
+  customer: "العميل هو السبب — هيتسجّل عليه في التقارير، ومفيش شحن على المرتجع ده",
+  shop: "غلطة من المحل — هتتسجّل علينا، ومفيش شحن على المرتجع ده",
+  unknown: "مش متأكد — هيتسجّل كـ(غير محدد) ومش هيتحسب على حد",
+};
+
+/** Anything stored → a safe cause. Unknown values never become blame. */
+export function toReturnCause(value: string | null | undefined): ReturnCause {
+  return (RETURN_CAUSES as readonly string[]).includes(value ?? "")
+    ? (value as ReturnCause)
+    : "unknown";
+}
+
+/**
+ * Who bears the courier's fee for this movement.
+ *
+ * Responsibility decides it, not the movement — that was the whole defect. A
+ * swap because we shipped the wrong size is our cost; a swap because the
+ * customer changed their mind is theirs, and the movement looks identical in
+ * both cases.
+ *
+ * `"unknown"` falls back to the ESTABLISHED movement-keyed default — return is
+ * the shop's cost, exchange is the customer's pass-through. That is deliberate:
+ * every row written before migration 026 defaults to `'unknown'`, so this
+ * function reproduces exactly the accounting those rows already had and no
+ * historical figure moves. It is also the safe direction — an unclassified
+ * return is not silently billed to the customer.
+ */
+export function shippingBorneBy(
+  cause: ReturnCause,
+  movement: "return" | "exchange",
+): "customer" | "shop" {
+  if (cause === "customer") return "customer";
+  if (cause === "shop") return "shop";
+  return movement === "exchange" ? "customer" : "shop";
+}
+
+/**
+ * Does this confirmation add a wasted trip to the customer's debt?
+ *
+ * TWO conditions, both required.
+ *
+ * **The customer must have caused it.** A shop-caused return is our mistake;
+ * charging the customer double on their next order for it would be absurd.
+ * `"unknown"` also does not count — not knowing who was at fault is not a
+ * finding of fault, and the rule says so explicitly.
+ *
+ * **It must actually have wasted a trip.** An exchange does not: the courier
+ * carries the replacement out and the original back on one journey, the
+ * customer keeps goods, and they have already paid the exchange fee directly.
+ * Counting it would bill them twice — once for the swap, again as doubled
+ * shipping next time. Both confirm handlers used to increment on EVERY
+ * confirmation; measured on QA-STORE, `QA-UAT-ECO-CUSTOMER` carried a debt of
+ * 4 from 4 swaps and 0 plain returns.
+ *
+ * An RTO — refused at the door — is the clearest wasted trip there is, and
+ * counts whenever the customer caused it.
+ */
+export function countsAsWastedTrip(
+  cause: ReturnCause,
+  movement: "return" | "exchange",
+): boolean {
+  return cause === "customer" && movement !== "exchange";
+}
+
 /** Does this customer owe the shop a wasted courier trip? */
 export function isRepeatReturner(customer: { returned_orders_count?: number } | null | undefined): boolean {
   const count = customer?.returned_orders_count;

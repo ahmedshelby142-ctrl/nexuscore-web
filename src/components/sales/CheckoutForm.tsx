@@ -16,6 +16,8 @@ import {
   Tags,
 } from "lucide-react";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import { useAuthStore } from "@/store/useAuthStore";
+import { canSellWholesale } from "@/lib/roles";
 import { useSettingsStore } from "@/store/useSettingsStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
 import { activeCustomers } from "@/lib/customers";
@@ -26,8 +28,15 @@ import {
   buildWholesaleInvoiceLines,
   buildWholesaleReturnLines,
   reconcileWholesaleReturn,
+  resolveWholesaleReturn,
+  WHOLESALE_RETURN_TYPE,
 } from "@/lib/ledger/wholesale";
+import { commitWholesaleReturn } from "@/lib/wholesaleReturnDoc";
 import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
+import {
+  WholesaleInvoiceReturnPicker,
+  type ReturnSelection,
+} from "@/components/wholesale/WholesaleInvoiceReturnPicker";
 import { useStock } from "@/lib/ledger/useStock";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,6 +58,8 @@ import {
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
 import { add, multiply, subtract, round, formatQty, includedVat, discountAmountFor } from "@/lib/math";
+import { applyDiscountCode, discountBlock, DISCOUNT_BLOCK_MESSAGE } from "@/lib/discounts";
+import { claimDiscountUse, releaseDiscountUse } from "@/services/discountUsage";
 import { printTableAsPdf, storeIdentity } from "@/lib/pdfGenerator";
 import { sellableStock, productPrice, productWholesalePrice, productMinLevel, activeProducts } from "@/lib/product";
 import { ProductSearch } from "@/components/products/ProductSearch";
@@ -184,6 +195,9 @@ export default function CheckoutForm() {
   const [selectedWallet, setSelectedWallet] = useState<WalletType>("inStoreSafe");
   
   const [saleMode, setSaleMode] = useState<"retail" | "wholesale">("retail");
+  // The database refuses a `wholesale_invoices` row from anyone but ADMIN and
+  // ACCOUNTANT. Asked here so the refusal lands BEFORE the ledger event.
+  const maySellWholesale = canSellWholesale(useAuthStore((s) => s.userRole));
   const [paidAmountInput, setPaidAmountInput] = useState<string>("");
 
   // Optional — a walk-in sale writes no LTV line (brief §3.13), unless we link a customer.
@@ -208,6 +222,9 @@ export default function CheckoutForm() {
   );
 
   const [isReturnMode, setIsReturnMode] = useState(false);
+  /** `invoiceId::lineKey → quantity` for a مرتجع جملة. See below. */
+  const [wholesaleReturnSelection, setWholesaleReturnSelection] = useState<ReturnSelection>({});
+  const returnRecords = useBusinessStore((s) => s.returnRecords);
 
   let products: any[];
   try {
@@ -288,7 +305,18 @@ export default function CheckoutForm() {
 
   const addItemToCart = (product: any, qty: number, variantName?: string) => {
     if (!product) return;
-    
+
+    // A trader's return is proved against their invoice, never typed into the
+    // cart. Blocking it HERE covers the barcode scanner, the product search and
+    // POSReturnModal in one place — three doors into the same hole.
+    if (saleMode === "wholesale" && qty < 0) {
+      setResult({
+        success: false,
+        message: "مرتجع الجملة بيتعمل من فاتورة التاجر — اختر التاجر وافتح وضع المرتجع.",
+      });
+      return;
+    }
+
     // Intercept if product has variants but none is selected yet
     if (product.metadata?.variants && product.metadata.variants.length > 0 && !variantName) {
       setPendingVariantSelection({ product, qty });
@@ -422,21 +450,83 @@ export default function CheckoutForm() {
   // already capped at the subtotal, so the result cannot be negative.
   const calculateTotal = () => Math.max(0, subtract(subtotal, discountAmount));
 
-  // ── التسوية الذكية: a wholesale return settles against the client's debt ──
+  // ── مرتجع جملة: driven by the trader's invoice, not by the cart ───────────
   //
+  // A wholesale return used to be a cart of negative quantities, priced at
+  // today's wholesale price, for any product in the catalogue — the same hole
+  // شاشة الجملة had. In وضع الجملة the cart no longer accepts a negative line
+  // at all (see `addItemToCart`); the return is picked off the trader's own
+  // invoices and proved by `resolveWholesaleReturn` before anything is booked.
+  const isWholesaleReturn = saleMode === "wholesale" && isReturnMode;
+
+  const wholesaleReturnInvoices = useMemo(
+    () =>
+      wholesaleInvoices
+        .filter((i: any) => i.clientId === selectedCustomerId)
+        .slice()
+        .sort(
+          (a: any, b: any) =>
+            new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime(),
+        ),
+    [wholesaleInvoices, selectedCustomerId],
+  );
+
+  const wholesaleReturnRequests = useMemo(
+    () =>
+      Object.entries(wholesaleReturnSelection)
+        .filter(([, qty]) => qty > 0)
+        .map(([key, quantity]) => {
+          const at = key.indexOf("::");
+          return { invoiceId: key.slice(0, at), lineKey: key.slice(at + 2), quantity };
+        }),
+    [wholesaleReturnSelection],
+  );
+
+  const resolvedWholesaleReturn = useMemo(() => {
+    if (!selectedCustomerId || wholesaleReturnRequests.length === 0) {
+      return { ok: null, error: null } as const;
+    }
+    try {
+      return {
+        ok: resolveWholesaleReturn({
+          clientId: selectedCustomerId,
+          requests: wholesaleReturnRequests,
+          invoices: wholesaleReturnInvoices,
+          priorReturns: returnRecords,
+          costOf,
+        }),
+        error: null,
+      } as const;
+    } catch (e) {
+      return { ok: null, error: e instanceof Error ? e.message : String(e) } as const;
+    }
+  }, [
+    wholesaleReturnRequests,
+    selectedCustomerId,
+    wholesaleReturnInvoices,
+    returnRecords,
+    costOf,
+  ]);
+
+  // The debt as it is now, re-read whenever a trader is picked for a return.
+  // `useBalances` is a snapshot: a till left open across a wholesale sale made
+  // on another device would reconcile against a stale zero and hand the trader
+  // cash instead of clearing what they owe.
+  useEffect(() => {
+    if (isWholesaleReturn && selectedCustomerId) refreshDebt();
+  }, [isWholesaleReturn, selectedCustomerId, refreshDebt]);
+
   // R = what is coming back, D = what they owe, P = cash they hand over today.
   // The debt absorbs R first; P only exists while something is still owed.
-  const isWholesaleReturn =
-    saleMode === "wholesale" && cart.length > 0 && cart.every((i) => i.quantity < 0);
-  const wholesaleReturnValue = isWholesaleReturn
-    ? round(cart.reduce((sum, i) => sum + Math.abs(i.quantity) * i.unitPrice, 0))
-    : 0;
+  const wholesaleReturnValue = resolvedWholesaleReturn.ok?.returnValue ?? 0;
   const wholesaleDebt = selectedCustomerId ? debtOf(selectedCustomerId) : 0;
   const { remainingDebt: wholesaleRemainingDebt, paidNow: settlePaid } =
     reconcileWholesaleReturn(wholesaleReturnValue, wholesaleDebt, settlePaidInput);
 
   const handleCompleteSale = async () => {
-    if (cart.length === 0) {
+    // A مرتجع جملة has no cart by design — it is picked off invoices. Every
+    // other movement still needs one.
+    if (cart.length === 0 && !isWholesaleReturn) {
       setResult({ success: false, message: "السلة فارغة" });
       return;
     }
@@ -459,6 +549,33 @@ export default function CheckoutForm() {
     setResult(null);
 
     const totalAmount = calculateTotal();
+
+    // ── The discount use is CLAIMED before anything is booked ────────────────
+    //
+    // Atomically, inside a Postgres row lock — the browser cannot check a limit
+    // and consume it without a gap, and a sold-out code must not be spendable
+    // by two tills a millisecond apart. A claim held for a sale that then fails
+    // is given back in the catch below, so the failure direction is "one use
+    // briefly unavailable" and never "a discount granted for free".
+    //
+    // A return (negative cart) carries no discount, so nothing is claimed.
+    let claimedDiscount: { id: string; amount: number } | null = null;
+    // The wholesale branch below `return`s early on several validation
+    // failures, and an early return skips `catch`. So the release lives in
+    // `finally`, gated on this: it is the one construct every exit path runs
+    // through, whether the sale threw, returned, or succeeded.
+    let saleCommitted = false;
+    if (appliedDiscount?.id && discountAmount > 0 && !isReturnMode) {
+      try {
+        await claimDiscountUse(appliedDiscount.id, discountAmount);
+        claimedDiscount = { id: appliedDiscount.id, amount: discountAmount };
+      } catch (e) {
+        setResult({ success: false, message: e instanceof Error ? e.message : String(e) });
+        setIsProcessing(false);
+        gate.exit();
+        return;
+      }
+    }
 
     try {
       if (saleMode === "retail") {
@@ -488,6 +605,15 @@ export default function CheckoutForm() {
             customerPhone: customerPhone.trim() || undefined,
             items: cart.map((i) => ({ productId: i.productId, productName: i.productName, unitPrice: i.unitPrice, quantity: i.quantity, variantName: i.variantName })),
             totalAmount: totalAmount,
+            // The code as well as the amount. These already reached
+            // `buildSaleLines` below — which is why revenue was correctly net —
+            // but never the PAYLOAD, and the payload is what صفحة الخصومات
+            // reads to list the documents behind a code's usage count. A POS
+            // retail sale was therefore invisible in that drill-down even
+            // though its money was right. The wholesale branch already carries
+            // both; this is the retail half.
+            discountCodeId: appliedDiscount?.id,
+            discountAmount: appliedDiscount ? discountAmount : undefined,
           },
           lines: buildSaleLines({
             items: cart.map((item) => ({
@@ -509,6 +635,15 @@ export default function CheckoutForm() {
           }),
         });
       } else {
+        // The tab is hidden for these roles, but a stale mode in a restored
+        // draft could still reach here. The database is the boundary; this is
+        // what stops the ledger event landing without its invoice.
+        if (!maySellWholesale) {
+          setResult({ success: false, message: "صلاحيتك لا تسمح بتسجيل مبيعات جملة." });
+          setIsProcessing(false);
+          gate.exit();
+          return;
+        }
         if (!selectedCustomerId) {
           setResult({ success: false, message: "يجب اختيار العميل (التاجر) عند البيع بالجملة" });
           setIsProcessing(false);
@@ -523,59 +658,78 @@ export default function CheckoutForm() {
           return;
         }
         
-        // A cart of returns only. `buildWholesaleInvoiceLines` refuses negative
-        // quantities, so this used to throw and a trader's return could not be
-        // processed at all — see `buildWholesaleReturnLines`.
+        // A مرتجع جملة. The lines come from `resolveWholesaleReturn`, which has
+        // already proved every one of them against an invoice belonging to THIS
+        // trader with that much still returnable on it.
         if (isWholesaleReturn) {
+          if (resolvedWholesaleReturn.error) {
+            setResult({ success: false, message: resolvedWholesaleReturn.error });
+            setIsProcessing(false);
+            gate.exit();
+            return;
+          }
+          if (wholesaleReturnRequests.length === 0) {
+            setResult({ success: false, message: "اختر بند من فاتورة التاجر وحدد الكمية الراجعة" });
+            setIsProcessing(false);
+            gate.exit();
+            return;
+          }
+          // Re-resolved against the store as it is NOW, not as it was when this
+          // panel rendered — a till left open since before another device
+          // recorded a return must fail on the ceiling, not return twice.
+          const resolved = resolveWholesaleReturn({
+            clientId: selectedCustomerId,
+            requests: wholesaleReturnRequests,
+            invoices: wholesaleReturnInvoices,
+            priorReturns: useBusinessStore.getState().returnRecords,
+            costOf,
+          });
           if (settlePaid > wholesaleRemainingDebt) {
             setResult({ success: false, message: "المبلغ المدفوع أكبر من المديونية المتبقية" });
             setIsProcessing(false);
       gate.exit();
             return;
           }
-          await appendEvent({
-            kind: "return_confirmed",
-            actor: "POS جملة",
-            refType: "wholesale_client",
-            refId: selectedCustomerId,
-            payload: {
-              type: "wholesale_return",
-              clientName: client.companyName,
-              channel: "pos_wholesale",
-              previousDebt: wholesaleDebt,
-              returnValue: wholesaleReturnValue,
-              paidNow: settlePaid,
-            },
-            lines: buildWholesaleReturnLines({
-              items: cart.map((item) => ({
-                productId: item.productId,
-                // The cart carries returns as negatives; the builder wants the
-                // count of goods coming back.
-                quantity: Math.abs(item.quantity),
-                unitPrice: item.unitPrice,
-                unitCost: costOf(item.productId),
-                variantName: item.variantName,
-                ...bundleFieldsFor(item.productId),
-              })),
-              clientId: selectedCustomerId,
-              wallet: selectedWallet,
-              currentDebt: wholesaleDebt,
-              paidNow: settlePaid,
+          // Ceiling first, money second, ceiling undone if the money is
+          // refused — see `commitWholesaleReturn`.
+          await commitWholesaleReturn(resolved, client, settlePaid, () =>
+            appendEvent({
+              kind: "return_confirmed",
+              actor: "POS جملة",
+              refType: "wholesale_invoice",
+              refId: resolved.lines[0].invoiceNumber,
+              payload: {
+                type: WHOLESALE_RETURN_TYPE,
+                clientId: selectedCustomerId,
+                clientName: client.companyName,
+                channel: "pos_wholesale",
+                invoiceNumbers: [...new Set(resolved.lines.map((l) => l.invoiceNumber))],
+                previousDebt: wholesaleDebt,
+                returnValue: resolved.returnValue,
+                paidNow: settlePaid,
+              },
+              lines: buildWholesaleReturnLines({
+                resolved,
+                wallet: selectedWallet,
+                currentDebt: wholesaleDebt,
+                paidNow: settlePaid,
+              }),
             }),
-          });
+          );
 
           // The goods are back on the shelf. Bundles expand at the choke point.
           useBusinessStore.getState().applyStockMoves(
-            cart.map((item) => ({
-              productId: item.productId,
-              delta: Math.abs(item.quantity),
-              variantName: item.variantName,
+            resolved.lines.map((l) => ({
+              productId: l.productId,
+              delta: l.quantity,
+              variantName: l.variantName,
             })),
           );
 
           refreshStock();
           refreshWallets();
           refreshDebt();
+          setWholesaleReturnSelection({});
           setResult({
             success: true,
             message: `تم تسجيل المرتجع. المديونية الجديدة: ${formatCurrency(Math.max(0, wholesaleDebt - wholesaleReturnValue - settlePaid))} ج.م`,
@@ -616,6 +770,11 @@ export default function CheckoutForm() {
             clientName: client.companyName,
             channel: "pos_wholesale",
             itemCount: cart.length,
+            // The code as well as the amount: صفحة الخصومات lists the
+            // documents behind a count, and a wholesale sale that recorded only
+            // the money could never be traced back to the code that gave it.
+            discountCodeId: appliedDiscount?.id,
+            discountAmount: appliedDiscount ? discountAmount : undefined,
             customerId: client.id,
             customerPhone: client.phone,
             customerName: client.name || client.companyName,
@@ -652,13 +811,23 @@ export default function CheckoutForm() {
           dueDate: "",
           notes: "تم تسجيلها عبر الـ POS",
           status: paid >= totalAmount ? "paid" : paid > 0 ? "partial" : "unpaid",
+          // `goodsTotal`/`discountAmount` are stored so a later return can scale
+          // the credit by the discount this invoice actually gave. Without them
+          // `wholesaleDiscountFactor` reads 1 and the promo is paid twice — once
+          // on the way out and once on the way back.
+          goodsTotal: subtotal,
+          discountAmount,
           items: cart.map(i => ({
             id: crypto.randomUUID(),
             productId: i.productId,
             productName: i.productName,
-            sku: "", 
+            sku: "",
             quantity: i.quantity,
+            variantName: i.variantName,
             wholesalePrice: i.unitPrice,
+            // The cost these units left at — what a return reverses COGS by.
+            unitCost: costOf(i.productId),
+            ...bundleFieldsFor(i.productId),
             total: i.quantity * i.unitPrice
           })),
         });
@@ -669,8 +838,7 @@ export default function CheckoutForm() {
       
       if (negativeItems.length > 0) {
         const isExchange = positiveItems.length > 0;
-        const exchangeProduct = isExchange ? positiveItems[0] : null;
-        
+
         // Awaited: the POS sale/refund is already in the ledger by this point,
         // so a lost return RECORD would leave money moved with no document
         // explaining it. `.catch` keeps a failed document from rolling back a
@@ -687,19 +855,34 @@ export default function CheckoutForm() {
             quantity: Math.abs(i.quantity),
             refund_amount: Math.abs(i.quantity * i.unitPrice)
           })),
-          ...(isExchange && exchangeProduct ? {
-            exchanged_item: {
-              product_id: exchangeProduct.productId,
-              product_name: exchangeProduct.variantName ? `${exchangeProduct.productName} - ${exchangeProduct.variantName}` : exchangeProduct.productName,
-              quantity: exchangeProduct.quantity,
-              price: exchangeProduct.unitPrice,
-            }
+          // EVERY replacement item, not `positiveItems[0]`.
+          //
+          // The cart takes any number of positive lines beside the returned
+          // ones, and `buildSaleLines` books all of them — so the ledger was
+          // always right. The DOCUMENT kept only the first, and a swap of one
+          // item for three left two of them in no record at all: not in the
+          // exchange log, not in the PDF export, not in the CRM.
+          //
+          // `exchanged_item` is JSONB, so an array needs no migration and no
+          // new column. `exchangedItems()` normalises on read, so the rows
+          // already stored as a single object keep working.
+          ...(isExchange ? {
+            exchanged_item: positiveItems.map((item) => ({
+              product_id: item.productId,
+              product_name: item.variantName ? `${item.productName} - ${item.variantName}` : item.productName,
+              quantity: item.quantity,
+              price: item.unitPrice,
+            })),
           } : {}),
           financial_difference: totalAmount,
           processed_by: "POS",
           notes: "تم تسجيلها عبر واجهة نقاط البيع (POS)",
         });
       }
+
+      // Past every early return and every throw: the sale is on the ledger, so
+      // the use it claimed is genuinely spent.
+      saleCommitted = true;
 
       // Every line, variant or not. A negative `quantity` is a مرتجع line and
       // its sign carries through untouched — it puts the goods back.
@@ -755,6 +938,12 @@ export default function CheckoutForm() {
         message: `لم تُسجَّل العملية ولم يتغيّر أي رصيد. ${e instanceof Error ? e.message : String(e)}`,
       });
     } finally {
+      // Nothing was booked, so the use claimed for it goes back. Without this a
+      // failed sale would quietly burn one use of the code — and on a one-use
+      // code, burn the only one.
+      if (claimedDiscount && !saleCommitted) {
+        await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+      }
       setIsProcessing(false);
       gate.exit();
     }
@@ -841,12 +1030,17 @@ export default function CheckoutForm() {
                 >
                   قطاعي
                 </TabsTrigger>
-                <TabsTrigger 
-                  value="wholesale" 
-                  className="flex-1 py-2.5 font-semibold text-gray-700 data-[state=active]:text-gray-900 data-[state=active]:font-bold dark:data-[state=active]:text-white text-lg rounded-lg"
-                >
-                  جملة
-                </TabsTrigger>
+                {/* Hidden for roles Postgres will refuse the invoice row from.
+                    Letting them through booked the ledger event and then lost
+                    the document — see `canSellWholesale`. */}
+                {maySellWholesale && (
+                  <TabsTrigger
+                    value="wholesale"
+                    className="flex-1 py-2.5 font-semibold text-gray-700 data-[state=active]:text-gray-900 data-[state=active]:font-bold dark:data-[state=active]:text-white text-lg rounded-lg"
+                  >
+                    جملة
+                  </TabsTrigger>
+                )}
               </TabsList>
             </Tabs>
 
@@ -1179,14 +1373,17 @@ export default function CheckoutForm() {
                       setAppliedDiscount(null);
                       return;
                     }
-                    const d = promoDiscounts.find(
-                      (x) => x.code === discountCodeInput.trim() && x.active,
-                    );
-                    if (d) {
-                      setAppliedDiscount(d);
+                    // ONE authority, shared with طلبات المتجر. This used to be
+                    // `x.code === input && x.active` — no expiry, no usage
+                    // limit, and a case-sensitive compare against a code the
+                    // Discounts screen had upper-cased.
+                    const applied = applyDiscountCode(promoDiscounts, discountCodeInput, subtotal);
+                    if (applied.ok) {
+                      setAppliedDiscount(applied.code as PromoDiscount);
+                      setResult(null);
                     } else {
                       setAppliedDiscount(null);
-                      alert("كود الخصم غير موجود أو معطل");
+                      setResult({ success: false, message: applied.message });
                     }
                   }}
                 >
@@ -1199,6 +1396,27 @@ export default function CheckoutForm() {
                 </div>
               )}
             </div>
+
+            {/* مرتجع جملة — the invoice picker, not the cart. Same component
+                شاشة الجملة uses, so the two screens cannot drift about what a
+                trader is allowed to send back. */}
+            {isWholesaleReturn && (
+              <div className="pt-3 border-t border-border/50 space-y-3">
+                <p className="text-base font-bold">المرتجع من فاتورة التاجر</p>
+                <WholesaleInvoiceReturnPicker
+                  invoices={wholesaleReturnInvoices}
+                  priorReturns={returnRecords}
+                  selection={wholesaleReturnSelection}
+                  onSelectionChange={setWholesaleReturnSelection}
+                  clientMissing={!selectedCustomerId}
+                />
+                {resolvedWholesaleReturn.error && (
+                  <p className="rounded-lg border border-red-200 bg-red-50 p-2 text-sm font-medium text-red-900">
+                    {resolvedWholesaleReturn.error}
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* التسوية الذكية — shared with الطلبات and الجملة so all three
                 screens explain the same arithmetic. */}
@@ -1312,11 +1530,16 @@ export default function CheckoutForm() {
                 btnText = "إتمام المرتجع";
                 btnColor = "bg-red-600 hover:bg-red-700 hover:shadow-red-500/20";
               }
-              
+
+              // A مرتجع جملة is gated on a resolved selection instead of a cart.
+              const blocked = isWholesaleReturn
+                ? !!resolvedWholesaleReturn.error || !resolvedWholesaleReturn.ok?.lines.length
+                : cart.length === 0;
+
               return (
                 <Button
                   onClick={handleCompleteSale}
-                  disabled={cart.length === 0 || isProcessing}
+                  disabled={blocked || isProcessing}
                   className={cn(
                     "w-full h-16 text-2xl font-black mt-2 text-white shadow-xl rounded-xl transition-all",
                     btnColor

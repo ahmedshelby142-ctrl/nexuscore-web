@@ -86,6 +86,15 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
   },
 
   discount_codes: {
+    // `usedCount` and `totalDiscount` are ABSENT on purpose — do not add them.
+    //
+    // This list filters WRITES only; a read comes back whole, so both counters
+    // hydrate and the Discounts screen sees them. Leaving them out means the
+    // client physically cannot send them: `claim_discount_use` /
+    // `release_discount_use` are the only writers, and a whole-row upsert from
+    // a tab that loaded an hour ago cannot push its stale count back over the
+    // real one. Migration 027's trigger enforces the same rule server-side;
+    // this is the half that stops it happening by accident.
     columns: [
       "id", "code", "type", "value", "active", "maxUses", "expiryDate",
       "createdAt", ...COMMON,
@@ -96,7 +105,11 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
     columns: [
       "id", "original_order_id", "type", "customer_name", "customer_phone",
       "governorate", "returned_items", "exchanged_item", "pending_replacement",
-      "financial_difference", "processed_by", "notes", "created_at", ...COMMON,
+      "financial_difference", "processed_by", "notes", "created_at",
+      // Who caused it — migration 026. Without this the record could not say
+      // whether the shop or the customer was responsible, only what kind of
+      // movement it was.
+      "return_cause", ...COMMON,
     ],
   },
 
@@ -173,6 +186,12 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
       "paymentMethod", "courierName", "courierId", "courierFee",
       "revenueLogged", "codSettledAt", "returnConfirmedAt", "returnType",
       "isExchange", "original_order_id", "wholesaleClientId", "createdAt",
+      // `shippingPenaltyApplied` is the reason this list is load-bearing: the
+      // app wrote it and `clearsShippingDebt` read it, but it was missing here
+      // AND from the table, so every write dropped it and the repeat-returner
+      // debt could never clear. `return_cause` is the responsibility axis —
+      // migration 026 added both.
+      "shippingPenaltyApplied", "return_cause",
       "updatedAt", ...COMMON,
     ],
   },

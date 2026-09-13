@@ -33,7 +33,17 @@ import { useFinancialStore } from "@/store/useFinancialStore";
 import { customerIdOf } from "@/lib/customers";
 import { useCustomerStore } from "@/store/useCustomerStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
-import { rateFor, clearsShippingDebt } from "@/lib/shippingRates";
+import {
+  rateFor,
+  clearsShippingDebt,
+  countsAsWastedTrip,
+  shippingBorneBy,
+  toReturnCause,
+  RETURN_CAUSES,
+  RETURN_CAUSE_LABELS,
+  RETURN_CAUSE_HINTS,
+  type ReturnCause,
+} from "@/lib/shippingRates";
 import { storeIdentity } from "@/lib/pdfGenerator";
 import { appendEvent } from "@/lib/ledger";
 import {
@@ -52,11 +62,18 @@ import { buildWholesaleInvoiceLines } from "@/lib/ledger/wholesale";
 import { productPrice, productWholesalePrice } from "@/lib/product";
 import { formatMoney, discountAmountFor, subtract, round } from "@/lib/math";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import { useAuthStore } from "@/store/useAuthStore";
+import { canSellWholesale } from "@/lib/roles";
 import { useBalances } from "@/lib/ledger/useBalances";
 import {
   buildWholesaleReturnLines,
   reconcileWholesaleReturn,
+  remainingWholesaleLines,
+  resolveWholesaleReturn,
+  WHOLESALE_RETURN_TYPE,
 } from "@/lib/ledger/wholesale";
+import { commitWholesaleReturn } from "@/lib/wholesaleReturnDoc";
+import { adjustDiscountTotal } from "@/services/discountUsage";
 import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -90,6 +107,7 @@ import { OrderSearch } from "@/components/ecommerce/OrderSearch";
 import { ProductSearch } from "@/components/products/ProductSearch";
 import { ordersInPeriod, searchOrders } from "@/lib/orderSearch";
 import { actionsFor, canDo, claimOrder, releaseOrder } from "@/lib/orderLifecycle";
+import { exchangeBlock, movementFor, EXCHANGE_BLOCK_TEXT } from "@/lib/exchange";
 import { courierIdOf } from "@/lib/courierBatch";
 import type { EcommerceOrder, EcommerceOrderItem, EcommerceOrderStatus, WalletType } from "@/types";
 import { WALLET_LABELS } from "@/types";
@@ -133,8 +151,15 @@ export function OrdersPage() {
   const products = useBusinessStore((s) => s.products);
   const wholesaleClients = useBusinessStore((s) => s.wholesaleClients);
   const addWholesaleInvoice = useBusinessStore((s) => s.addWholesaleInvoice);
+  // The wholesale invoices a delivered trader order became. A return resolves
+  // against these, never against the order's retail prices.
+  const wholesaleInvoices = useBusinessStore((s) => s.wholesaleInvoices);
   const applyStockMoves = useBusinessStore((s) => s.applyStockMoves);
   const promoDiscounts = useBusinessStore((s) => s.promoDiscounts);
+  // Subscribed, not read via getState(): the استبدال button's eligibility
+  // depends on what has already come back, so a return recorded on another
+  // screen has to take the button away here without a reload.
+  const returnRecords = useBusinessStore((s) => s.returnRecords);
   // A trader's outstanding balance, for reconciling a wholesale return.
   const { amountOf: debtOf, refresh: refreshDebt } = useBalances("receivable_client");
   // Re-read after a payment so الخزنة reflects the new cash immediately.
@@ -154,6 +179,8 @@ export function OrdersPage() {
   const [deliverMode, setDeliverMode] = useState<"deliver" | "settle">("deliver");
 
   const [saleMode, setSaleMode] = useState<"retail" | "wholesale">("retail");
+  // The database refuses a wholesale invoice from anyone but ADMIN/ACCOUNTANT.
+  const maySellWholesale = canSellWholesale(useAuthStore((s) => s.userRole));
   const [wholesaleClient, setWholesaleClient] = useState<string>("");
   const [wholesalePaidAmount, setWholesalePaidAmount] = useState<string>("");
 
@@ -172,6 +199,9 @@ export function OrdersPage() {
     open: false,
   });
   const [confirmName, setConfirmName] = useState("");
+  // Who caused it. Defaults to "unknown" so a rushed confirmation never files
+  // blame the operator did not actually enter.
+  const [confirmCause, setConfirmCause] = useState<ReturnCause>("unknown");
   // Editing a pending order. `draft` holds the new contents until saved; the
   // order document and the ledger are only touched on confirm.
   const [editOrderId, setEditOrderId] = useState<string | null>(null);
@@ -293,8 +323,68 @@ export function OrdersPage() {
   const returningOrder = orders.find((o) => o.id === confirmDialog.orderId) ?? null;
   const returnClientId: string | undefined = (returningOrder as any)?.wholesaleClientId || undefined;
   const returnClientDebt = returnClientId ? debtOf(returnClientId) : 0;
+
+  /**
+   * The trader's return, resolved against the wholesale INVOICE this order
+   * became — not against the order's own retail prices.
+   *
+   * ## What was wrong
+   *
+   * A wholesale delivery books revenue at the WHOLESALE price and writes a
+   * wholesale invoice, but the return read `order.totalAmount` and the order
+   * lines' `unitPrice`, both of which are RETAIL. So the sale credited, say,
+   * 400 and the return reversed 500: 100 of revenue destroyed and 100 of debt
+   * written off on every trader return, in the shop's own screen. Nothing
+   * capped repeats either — the same order could be returned twice.
+   *
+   * Resolving against the invoice fixes the price, the discount scaling, the
+   * cost COGS reverses at, and the ceiling, all from one source.
+   */
+  const resolvedOrderReturn = useMemo(() => {
+    if (!returningOrder || !returnClientId) return { ok: null, error: null } as const;
+    const invoiceId = (returningOrder.stockItems ?? []).find(
+      (l: any) => l.wholesaleInvoiceId,
+    )?.wholesaleInvoiceId as string | undefined;
+    const invoice = invoiceId
+      ? wholesaleInvoices.find((i: any) => i.id === invoiceId)
+      : undefined;
+    if (!invoice) {
+      // Orders delivered in وضع الجملة before this fix carry no invoice link.
+      // Say so instead of silently falling back to retail prices, which is the
+      // exact behaviour being removed.
+      return {
+        ok: null,
+        error:
+          "الطلب ده اتسلّم كجملة قبل ربط الفاتورة — سجّل المرتجع من شاشة الجملة على فاتورة التاجر.",
+      } as const;
+    }
+    const lines = remainingWholesaleLines(invoice, returnRecords).filter((l) => l.remaining > 0);
+    if (lines.length === 0) {
+      return { ok: null, error: "كل بنود فاتورة الطلب ده اترجعت بالفعل." } as const;
+    }
+    try {
+      return {
+        ok: resolveWholesaleReturn({
+          clientId: returnClientId,
+          // The order returns whole, so every line comes back at its ceiling.
+          requests: lines.map((l) => ({
+            invoiceId: invoice.id,
+            lineKey: l.key,
+            quantity: l.remaining,
+          })),
+          invoices: [invoice],
+          priorReturns: returnRecords,
+          costOf,
+        }),
+        error: null,
+      } as const;
+    } catch (e) {
+      return { ok: null, error: e instanceof Error ? e.message : String(e) } as const;
+    }
+  }, [returningOrder, returnClientId, wholesaleInvoices, returnRecords, costOf]);
+
   const returnSettle = reconcileWholesaleReturn(
-    returningOrder?.totalAmount ?? 0,
+    resolvedOrderReturn.ok?.returnValue ?? 0,
     returnClientDebt,
     returnSettleInput,
   );
@@ -441,6 +531,16 @@ export function OrdersPage() {
         expectedCod: Math.max(0, draftTotal + order.shippingFee - order.depositAmount),
       });
 
+      // The edit re-priced the discount, so what the code has GRANTED changed
+      // even though how many times it was USED did not. Without this the
+      // Discounts screen keeps reporting the amount the order was first given —
+      // an edit from 100 down to 50 would leave 50 of discount on the books that
+      // nobody ever received. The use count is deliberately untouched.
+      if (order.discountCodeId) {
+        const before = Number(order.discountAmount) || 0;
+        await adjustDiscountTotal(order.discountCodeId, round(draftDiscount - before));
+      }
+
       refreshStock();
       setEditOrderId(null);
     } catch (e) {
@@ -561,6 +661,11 @@ export function OrdersPage() {
     setActionError(null);
     try {
       const returnType = order.returnType ?? "refund";
+      // One decision, made once and used by every branch below: the ledger fee,
+      // the wasted-trip debt and the stored document all read these.
+      const movement = movementFor(order, orders);
+      const cause = confirmCause;
+      const feeBorneBy = shippingBorneBy(cause, movement);
 
       if (returnType === "rto") {
         await appendEvent({
@@ -577,6 +682,8 @@ export function OrdersPage() {
               unitCost: line.unitCost ?? 0,
             })),
             returnFee: rateFor(shippingRates, order.governorate, "return"),
+            // An RTO the customer caused is recovered from them, not absorbed.
+            feeBorneBy,
             courierId: courierIdOf(order),
             // Refused at the door: the trip was still made and paid for, so the
             // deposit stays and is booked as income rather than sitting in the
@@ -619,38 +726,53 @@ export function OrdersPage() {
         // A trader's return settles against their account, not the till. The
         // same تسوية POS does — see `buildWholesaleReturnLines`.
         if (returnClientId) {
-          await appendEvent({
-            kind: "return_confirmed",
-            actor: "أونلاين",
-            refType: "wholesale_client",
-            refId: returnClientId,
-            payload: {
-              type: "wholesale_return",
-              customerName: order.customerName,
-              confirmedBy: confirmName.trim(),
-              previousDebt: returnClientDebt,
-              returnValue: order.totalAmount,
-              paidNow: returnSettle.paidNow,
-            },
-            lines: buildWholesaleReturnLines({
-              items: (order.stockItems ?? []).map((line) => ({
-                productId: line.productId,
-                quantity: line.quantity,
-                unitPrice: line.unitPrice,
-                unitCost: line.unitCost ?? 0,
-              })),
-              clientId: returnClientId,
-              wallet: targetWallet,
-              currentDebt: returnClientDebt,
-              paidNow: returnSettle.paidNow,
-            }),
-          });
+          if (resolvedOrderReturn.error || !resolvedOrderReturn.ok?.lines.length) {
+            setActionError(
+              resolvedOrderReturn.error ?? "مفيش بنود متاحة للإرجاع على فاتورة الطلب ده.",
+            );
+            setIsWorking(false);
+            releaseOrder(order.id);
+            return;
+          }
+          const resolved = resolvedOrderReturn.ok;
+          // Ceiling first, money second, ceiling undone if the money is
+          // refused — see `commitWholesaleReturn`.
+          await commitWholesaleReturn(
+            resolved,
+            wholesaleClients.find((c) => c.id === returnClientId),
+            returnSettle.paidNow,
+            () =>
+              appendEvent({
+                kind: "return_confirmed",
+                actor: "أونلاين",
+                refType: "wholesale_invoice",
+                refId: resolved.lines[0].invoiceNumber,
+                payload: {
+                  type: WHOLESALE_RETURN_TYPE,
+                  clientId: returnClientId,
+                  customerName: order.customerName,
+                  orderNumber: order.orderNumber,
+                  confirmedBy: confirmName.trim(),
+                  invoiceNumbers: [...new Set(resolved.lines.map((l) => l.invoiceNumber))],
+                  previousDebt: returnClientDebt,
+                  returnValue: resolved.returnValue,
+                  paidNow: returnSettle.paidNow,
+                },
+                lines: buildWholesaleReturnLines({
+                  resolved,
+                  wallet: targetWallet,
+                  currentDebt: returnClientDebt,
+                  paidNow: returnSettle.paidNow,
+                }),
+              }),
+            `طلب ${order.orderNumber}`,
+          );
 
           applyStockMoves(
-            (order.stockItems ?? []).map((line: any) => ({
-              productId: line.productId,
-              delta: line.quantity,
-              variantName: line.variantName,
+            resolved.lines.map((l) => ({
+              productId: l.productId,
+              delta: l.quantity,
+              variantName: l.variantName,
             })),
           );
           await useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date() });
@@ -681,14 +803,49 @@ export function OrdersPage() {
             // Refund and revenue reversal are the GOODS. The delivery fee was
             // never our revenue, so there is nothing of it to reverse.
             refundAmount: order.totalAmount,
-            // …but the deposit never goes back. Capped at the refund so a
-            // deposit larger than the goods cannot turn a return into a charge.
-            forfeitedDeposit: Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0),
+            // …but on a RETURN the deposit never goes back. Capped at the
+            // refund so a deposit larger than the goods cannot turn a return
+            // into a charge.
+            //
+            // On an EXCHANGE nothing is forfeited, and getting this wrong is
+            // how a swap invents money. A forfeit says "the customer walked
+            // away and the trip we paid for was still made, so the money is
+            // earned". In a swap the customer did not walk away: the same money
+            // is about to pay for the replacement order. Forfeiting it books
+            // the original as income (`forfeited_deposit +300` cancelling the
+            // `revenue −300` reversal), leaves `customer_ltv` untouched, and
+            // then the replacement books its own full revenue on delivery — so
+            // an EVEN swap recognised +300 of revenue and +300 of LTV out of
+            // nothing. Caught on QA-STORE against ECO-QA-CASE-A, where the
+            // reversal netted to exactly zero.
+            //
+            // With 0 here the money simply moves: `wallet −300` refunds the old
+            // order, the replacement's own deposit puts `wallet +300` back, and
+            // revenue/LTV net to the price difference — which is the whole
+            // invariant. The courier's trip is still paid for, by the customer,
+            // through the pass-through exchange fee below.
+            forfeitedDeposit:
+              movement === "exchange"
+                ? 0
+                : Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0),
             wallet: targetWallet,
             revenueAmount: order.totalAmount,
-            // The return fee comes from the Settings matrix for this governorate.
-            returnFee: rateFor(shippingRates, order.governorate, "return"),
-            movement: "return",
+            // The fee comes from the Settings matrix, and WHICH rate applies
+            // depends on why the goods are moving: a plain return is the shop's
+            // cost, an exchange trip is the customer's. `movementFor` answers
+            // it from the documents — a replacement order pointing back at this
+            // one IS the evidence that this is a swap.
+            //
+            // This was hardcoded `"return"`, so the `movement: "exchange"`
+            // branch in `buildReturnConfirmedLines` had never once been
+            // reached: every swap booked the courier's trip as an expense the
+            // shop never bore, understating profit on all of them.
+            returnFee: rateFor(shippingRates, order.governorate, movement),
+            movement,
+            // Responsibility, not movement, decides who pays — see
+            // `shippingBorneBy`. "unknown" reproduces the old movement-keyed
+            // default exactly, so pre-026 rows keep their accounting.
+            feeBorneBy,
             courierId: courierIdOf(order),
             customerId: customerId ?? undefined,
             channel: "ecommerce",
@@ -696,9 +853,24 @@ export function OrdersPage() {
         });
       }
       
-      // This person has now sent an order back. Every future order of theirs is
-      // quoted at double shipping — see `shippingFeeFor`.
-      if (customerId) useCustomerStore.getState().recordReturn(customerId);
+      // A wasted trip is owed, so the next order is quoted at double shipping —
+      // see `shippingFeeFor`. An EXCHANGE is not a wasted trip: the courier
+      // carried the replacement out and this back in one journey, the customer
+      // kept goods, and they already paid the exchange fee as a pass-through.
+      // This used to fire on every confirmation, so a swap billed them twice.
+      //
+      // AWAITED: `recordReturn` is a cloud write. Called bare it was an
+      // unhandled rejection, so a refused increment lost the wasted trip
+      // silently while the screen said the return was confirmed. It only
+      // escaped the bare-call check because it sat on the same line as its
+      // `if`. The `.catch` is deliberate and is why this is not in the main
+      // try: the return itself is already in the ledger and the goods are
+      // already back, so a failed debt increment must not undo it or report
+      // the return as failed. The cost of losing one is one under-recovered
+      // trip, which is the right way round to fail.
+      if (customerId && countsAsWastedTrip(cause, movement)) {
+        await useCustomerStore.getState().recordReturn(customerId).catch(() => {});
+      }
 
       // The courier brought it back. Same movement as a cancellation.
       applyStockMoves(
@@ -714,9 +886,10 @@ export function OrdersPage() {
       // the next reload and the goods go back on the shelf a second time —
       // which is what the three `return_confirmed` events on ECO-1786978185609
       // are. `claimOrder` only covers the same session; this survives a restart.
-      await updateOrder(order.id, { returnConfirmedAt: new Date() });
+      await updateOrder(order.id, { returnConfirmedAt: new Date(), return_cause: cause });
       setConfirmDialog({ orderId: "", open: false });
       setConfirmName("");
+      setConfirmCause("unknown");
     } catch (e) {
       setActionError(
         `لم يتأكد المرتجع ولم يتغيّر المخزون. ${e instanceof Error ? e.message : String(e)}`,
@@ -957,6 +1130,13 @@ export function OrdersPage() {
           }),
         });
       } else {
+        // The toggle is hidden for these roles; this is the guard that stops a
+        // stale mode booking the ledger event whose invoice RLS will refuse.
+        if (!maySellWholesale) {
+          setActionError("صلاحيتك لا تسمح بتسجيل مبيعات جملة.");
+          setIsWorking(false);
+          return;
+        }
         if (!wholesaleClient) {
           setActionError("اختر عميل الجملة أولاً لتسجيل المديونية.");
           setIsWorking(false);
@@ -1010,23 +1190,39 @@ export function OrdersPage() {
         // same store, incompatible with شاشة الجملة's counter and colliding
         // with it roughly once every ten thousand milliseconds. One allocator
         // now, in Postgres.
-        await addWholesaleInvoice({
+        //
+        // Each invoice line reuses the ORDER line's own id, so the wholesale
+        // invoice and the order describe the same goods with the same keys —
+        // that is what lets a return started from either side land on the same
+        // ceiling instead of counting the units twice.
+        const wholesaleInvoice = await addWholesaleInvoice({
           invoiceNumber: await nextDocumentNumber("wholesale_invoice", "FJ-"),
           clientId: wholesaleClient,
           clientName: wholesaleClients.find((c) => c.id === wholesaleClient)?.companyName || "عميل جملة",
-          items: wholesaleItems.map((i) => {
-            const prod = products.find((p) => p.id === i.productId);
+          items: (order.stockItems ?? []).map((line: any, at: number) => {
+            const prod = products.find((p) => p.id === line.productId);
+            const priced = wholesaleItems[at];
             return {
-              id: crypto.randomUUID(),
-              productId: i.productId,
-              productName: prod?.name || "منتج",
-              sku: prod?.sku || "",
-              quantity: i.quantity,
-              unitPrice: i.unitPrice,
-              wholesalePrice: i.unitPrice,
-              total: i.unitPrice * i.quantity,
+              id: line.id ?? crypto.randomUUID(),
+              productId: line.productId,
+              productName: prod?.name || line.productName || "منتج",
+              sku: prod?.sku || line.sku || "",
+              variantName: line.variantName,
+              quantity: line.quantity,
+              unitPrice: priced?.unitPrice ?? line.unitPrice,
+              wholesalePrice: priced?.unitPrice ?? line.unitPrice,
+              // The cost these units left at — the figure a return reverses
+              // COGS by. It is the same `unitCost` the ledger event above
+              // booked, not today's average.
+              unitCost: line.unitCost ?? 0,
+              total: (priced?.unitPrice ?? line.unitPrice) * line.quantity,
             };
           }),
+          // Stated so a later return can scale the credit correctly. There is
+          // no discount code on this path, so the factor is 1 — but leaving
+          // `goodsTotal` unset would make that an accident rather than a fact.
+          goodsTotal: wholesaleGoodsTotal,
+          discountAmount: 0,
           totalAmount,
           paidAmount: actualPaidAmount,
           remainingAmount,
@@ -1034,6 +1230,21 @@ export function OrdersPage() {
           dueDate: dueDate.toISOString(),
           notes: `محولة من طلب أونلاين: ${order.orderNumber}`
         });
+
+        // The order now knows two things it did not before: that it went out on
+        // a trader's account, and WHICH wholesale invoice it became. One write,
+        // so there is no window where the second is known and the first is not.
+        //
+        // The invoice id rides on the `stockItems` jsonb rather than in a new
+        // column. Without it the return path could only value the goods at
+        // RETAIL prices — precisely the mismatch this fix exists to end.
+        await updateOrder(order.id, {
+          wholesaleClientId: wholesaleClient,
+          stockItems: (order.stockItems ?? []).map((line: any) => ({
+            ...line,
+            wholesaleInvoiceId: wholesaleInvoice?.id,
+          })),
+        } as never);
       }
 
       const expectedCod = saleMode === "wholesale" ? (parseFloat(wholesalePaidAmount) || 0) : order.expectedCod;
@@ -1062,21 +1273,47 @@ export function OrdersPage() {
         await updateOrder(order.id, { codSettledAt: new Date() });
       }
 
-      // Remember that this went out as a wholesale sale. Without it the return
-      // path has no way to know the goods are on a trader's account rather
-      // than a retail customer's card, and would refund cash against a debt.
-      if (saleMode === "wholesale" && wholesaleClient) {
-        await updateOrder(order.id, { wholesaleClientId: wholesaleClient });
-      }
+      // `wholesaleClientId` is stamped alongside the invoice link, up in the
+      // wholesale branch — one write for both, so the return path can never
+      // find a trader's order without the invoice that prices it.
 
       // The order that carried the doubled fee has landed and been paid for, so
       // ONE wasted trip is recovered. A customer who returned three orders owes
       // three, and settles them one delivery at a time.
+      //
+      // The flag is CONSUMED in the same breath, and that is what makes this
+      // exactly-once. `shippingPenaltyApplied` means "this order charged a
+      // penalty that has not yet been credited back"; once it has, the order no
+      // longer holds a claim. Without that, any replay of this path — an edit,
+      // a re-delivery after a status correction, a stale tab — would credit the
+      // same trip again and hand the customer free shipping they never earned.
+      // The audit trail survives regardless: `shippingFee` still records 80
+      // against a base of 40.
+      //
+      // Until migration 026 this branch was unreachable: the flag was in no
+      // column and no sync whitelist, so `clearsShippingDebt` was always false
+      // and the debt never cleared at all — a permanent surcharge.
       if (clearsShippingDebt(order) && customerId) {
         await useCustomerStore.getState().settleWastedTrip(customerId);
+        await updateOrder(order.id, { shippingPenaltyApplied: false });
       }
 
       await updateOrderStatus(reconcileDialog.orderId, "delivered");
+
+      // The delivery moved stock, cash and — in وضع الجملة — the trader's debt.
+      // None of those were re-read, so every balance this screen had was stale
+      // the moment the dialog closed.
+      //
+      // The debt is the one that mattered. `returnClientDebt` feeds the تسوية
+      // panel, and a wholesale delivery followed by a return IN THE SAME
+      // SESSION reconciled against a debt of 0 that the ledger had just put at
+      // 800 — so the panel offered to hand the trader 800 in CASH instead of
+      // clearing what they owed. That is the exact rule
+      // `buildWholesaleReturnLines` exists to enforce, defeated by a stale read.
+      // Measured on QA-STORE: ORD-QA-WS, receivable +800, panel showing ٠ ج.م.
+      refreshStock();
+      refreshWallets();
+      refreshDebt();
       setReconcileDialog({ orderId: "", open: false });
     } catch (e) {
       setActionError(
@@ -1127,13 +1364,12 @@ export function OrdersPage() {
               إضافة طلب جديد
             </Link>
           </Button>
-          <Button asChild size="sm" variant="secondary" className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100">
-            {/* @ts-ignore */}
-            <Link to="/ecommerce-orders">
-              <RotateCcw className="size-4 ml-2" />
-              إنشاء طلب استبدال
-            </Link>
-          </Button>
+          {/* "إنشاء طلب استبدال" used to sit here, as a bare
+              `<Link to="/ecommerce-orders">` — the SAME destination as "إضافة
+              طلب جديد" beside it, carrying no order, no customer and not even
+              the exchange flag. It opened an empty form. An exchange is an
+              action ON an order, so it now lives on the order's own row, where
+              it can also be hidden for the orders that are not eligible. */}
         </div>
       </div>
 
@@ -1250,6 +1486,9 @@ export function OrdersPage() {
                     // prepaid order where the courier carries nothing.
                     const hasCod = order.expectedCod > 0;
                     const actions = actionsFor(order.status);
+                    // One answer for the button and for the explanation beside
+                    // it, so a hidden action always has a reason on screen.
+                    const exBlock = exchangeBlock(order, returnRecords, orders);
                     return (
                       <TableRow key={order.id}>
                         <TableCell className="font-mono px-4 whitespace-nowrap">
@@ -1381,6 +1620,36 @@ export function OrdersPage() {
                               </Button>
                             )}
 
+                            {/* استبدال — an action ON this order, so it starts
+                                here and hands the form the order it is for.
+                                Rendered only when `exchangeBlock` says yes;
+                                `ecommerce-orders` re-asks the same function on
+                                arrival, because this row can be stale by the
+                                time it is clicked. */}
+                            {exBlock === null && (
+                              <Button
+                                asChild
+                                variant="secondary"
+                                size="sm"
+                                className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                              >
+                                {/* @ts-ignore */}
+                                <Link to={`/ecommerce-orders?exchangeOf=${encodeURIComponent(order.id)}`}>
+                                  <RotateCcw className="size-4 ml-2" />
+                                  استبدال
+                                </Link>
+                              </Button>
+                            )}
+                            {/* A delivered order with no استبدال button is the
+                                one case the operator will ask about, so it says
+                                which rule refused it rather than going silent. */}
+                            {order.status === "delivered" &&
+                              (exBlock === "already_replaced" || exBlock === "nothing_left") && (
+                                <span className="text-xs text-muted-foreground">
+                                  {EXCHANGE_BLOCK_TEXT[exBlock]}
+                                </span>
+                              )}
+
                             {/* §3.9: goods are only back on the shelf once a
                                 human confirms it, by customer name. */}
                             {actions.includes("confirmReturn") && !order.returnConfirmedAt && (
@@ -1390,6 +1659,14 @@ export function OrdersPage() {
                                 onClick={() => {
                                   setActionError(null);
                                   setConfirmName("");
+                                  // Re-read the trader's debt as the dialog
+                                  // opens, not as the screen last loaded. The
+                                  // تسوية panel decides between "clears a debt"
+                                  // and "hands over cash" from this number, and
+                                  // a stale zero turns the first into the
+                                  // second. The delivery path refreshes too;
+                                  // this covers a debt moved on another device.
+                                  refreshDebt();
                                   setConfirmDialog({ orderId: order.id, open: true });
                                 }}
                               >
@@ -1489,15 +1766,20 @@ export function OrdersPage() {
               >
                 بيع قطاعي (أونلاين)
               </button>
-              <button
-                className={`flex-1 text-sm py-1.5 rounded-md transition-colors ${saleMode === "wholesale"
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:bg-muted"
-                  }`}
-                onClick={() => setSaleMode("wholesale")}
-              >
-                بيع جملة (تجار)
-              </button>
+              {/* Hidden for roles Postgres refuses a `wholesale_invoices` row
+                  from: the delivery would book the wholesale ledger event and
+                  then lose the invoice. See `canSellWholesale`. */}
+              {maySellWholesale && (
+                <button
+                  className={`flex-1 text-sm py-1.5 rounded-md transition-colors ${saleMode === "wholesale"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:bg-muted"
+                    }`}
+                  onClick={() => setSaleMode("wholesale")}
+                >
+                  بيع جملة (تجار)
+                </button>
+              )}
             </div>
 
             {saleMode === "wholesale" && (
@@ -1866,6 +2148,30 @@ export function OrdersPage() {
                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               />
             </div>
+            {/* Responsibility. Asked, never guessed: the movement cannot tell
+                a swap we caused from one the customer caused, and it decides
+                who pays the courier AND whether a wasted trip is charged. */}
+            <div className="space-y-2">
+              <Label>مين سبب المرتجع؟</Label>
+              <Select
+                value={confirmCause}
+                onValueChange={(v) => setConfirmCause(v as ReturnCause)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {RETURN_CAUSES.map((cause) => (
+                    <SelectItem key={cause} value={cause}>
+                      {RETURN_CAUSE_LABELS[cause]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {RETURN_CAUSE_HINTS[confirmCause]}
+              </p>
+            </div>
             <div className="space-y-2">
               <Label>الخزينة اللي هيتخصم منها المسترد</Label>
               <Select value={targetWallet} onValueChange={(v) => setTargetWallet(v as WalletType)}>
@@ -1883,13 +2189,40 @@ export function OrdersPage() {
             </div>
             {/* Delivered on a trader's account: the goods pay down the debt
                 instead of the till paying out. Same panel as نقطة البيع. */}
-            {returnClientId && (
-              <WholesaleReturnPanel
-                debt={returnClientDebt}
-                returnValue={returningOrder?.totalAmount ?? 0}
-                paidInput={returnSettleInput}
-                onPaidChange={setReturnSettleInput}
-              />
+            {returnClientId && resolvedOrderReturn.ok && (
+              <>
+                <div className="rounded-xl border divide-y">
+                  {resolvedOrderReturn.ok.lines.map((line) => (
+                    <div
+                      key={line.lineKey}
+                      className="flex items-center justify-between gap-3 p-2 text-sm"
+                    >
+                      <span className="min-w-0 flex-1 truncate">{line.productName}</span>
+                      <span className="text-xs text-muted-foreground">
+                        فاتورة {line.invoiceNumber}
+                      </span>
+                      <span className="font-semibold">× {line.quantity}</span>
+                      <span className="w-20 text-left font-bold">
+                        {formatMoney(line.quantity * line.unitPrice)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <WholesaleReturnPanel
+                  debt={returnClientDebt}
+                  // The WHOLESALE value of what is coming back, from the
+                  // invoice. `order.totalAmount` is the retail figure and
+                  // booking it here reversed more than was ever sold.
+                  returnValue={resolvedOrderReturn.ok.returnValue}
+                  paidInput={returnSettleInput}
+                  onPaidChange={setReturnSettleInput}
+                />
+              </>
+            )}
+            {returnClientId && resolvedOrderReturn.error && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-sm font-medium text-amber-900">{resolvedOrderReturn.error}</p>
+              </div>
             )}
             {actionError && (
               <div className="rounded-lg p-3 bg-red-50 border border-red-200">

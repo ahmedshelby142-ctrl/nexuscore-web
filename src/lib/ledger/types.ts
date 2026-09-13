@@ -119,6 +119,32 @@ export interface BalanceQuery {
   to?: Date;
 }
 
+/**
+ * A balance narrowed to one KIND of document and split by which document.
+ *
+ * `BalanceQuery` answers "how much of this account exists"; this answers "how
+ * much of it came from each source document". The supplier-return ceiling is
+ * the case that needed it: goods may only go back against the purchase invoice
+ * that brought them in, so the cap has to be per invoice, not per product.
+ */
+export interface RefBalanceQuery {
+  account: Account;
+  /** `ledger_events.ref_type` — e.g. `"supplier_return"`. Required. */
+  refType: string;
+  /** Narrow to one document. Omit for every document of that type. */
+  refId?: string;
+  kind?: EventKind;
+}
+
+/** One document's share of an account, in EGP. */
+export interface RefBalance {
+  /** `ledger_events.ref_id` — the document this movement points at. */
+  refId: string;
+  subjectId: string;
+  qty: number;
+  amount: number;
+}
+
 export interface EventQuery {
   kind?: EventKind;
   refType?: string;

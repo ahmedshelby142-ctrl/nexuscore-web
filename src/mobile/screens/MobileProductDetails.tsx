@@ -1,0 +1,200 @@
+import { ArrowRight, Package, TrendingUp, TrendingDown, Minus, ShoppingBag, AlertTriangle, DollarSign, Tag, Box } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { productMinLevel, productPrice, productWholesalePrice, getActualStock, isProductArchived } from "@/lib/product";
+import { MobileAppBar } from "@/mobile/components/MobileAppBar";
+import { MobileSection } from "@/mobile/components/MobileSection";
+import { StatusPill } from "@/mobile/components/StatusPill";
+import { EmptyState, ErrorState, SkeletonState } from "@/mobile/components/States";
+import { deriveStockStatusKey } from "@/mobile/viewmodels/stockViewModel";
+import { resolveStockStatus } from "@/mobile/viewmodels/statusTaxonomies";
+import { formatArabicCurrency, formatArabicDate, formatArabicQuantity, formatArabicRelativeTime } from "@/mobile/viewmodels/formatters";
+import { readMobileProduct, readMobileProductWaitingOrders } from "@/mobile/data/mobileReaders";
+import { useMobileEntity } from "@/mobile/data/useMobileEntity";
+
+export function MobileProductDetails() {
+  const navigate = useNavigate();
+  const { productId } = useParams();
+  const loadProduct = useCallback(() => readMobileProduct(productId ?? ""), [productId]);
+  const { data: product, loading, error } = useMobileEntity(loadProduct);
+  const [waitingOrders, setWaitingOrders] = useState<any[]>([]);
+  const [waitingLoading, setWaitingLoading] = useState(true);
+  const [waitingError, setWaitingError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (productId) {
+      setWaitingLoading(true);
+      readMobileProductWaitingOrders(productId).then((data) => {
+        if (active) { setWaitingOrders(data); setWaitingLoading(false); }
+      }).catch((err) => { if (active) { setWaitingError(err.message); setWaitingLoading(false); } });
+    }
+    return () => { active = false; };
+  }, [productId]);
+
+  if (loading) return <><MobileAppBar title="تفاصيل المنتج" /><div className="mobile-screen-body"><SkeletonState /></div></>;
+  if (error) return <><MobileAppBar title="تفاصيل المنتج" /><ErrorState messageAr="تعذّر تحميل المنتج." /></>;
+  if (!product) return <><MobileAppBar title="تفاصيل المنتج" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} /><EmptyState titleAr="المنتج غير موجود" messageAr="تعذّر العثور على هذا المنتج." /></>;
+
+  const archived = isProductArchived(product);
+  const quantity = getActualStock(product);
+  const minLevel = productMinLevel(product);
+  const statusKey = deriveStockStatusKey(quantity, minLevel);
+  const status = resolveStockStatus(statusKey);
+  const retailPrice = productPrice(product);
+  const wholesalePrice = productWholesalePrice(product);
+  const avgCost = Number((product as any).mobileCost ?? 0);
+  const sku = product.sku ?? "—";
+  const barcode = product.barcode ?? "—";
+  const category = product.category ?? "—";
+
+  const variants = product.metadata?.variants ?? product.variants;
+  const hasVariants = Array.isArray(variants) && variants.length > 0;
+  const isBundle = product.isBundle === true || product.metadata?.isBundle === true;
+  const bundleItems = isBundle ? (product.bundleItems ?? product.metadata?.bundleItems ?? []) : [];
+
+  return <section className="mobile-screen">
+    <MobileAppBar title="تفاصيل المنتج" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} />
+    <div className="mobile-screen-body">
+      {archived && (
+        <div className="mobile-archived-banner">
+          <AlertTriangle aria-hidden="true" />
+          <span>هذا المنتج مؤرشف — مخفي من القوائم النشطة</span>
+        </div>
+      )}
+
+      <div className="mobile-detail-hero">
+        <Package aria-hidden="true" />
+        <div>
+          <h2>{product.name}</h2>
+          <span dir="ltr">{sku}</span>
+          {barcode !== "—" && <span className="mobile-muted" dir="ltr">باركود: {barcode}</span>}
+          <span className="mobile-muted">الصنف: {category}</span>
+        </div>
+        <StatusPill labelAr={status.labelAr} tone={status.tone} />
+      </div>
+
+      <MobileSection titleAr="المخزون">
+        <div className="mobile-detail-grid">
+          <div>
+            <span>المتاح على الرف</span>
+            <strong>{formatArabicQuantity(quantity)}</strong>
+          </div>
+          <div>
+            <span>حد إعادة الطلب</span>
+            <strong>{formatArabicQuantity(minLevel)}</strong>
+          </div>
+          <div>
+            <span>متوسط التكلفة (المرجح)</span>
+            <strong>{formatArabicCurrency(avgCost)}</strong>
+          </div>
+          <div>
+            <span>قيمة المخزون الحالية</span>
+            <strong>{formatArabicCurrency(quantity * avgCost)}</strong>
+          </div>
+        </div>
+        <div className="mobile-detail-line" style={{ marginBlockStart: "0.5rem" }}>
+          <span>الحالة</span>
+          <StatusPill labelAr={status.labelAr} tone={status.tone} />
+        </div>
+      </MobileSection>
+
+      <MobileSection titleAr="التسعير">
+        <div className="mobile-detail-grid">
+          <div>
+            <span>سعر البيع (قطاعي)</span>
+            <strong>{formatArabicCurrency(retailPrice)}</strong>
+          </div>
+          <div>
+            <span>سعر الجملة</span>
+            <strong>{formatArabicCurrency(wholesalePrice)}</strong>
+          </div>
+          {avgCost > 0 && retailPrice > 0 && (
+            <div>
+              <span>هامش البيع</span>
+              <strong style={{ color: "var(--success)" }}>
+                {formatArabicCurrency(retailPrice - avgCost)} ({(Math.round(((retailPrice - avgCost) / retailPrice) * 10000) / 100)}%)
+              </strong>
+            </div>
+          )}
+          {avgCost > 0 && wholesalePrice > 0 && wholesalePrice !== retailPrice && (
+            <div>
+              <span>هامش الجملة</span>
+              <strong style={{ color: "var(--success)" }}>
+                {formatArabicCurrency(wholesalePrice - avgCost)} ({(Math.round(((wholesalePrice - avgCost) / wholesalePrice) * 10000) / 100)}%)
+              </strong>
+            </div>
+          )}
+        </div>
+      </MobileSection>
+
+      {hasVariants && (
+        <MobileSection titleAr="الدرجات / الألوان">
+          {variants.map((v: any) => (
+            <div className="mobile-detail-line" key={v.name}>
+              <span>{v.name}</span>
+              <strong>{formatArabicQuantity(v.stock ?? 0)}</strong>
+            </div>
+          ))}
+        </MobileSection>
+      )}
+
+      {waitingOrders.length > 0 && (
+        <MobileSection titleAr={`طلبات تنتظر هذا المنتج (${waitingOrders.length})`}>
+          {waitingOrders.slice(0, 10).map((wo: any) => (
+            <button
+              type="button"
+              className="mobile-waiting-order-row"
+              key={wo.orderId}
+              onClick={() => navigate(`/orders/${wo.orderId}`)}
+            >
+              <div>
+                <strong dir="ltr">{wo.orderNumber}</strong>
+                <span className="mobile-muted" style={{ display: "block", fontSize: "0.75rem" }}>{wo.customerName}</span>
+              </div>
+              <div style={{ textAlign: "left" }}>
+                <span className="mobile-quantity-badge">{formatArabicQuantity(wo.quantity)}</span>
+                <StatusPill
+                  labelAr={resolveStockStatus(deriveStockStatusKey(0, 0)).labelAr}
+                  tone={wo.status === "pending" ? "warning" : "info"}
+                />
+              </div>
+            </button>
+          ))}
+          {waitingOrders.length > 10 && (
+            <p className="mobile-muted" style={{ textAlign: "center", marginBlockStart: "0.5rem" }}>
+              و {waitingOrders.length - 10} طلبات أخرى…
+            </p>
+          )}
+        </MobileSection>
+      )}
+
+      {waitingOrders.length === 0 && !waitingLoading && (
+        <MobileSection titleAr="طلبات تنتظر هذا المنتج">
+          <p className="mobile-muted">لا توجد طلبات نشطة تنتظر هذا المنتج.</p>
+        </MobileSection>
+      )}
+
+      {isBundle && bundleItems.length > 0 && (
+        <MobileSection titleAr="مكونات الباقة">
+          {bundleItems.map((item: any) => (
+            <div className="mobile-detail-line" key={`${item.productId}-${item.variantName ?? ""}`}>
+              <span>{item.productName ?? item.productId}</span>
+              <strong>{formatArabicQuantity(item.quantity)}</strong>
+            </div>
+          ))}
+        </MobileSection>
+      )}
+
+      <MobileSection titleAr="معلومات النظام">
+        <div className="mobile-detail-line"><span>معرف المنتج</span><strong dir="ltr">{product.id}</strong></div>
+        <div className="mobile-detail-line"><span>الباركود</span><strong dir="ltr">{barcode}</strong></div>
+        <div className="mobile-detail-line"><span>الكود (SKU)</span><strong dir="ltr">{sku}</strong></div>
+        <div className="mobile-detail-line"><span>الصنف</span><strong>{category}</strong></div>
+        {product.createdAt && <div className="mobile-detail-line"><span>تاريخ الإنشاء</span><strong>{formatArabicDate(product.createdAt)}</strong></div>}
+        {product.updatedAt && <div className="mobile-detail-line"><span>آخر تحديث</span><strong>{formatArabicDate(product.updatedAt)}</strong></div>}
+        <div className="mobile-detail-line"><span>مؤرشف</span><strong>{archived ? "نعم" : "لا"}</strong></div>
+      </MobileSection>
+    </div>
+  </section>;
+}

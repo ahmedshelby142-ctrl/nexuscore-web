@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { Package, Plus, Trash2, Loader2, Save, FileText, Users, CreditCard, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -32,15 +32,24 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useStock } from "@/lib/ledger/useStock";
-import { appendEvent } from "@/lib/ledger";
+import { appendEvent, balancesByRef } from "@/lib/ledger";
 import { buildPurchaseLines } from "@/lib/ledger/purchases";
+import { nextDocumentNumber } from "@/services/documentNumber";
 import { ProductSearch } from "@/components/products/ProductSearch";
 import { formatMoney, formatQty, round } from "@/lib/math";
 import { useBalances } from "@/lib/ledger/useBalances";
 import {
   buildSupplierReturnLines,
+  purchaseLineKey,
   reconcileSupplierReturn,
+  resolveSupplierReturn,
+  type PriorSupplierReturn,
+  type ResolvedSupplierReturn,
 } from "@/lib/ledger/purchases";
+import {
+  SupplierReturnPicker,
+  type SupplierReturnSelection,
+} from "@/components/purchasing/SupplierReturnPicker";
 import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
 import { WALLET_LABELS } from "@/types";
 import { cn } from "@/lib/utils";
@@ -48,8 +57,20 @@ import { cn } from "@/lib/utils";
 const NEW_SUPPLIER = "__new__";
 
 export function PurchasingPage() {
-  const { suppliers, addSupplier, addPurchaseInvoice, purchaseInvoices, products, applyStockMoves } = useBusinessStore();
-  const { qtyOf, costOf, refresh: refreshStock } = useStock();
+  const {
+    suppliers,
+    addSupplier,
+    addPurchaseInvoice,
+    updatePurchaseInvoice,
+    removePurchaseInvoice,
+    purchaseInvoices,
+    products,
+    applyStockMoves,
+  } = useBusinessStore();
+  // `costOf` is deliberately NOT read here any more. It is the shelf's weighted
+  // average, and pricing a supplier return with it is the bug this screen was
+  // fixed for — the cost now comes off the purchase invoice line.
+  const { qtyOf, refresh: refreshStock } = useStock();
   // What we owe each supplier — the account the آجل half of a receipt feeds.
   const { amountOf: debtOf, total: totalSupplierDebt, refresh: refreshDebt } =
     useBalances("payable_supplier");
@@ -127,46 +148,118 @@ export function PurchasingPage() {
     });
   };
 
-  // ── مرتجع مورد: goods going back, settled against what we owe them ────────
+  // ── مرتجع مورد: invoice-driven, settled against what we owe them ──────────
+  //
+  // The flow is المورد → فواتيره → بند → كمية, and the selection below is a map
+  // of `invoiceId::lineKey → quantity` rather than a list of products. There is
+  // no shape here that can hold a product this supplier never supplied, and no
+  // place for a cost that did not come off the receipt.
   const [isReturnOpen, setIsReturnOpen] = useState(false);
   const [returnSupplierId, setReturnSupplierId] = useState("");
-  const [returnItems, setReturnItems] = useState<any[]>([]);
+  const [returnSelection, setReturnSelection] = useState<SupplierReturnSelection>({});
   const [returnPaidInput, setReturnPaidInput] = useState("");
   const [returnError, setReturnError] = useState<string | null>(null);
   const [returning, setReturning] = useState(false);
 
-  const returnValue = round(returnItems.reduce((sum, i) => sum + i.quantity * i.unitCost, 0));
+  /**
+   * What has already gone back, straight out of the ledger.
+   *
+   * Not a stored counter: `return_records` is writable only by ADMIN /
+   * POS_ECOMMERCE / ECOMMERCE_ONLY while `/purchasing` belongs to ACCOUNTANT,
+   * so a counter kept there would silently stop capping for the very role that
+   * does this job. The `stock −` lines of past `supplier_return` events are
+   * readable by every member and are the movement itself. See `balancesByRef`.
+   */
+  const [priorReturns, setPriorReturns] = useState<PriorSupplierReturn[]>([]);
+  const [priorReturnsError, setPriorReturnsError] = useState<string | null>(null);
+
+  const loadPriorReturns = useCallback(async () => {
+    try {
+      const rows = await balancesByRef({
+        account: "stock",
+        kind: "purchase",
+        refType: "supplier_return",
+      });
+      setPriorReturns(rows);
+      setPriorReturnsError(null);
+      return rows;
+    } catch (e) {
+      // Refuse to guess. An unknown ceiling reads as zero and would let the
+      // same goods go back twice, so the screen says so and blocks instead.
+      setPriorReturnsError(
+        `تعذّر قراءة المرتجعات السابقة، فمش هنقدر نحسب المتبقي. ${e instanceof Error ? e.message : String(e)}`,
+      );
+      throw e;
+    }
+  }, []);
+
+  /** This supplier's purchase invoices, newest first. */
+  const returnSupplierInvoices = useMemo(
+    () =>
+      purchaseInvoices
+        .filter((i: any) => i.supplierId === returnSupplierId)
+        .slice()
+        .sort(
+          (a: any, b: any) =>
+            new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime(),
+        ),
+    [purchaseInvoices, returnSupplierId],
+  );
+
+  const returnRequests = useMemo(
+    () =>
+      Object.entries(returnSelection)
+        .filter(([, qty]) => qty > 0)
+        .map(([key, quantity]) => {
+          const at = key.indexOf("::");
+          return { invoiceId: key.slice(0, at), lineKey: key.slice(at + 2), quantity };
+        }),
+    [returnSelection],
+  );
+
+  /**
+   * The selection proved against those invoices — or the reason it cannot be.
+   *
+   * Resolved on every render so the operator sees a refusal while they can
+   * still fix it, and so the تسوية panel is drawn from the same numbers the
+   * ledger will book. The submit path resolves again: this is a preview.
+   */
+  const resolvedReturn = useMemo(() => {
+    if (!returnSupplierId || returnRequests.length === 0) {
+      return { ok: null, error: null } as const;
+    }
+    try {
+      return {
+        ok: resolveSupplierReturn({
+          supplierId: returnSupplierId,
+          requests: returnRequests,
+          invoices: returnSupplierInvoices,
+          priorReturns,
+          onHand: qtyOf,
+        }),
+        error: null,
+      } as const;
+    } catch (e) {
+      return { ok: null, error: e instanceof Error ? e.message : String(e) } as const;
+    }
+  }, [returnSupplierId, returnRequests, returnSupplierInvoices, priorReturns, qtyOf]);
+
+  const returnValue = resolvedReturn.ok?.returnValue ?? 0;
   const returnSupplierDebt = returnSupplierId ? debtOf(returnSupplierId) : 0;
   const returnSettle = reconcileSupplierReturn(returnValue, returnSupplierDebt, returnPaidInput);
 
   function openReturnModal() {
     setReturnSupplierId("");
-    setReturnItems([]);
+    setReturnSelection({});
     setReturnPaidInput("");
     setReturnError(null);
+    // Both as they are NOW. `useBalances` is a snapshot, and the تسوية panel
+    // decides between "this clears what we owe" and "they refund us cash" from
+    // the debt — a stale zero turns a settlement into a cash receipt.
+    refreshDebt();
+    refreshStock();
+    void loadPriorReturns().catch(() => {});
     setIsReturnOpen(true);
-  }
-
-  function addReturnItem(product: any) {
-    setReturnItems((prev) => {
-      const at = prev.findIndex((i) => i.productId === product.id);
-      if (at >= 0) {
-        const next = [...prev];
-        next[at] = { ...next[at], quantity: next[at].quantity + 1 };
-        return next;
-      }
-      return [
-        ...prev,
-        {
-          productId: product.id,
-          productName: product.name,
-          quantity: 1,
-          // The weighted average on the shelf — what these units actually cost
-          // us. Sending them back at anything else moves value that never moved.
-          unitCost: costOf(product.id),
-        },
-      ];
-    });
   }
 
   async function submitReturn() {
@@ -174,15 +267,16 @@ export function PurchasingPage() {
       setReturnError("اختر المورد أولاً");
       return;
     }
-    if (returnItems.length === 0) {
-      setReturnError("أضف منتج واحد على الأقل للمرتجع");
+    if (priorReturnsError) {
+      setReturnError(priorReturnsError);
       return;
     }
-    const short = returnItems.find((i) => i.quantity > qtyOf(i.productId));
-    if (short) {
-      setReturnError(
-        `الكمية المرتجعة من "${short.productName}" أكبر من الموجود في المخزن (${qtyOf(short.productId)})`,
-      );
+    if (resolvedReturn.error) {
+      setReturnError(resolvedReturn.error);
+      return;
+    }
+    if (returnRequests.length === 0) {
+      setReturnError("اختر بند من فاتورة وحدد الكمية المرتجعة");
       return;
     }
 
@@ -190,6 +284,19 @@ export function PurchasingPage() {
     setReturning(true);
     setReturnError(null);
     try {
+      // Re-read the ledger's ceiling and re-resolve against it, rather than
+      // trusting what this tab rendered. `useSubmitGate` stops a double click;
+      // it cannot stop a tab left open since another device sent the same goods
+      // back. This is what makes that second submission fail on the ceiling.
+      const fresh = await loadPriorReturns();
+      const resolved = resolveSupplierReturn({
+        supplierId: returnSupplierId,
+        requests: returnRequests,
+        invoices: returnSupplierInvoices,
+        priorReturns: fresh,
+        onHand: qtyOf,
+      });
+
       const supplier = suppliers.find((sp) => sp.id === returnSupplierId);
       await appendEvent({
         // Deliberately the EXISTING `purchase` kind, not a new one.
@@ -206,30 +313,59 @@ export function PurchasingPage() {
         kind: "purchase",
         actor: "المشتريات",
         refType: "supplier_return",
-        refId: returnSupplierId,
+        // The SOURCE INVOICE, not the supplier. This is the load-bearing
+        // change: it is what stops the return being an orphan (§10), and it is
+        // the key `balancesByRef` groups by to derive the ceiling. Pointing it
+        // at the supplier — as it used to — made every one of that supplier's
+        // returns indistinguishable from the others.
+        refId: resolved.lines[0].invoiceNumber,
         payload: {
+          supplierId: returnSupplierId,
           supplierName: supplier?.companyName ?? "",
+          invoiceNumber: resolved.lines[0].invoiceNumber,
           previousDebt: returnSupplierDebt,
-          returnValue,
+          returnValue: resolved.returnValue,
           paidNow: returnSettle.paidNow,
+          items: resolved.lines.map((l) => ({
+            productId: l.productId,
+            productName: l.productName,
+            quantity: l.quantity,
+            unitCost: l.unitCost,
+          })),
         },
         lines: buildSupplierReturnLines({
-          items: returnItems.map((i) => ({
-            productId: i.productId,
-            quantity: i.quantity,
-            unitCost: i.unitCost,
-          })),
-          supplierId: returnSupplierId,
+          resolved,
           wallet,
           currentDebt: returnSupplierDebt,
           paidNow: returnSettle.paidNow,
         }),
       });
 
-      applyStockMoves(returnItems.map((i) => ({ productId: i.productId, delta: -i.quantity })));
+      // The goods left the shelf. The ledger recorded it above; this is the
+      // mirror catching up.
+      applyStockMoves(
+        resolved.lines.map((l) => ({
+          productId: l.productId,
+          delta: -l.quantity,
+          variantName: l.variantName,
+        })),
+      );
+
+      // The human-readable half: the receipt now says how much of each line has
+      // gone back. Deliberately NOT the ceiling — the ledger is — so a failure
+      // here cannot let the same goods be returned twice. Best-effort for that
+      // reason, with the operator told if it did not land.
+      try {
+        await stampReturnOnInvoice(resolved);
+      } catch (e) {
+        toast.error(
+          `المرتجع اتسجل والحسابات اتظبطت، بس سجل الفاتورة مااتحدّثش. ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
 
       refreshStock();
       refreshDebt();
+      await loadPriorReturns().catch(() => {});
       setIsReturnOpen(false);
     } catch (e) {
       setReturnError(
@@ -239,6 +375,40 @@ export function PurchasingPage() {
       setReturning(false);
       returnGate.exit();
     }
+  }
+
+  /**
+   * Write what went back onto the purchase invoice itself.
+   *
+   * The return document the brief asks for (§10), built out of the receipt
+   * rather than a new table: `purchase_invoices` is already store-scoped,
+   * already synced, already writable by exactly the roles that do purchasing,
+   * and it is the one row that inherently names the supplier, the invoice, the
+   * product, the quantity and the original unit cost.
+   *
+   * `returnedQuantity` here is a RECORD, never the ceiling — the ledger is. A
+   * read-modify-write on jsonb is not atomic, so if this were load-bearing two
+   * concurrent returns could both read zero. Because it is not, the worst a
+   * lost update can do is make the screen understate what has gone back until
+   * the next read, while the ledger still refuses the over-return.
+   */
+  async function stampReturnOnInvoice(resolved: ResolvedSupplierReturn) {
+    const invoiceId = resolved.lines[0].invoiceId;
+    const invoice = purchaseInvoices.find((i: any) => i.id === invoiceId);
+    if (!invoice) return;
+
+    const byKey = new Map(resolved.lines.map((l) => [l.lineKey, l.quantity]));
+    await updatePurchaseInvoice(invoiceId, {
+      items: (invoice.items ?? []).map((line: any) => {
+        const back = byKey.get(purchaseLineKey(line)) ?? 0;
+        if (back <= 0) return line;
+        return {
+          ...line,
+          returnedQuantity: (Number(line.returnedQuantity) || 0) + back,
+          lastReturnedAt: new Date().toISOString(),
+        };
+      }),
+    });
   }
 
   async function receive() {
@@ -258,7 +428,72 @@ export function PurchasingPage() {
         : suppliers.find((s) => s.id === supplierId);
       if (!supplier?.id) throw new Error("المورد مش موجود");
 
-      const invoiceNumber = "FM-" + String(purchaseInvoices.length + 1).padStart(4, "0");
+      // Allocated by Postgres, not by this browser's array length.
+      //
+      // `"FM-" + (purchaseInvoices.length + 1)` was the exact scheme
+      // `nextDocumentNumber` was written to delete — this was the last screen
+      // still using it. Two devices receiving at the same moment both reached
+      // FM-0003, and a browser that had not finished hydrating reached FM-0001
+      // again. `purchase_invoices_number_per_store` is a UNIQUE index, so the
+      // second write was REFUSED — after `appendEvent` had already put the
+      // stock and the payable on the ledger. Accounting with no document.
+      //
+      // ## Why the loop, instead of a migration
+      //
+      // Every store that has already received goods holds FM-0001… written by
+      // the old scheme, while `store_counters` has no `purchase_invoice` row at
+      // all — so the very first allocation would hand back FM-0001 and collide
+      // on day one. Seeding the counter per store is a data migration that
+      // every installed database would have to run before this build was safe.
+      // Skipping numbers already taken costs a few wasted draws ONCE per store,
+      // needs no migration, and leaves no window where a shop is broken.
+      // Numbering has never been gap-free anyway: a refused invoice burns a
+      // number by design.
+      let invoiceNumber = "";
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const candidate = await nextDocumentNumber("purchase_invoice", "FM-");
+        if (!purchaseInvoices.some((i: any) => i.invoiceNumber === candidate)) {
+          invoiceNumber = candidate;
+          break;
+        }
+      }
+      if (!invoiceNumber) throw new Error("تعذّر إصدار رقم فاتورة جديد — جرّب تاني");
+
+      // ## Document BEFORE ledger
+      //
+      // The unique index on the invoice number is the only thing that can still
+      // refuse this receipt, and it refuses the DOCUMENT. Writing the document
+      // first means a refusal costs nothing; writing the ledger first meant a
+      // refusal left stock and a payable on the books with no receipt behind
+      // them — the "accounting without a document" §16 forbids. If the event
+      // then fails, the document is deleted again below.
+      const invoiceDoc = await addPurchaseInvoice({
+        invoiceNumber,
+        supplierId: supplier.id,
+        supplierName: supplier.companyName,
+        items: draft.map((l) => ({
+          id: crypto.randomUUID(),
+          productId: l.productId,
+          productName: l.productName,
+          sku: l.product.sku,
+          // The draft merges by product AND variant, and every restock path
+          // keys on the shade — but the invoice document dropped it, so a
+          // return resolved off this receipt could not say which one came
+          // back. Free to carry: `items` is jsonb.
+          variantName: l.variantName,
+          quantity: l.quantity,
+          unitCost: l.unitCost,
+          total: l.quantity * l.unitCost,
+        })),
+        totalAmount: total,
+        paidAmount,
+        remainingAmount: owedAmount,
+        dueDate: new Date().toISOString().slice(0, 10),
+        status: owedAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid",
+        notes: owedAmount > 0 ? "فاتورة مشتريات (آجل جزئي)" : "فاتورة مشتريات (دفع نقدي)",
+      });
+
+      try {
 
       await appendEvent({
         kind: "purchase",
@@ -284,6 +519,15 @@ export function PurchasingPage() {
           paidAmount,
         }),
       });
+      } catch (e) {
+        // The money never moved, so the receipt must not stand. Deterministic
+        // compensation, not a hope — and if the delete itself fails the user is
+        // told, because an invoice with no ledger effect overstates what we owe.
+        await removePurchaseInvoice(invoiceDoc.id).catch(() => {
+          toast.error("الفاتورة اتسجلت بس الحركة المالية فشلت — امسح الفاتورة يدوياً");
+        });
+        throw e;
+      }
 
       // Goods arriving. Plain products count too — that is what the old
       // `if (line.variantName)` guard here silently excluded.
@@ -294,27 +538,6 @@ export function PurchasingPage() {
           variantName: line.variantName,
         })),
       );
-
-      await addPurchaseInvoice({
-        invoiceNumber,
-        supplierId: supplier.id,
-        supplierName: supplier.companyName,
-        items: draft.map((l) => ({
-          id: crypto.randomUUID(),
-          productId: l.productId,
-          productName: l.productName,
-          sku: l.product.sku,
-          quantity: l.quantity,
-          unitCost: l.unitCost,
-          total: l.quantity * l.unitCost,
-        })),
-        totalAmount: total,
-        paidAmount,
-        remainingAmount: owedAmount,
-        dueDate: new Date().toISOString().slice(0, 10),
-        status: owedAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid",
-        notes: owedAmount > 0 ? "فاتورة مشتريات (آجل جزئي)" : "فاتورة مشتريات (دفع نقدي)",
-      });
 
       refreshStock();
       refreshDebt();
@@ -512,58 +735,49 @@ export function PurchasingPage() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>المنتجات الراجعة</Label>
-              <ProductSearch
-                products={products}
-                onSelect={addReturnItem}
-                placeholder="ابحث عن المنتج الراجع للمورد..."
-                allowOutOfStock
+              <Label>الفاتورة والبنود الراجعة</Label>
+              <SupplierReturnPicker
+                invoices={returnSupplierInvoices}
+                priorReturns={priorReturns}
+                selection={returnSelection}
+                onSelectionChange={setReturnSelection}
+                onHand={qtyOf}
+                supplierMissing={!returnSupplierId}
               />
             </div>
 
-            {returnItems.length > 0 && (
+            {priorReturnsError && (
+              <div className="rounded-lg p-3 bg-amber-50 border border-amber-200">
+                <p className="text-sm font-medium text-amber-900">{priorReturnsError}</p>
+              </div>
+            )}
+
+            {resolvedReturn.ok && resolvedReturn.ok.lines.length > 0 && (
               <div className="rounded-xl border border-border divide-y">
-                {returnItems.map((item) => (
-                  <div key={item.productId} className="flex items-center justify-between gap-3 p-3">
-                    <span className="font-medium flex-1">{item.productName}</span>
-                    <span className="text-xs text-muted-foreground">
-                      متوسط التكلفة {formatMoney(item.unitCost)}
+                {resolvedReturn.ok.lines.map((line) => (
+                  <div
+                    key={`${line.invoiceId}::${line.lineKey}`}
+                    className="flex flex-wrap items-center justify-between gap-3 p-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="font-medium">{line.productName}</span>
+                      {/* The source receipt and its cost stay on screen right
+                          up to the confirm button — this is the number the
+                          whole fix is about. */}
+                      <p className="text-xs text-muted-foreground">
+                        من فاتورة {line.invoiceNumber} · تكلفة الشراء {formatMoney(line.unitCost)}
+                      </p>
+                    </div>
+                    <span className="text-sm font-semibold">× {line.quantity}</span>
+                    <span className="w-24 text-left font-bold">
+                      {formatMoney(line.quantity * line.unitCost)}
                     </span>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={qtyOf(item.productId)}
-                      value={item.quantity}
-                      onChange={(e) =>
-                        setReturnItems((prev) =>
-                          prev.map((i) =>
-                            i.productId === item.productId
-                              ? { ...i, quantity: parseInt(e.target.value) || 0 }
-                              : i,
-                          ),
-                        )
-                      }
-                      className="w-20 text-center"
-                    />
-                    <span className="font-bold w-24 text-left">
-                      {formatMoney(item.quantity * item.unitCost)}
-                    </span>
-                    <Button aria-label="حذف سطر الفاتورة"
-                      variant="ghost"
-                      size="icon"
-                      className="size-8 text-destructive"
-                      onClick={() =>
-                        setReturnItems((prev) => prev.filter((i) => i.productId !== item.productId))
-                      }
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
                   </div>
                 ))}
               </div>
             )}
 
-            {returnItems.length > 0 && (
+            {resolvedReturn.ok && resolvedReturn.ok.lines.length > 0 && (
               <WholesaleReturnPanel
                 variant="supplier"
                 debt={returnSupplierDebt}
@@ -574,9 +788,11 @@ export function PurchasingPage() {
               />
             )}
 
-            {returnError && (
+            {(returnError || resolvedReturn.error) && (
               <div className="rounded-lg p-3 bg-red-50 border border-red-200">
-                <p className="text-sm font-medium text-red-900">{returnError}</p>
+                <p className="text-sm font-medium text-red-900">
+                  {returnError ?? resolvedReturn.error}
+                </p>
               </div>
             )}
           </div>
@@ -590,8 +806,9 @@ export function PurchasingPage() {
               disabled={
                 returning ||
                 !returnSupplierId ||
-                returnItems.length === 0 ||
-                returnItems.some((i) => i.quantity <= 0)
+                !!priorReturnsError ||
+                !!resolvedReturn.error ||
+                !resolvedReturn.ok?.lines.length
               }
             >
               {returning ? "جاري التسجيل..." : "تأكيد المرتجع وتسوية الحساب"}

@@ -71,10 +71,19 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
-import { buildWholesaleReturnLines, reconcileWholesaleReturn } from "@/lib/ledger/wholesale";
-import { ProductSearch } from "@/components/products/ProductSearch";
+import {
+  buildWholesaleReturnLines,
+  reconcileWholesaleReturn,
+  resolveWholesaleReturn,
+  WHOLESALE_RETURN_TYPE,
+} from "@/lib/ledger/wholesale";
+import { commitWholesaleReturn } from "@/lib/wholesaleReturnDoc";
 import { RotateCcw } from "lucide-react";
 import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
+import {
+  WholesaleInvoiceReturnPicker,
+  type ReturnSelection,
+} from "@/components/wholesale/WholesaleInvoiceReturnPicker";
 import { useSettingsStore } from "@/store/useSettingsStore";
 import { rateFor, shippedGovernorates } from "@/lib/shippingRates";
 
@@ -111,6 +120,11 @@ export function WholesalePage() {
     applyStockMoves,
     promoDiscounts,
   } = useBusinessStore();
+
+  // The returns already recorded against this store's invoices. Subscribed
+  // separately so a return written on another device re-derives the ceiling
+  // here without a reload.
+  const returnRecords = useBusinessStore((s) => s.returnRecords);
 
   const { costOf, refresh: refreshStock } = useStock();
 
@@ -258,47 +272,83 @@ export function WholesalePage() {
     setNewAddress({ governorate: "", city: "", region: "", details: "" });
   }
 
-  // ── مرتجع تاجر: a direct B2B return, settled against the client's account ──
+  // ── مرتجع تاجر: invoice-driven, settled against the client's account ───────
+  //
+  // The flow is التاجر → فواتيره → بند → كمية, and the selection below is a
+  // map of `invoiceId::lineKey → quantity` rather than a list of products.
+  // That is the whole point: there is no shape here that can hold a product
+  // the trader never bought.
   const [isReturnOpen, setIsReturnOpen] = useState(false);
   const [returnClientId, setReturnClientId] = useState("");
-  const [returnItems, setReturnItems] = useState<any[]>([]);
+  const [returnSelection, setReturnSelection] = useState<ReturnSelection>({});
   const [returnSettleInput, setReturnSettleInput] = useState("");
   const [returnError, setReturnError] = useState<string | null>(null);
   const [isReturning, setIsReturning] = useState(false);
 
-  const returnValue = useMemo(
-    () => round(returnItems.reduce((sum, i) => sum + i.quantity * i.unitPrice, 0)),
-    [returnItems],
+  /** This trader's invoices, newest first. The only source a return may draw on. */
+  const returnClientInvoices = useMemo(
+    () =>
+      wholesaleInvoices
+        .filter((i: any) => i.clientId === returnClientId)
+        .slice()
+        .sort(
+          (a: any, b: any) =>
+            new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime(),
+        ),
+    [wholesaleInvoices, returnClientId],
   );
+
+  /**
+   * The selection, proved against those invoices — or the reason it cannot be.
+   *
+   * Resolved on every render rather than only on submit so the operator sees
+   * the refusal while they can still fix it, and so the تسوية panel below is
+   * drawn from the same numbers the ledger will book. The submit path resolves
+   * again: this is a preview, never the authority.
+   */
+  const returnRequests = useMemo(
+    () =>
+      Object.entries(returnSelection)
+        .filter(([, qty]) => qty > 0)
+        .map(([key, quantity]) => {
+          const at = key.indexOf("::");
+          return { invoiceId: key.slice(0, at), lineKey: key.slice(at + 2), quantity };
+        }),
+    [returnSelection],
+  );
+
+  const resolvedReturn = useMemo(() => {
+    if (!returnClientId || returnRequests.length === 0) return { ok: null, error: null } as const;
+    try {
+      return {
+        ok: resolveWholesaleReturn({
+          clientId: returnClientId,
+          requests: returnRequests,
+          invoices: returnClientInvoices,
+          priorReturns: returnRecords,
+          costOf,
+        }),
+        error: null,
+      } as const;
+    } catch (e) {
+      return { ok: null, error: e instanceof Error ? e.message : String(e) } as const;
+    }
+  }, [returnRequests, returnClientId, returnClientInvoices, returnRecords, costOf]);
+
+  const returnValue = resolvedReturn.ok?.returnValue ?? 0;
   const returnClientDebt = returnClientId ? debtOf(returnClientId) : 0;
   const returnSettle = reconcileWholesaleReturn(returnValue, returnClientDebt, returnSettleInput);
 
   function openReturnModal() {
     setReturnClientId("");
-    setReturnItems([]);
+    setReturnSelection({});
     setReturnSettleInput("");
     setReturnError(null);
+    // The debt as it is NOW, not as the screen last loaded it. The تسوية panel
+    // decides between "this clears what they owe" and "hand them cash" from
+    // this one number, so a stale zero turns a repayment into a refund.
+    refreshDebt();
     setIsReturnOpen(true);
-  }
-
-  function addReturnItem(product: any) {
-    setReturnItems((prev) => {
-      const at = prev.findIndex((i) => i.productId === product.id);
-      if (at >= 0) {
-        const next = [...prev];
-        next[at] = { ...next[at], quantity: next[at].quantity + 1 };
-        return next;
-      }
-      return [
-        ...prev,
-        {
-          productId: product.id,
-          productName: product.name,
-          quantity: 1,
-          unitPrice: productWholesalePrice(product),
-        },
-      ];
-    });
   }
 
   async function submitReturn() {
@@ -306,12 +356,12 @@ export function WholesalePage() {
       setReturnError("اختر التاجر أولاً");
       return;
     }
-    if (returnItems.length === 0) {
-      setReturnError("أضف منتج واحد على الأقل للمرتجع");
+    if (resolvedReturn.error) {
+      setReturnError(resolvedReturn.error);
       return;
     }
-    if (returnItems.some((i) => i.quantity <= 0)) {
-      setReturnError("كل سطر لازم يكون كميته أكبر من صفر");
+    if (returnRequests.length === 0) {
+      setReturnError("اختر بند من فاتورة وحدد الكمية الراجعة");
       return;
     }
 
@@ -319,37 +369,59 @@ export function WholesalePage() {
     setIsReturning(true);
     setReturnError(null);
     try {
-      const client = wholesaleClients.find((c) => c.id === returnClientId);
-      await appendEvent({
-        kind: "return_confirmed",
-        actor: "جملة",
-        refType: "wholesale_client",
-        refId: returnClientId,
-        payload: {
-          type: "wholesale_return",
-          clientName: client?.companyName ?? "",
-          channel: "wholesale",
-          previousDebt: returnClientDebt,
-          returnValue,
-          paidNow: returnSettle.paidNow,
-        },
-        lines: buildWholesaleReturnLines({
-          items: returnItems.map((i) => ({
-            productId: i.productId,
-            quantity: i.quantity,
-            unitPrice: i.unitPrice,
-            unitCost: costOf(i.productId),
-          })),
-          clientId: returnClientId,
-          wallet: "inStoreSafe",
-          currentDebt: returnClientDebt,
-          paidNow: returnSettle.paidNow,
-        }),
+      // Resolved AGAIN, against the store as it is right now rather than as it
+      // was when this dialog last rendered. `useSubmitGate` stops a double
+      // click; it cannot stop a tab that has been open since before another
+      // device recorded a return against the same line. This re-read is what
+      // makes that second submission fail on the ceiling instead of returning
+      // the same units twice.
+      const resolved = resolveWholesaleReturn({
+        clientId: returnClientId,
+        requests: returnRequests,
+        invoices: returnClientInvoices,
+        priorReturns: useBusinessStore.getState().returnRecords,
+        costOf,
       });
+      const client = wholesaleClients.find((c) => c.id === returnClientId);
+
+      // Record first, money second, and the record undone if the money is
+      // refused — see `commitWholesaleReturn` for why this one flow runs the
+      // opposite way round to every other.
+      await commitWholesaleReturn(resolved, client, returnSettle.paidNow, () =>
+        appendEvent({
+          kind: "return_confirmed",
+          actor: "جملة",
+          refType: "wholesale_invoice",
+          // Points at the invoice, not the client: a return with no source
+          // document is exactly what this whole change exists to stop. Multi
+          // -invoice returns name the first and list the rest in the payload.
+          refId: resolved.lines[0].invoiceNumber,
+          payload: {
+            type: WHOLESALE_RETURN_TYPE,
+            clientId: returnClientId,
+            clientName: client?.companyName ?? "",
+            channel: "wholesale",
+            invoiceNumbers: [...new Set(resolved.lines.map((l) => l.invoiceNumber))],
+            previousDebt: returnClientDebt,
+            returnValue: resolved.returnValue,
+            paidNow: returnSettle.paidNow,
+          },
+          lines: buildWholesaleReturnLines({
+            resolved,
+            wallet: "inStoreSafe",
+            currentDebt: returnClientDebt,
+            paidNow: returnSettle.paidNow,
+          }),
+        }),
+      );
 
       // The goods are back. Bundles expand at the choke point.
       applyStockMoves(
-        returnItems.map((i) => ({ productId: i.productId, delta: i.quantity })),
+        resolved.lines.map((l) => ({
+          productId: l.productId,
+          delta: l.quantity,
+          variantName: l.variantName,
+        })),
       );
 
       refreshStock();
@@ -537,6 +609,39 @@ export function WholesalePage() {
       return;
     }
 
+    // The cost the goods leave at, frozen per line. Written onto the ledger
+    // event AND onto the invoice document below, so a return months later
+    // reverses COGS at the cost these units actually carried rather than at
+    // whatever the weighted average has drifted to since.
+    //
+    // A بوكس charges its COMPONENTS. `buildWholesaleInvoiceLines` has always
+    // known how, but this screen never told it the line WAS one — so a bundle
+    // sold through شاشة الجملة booked stock and cost against a virtual product
+    // that has neither, exactly the hole POS had before it started passing
+    // these fields.
+    const ledgerItems = invoiceItems.map((i: any) => {
+      const record: any = products.find((p: any) => p.id === i.productId);
+      const bundle =
+        record?.isBundle && record.bundleItems?.length
+          ? {
+              isBundle: true,
+              bundleItems: record.bundleItems.map((c: any) => ({
+                productId: c.productId,
+                quantity: c.quantity,
+                unitCost: costOf(c.productId),
+              })),
+            }
+          : {};
+      return {
+        productId: i.productId,
+        quantity: i.quantity,
+        unitPrice: i.wholesalePrice,
+        unitCost: costOf(i.productId),
+        variantName: i.variantName,
+        ...bundle,
+      };
+    });
+
     try {
       await appendEvent({
         kind: "sale",
@@ -550,12 +655,7 @@ export function WholesalePage() {
           itemCount: invoiceItems.length,
         },
         lines: buildWholesaleInvoiceLines({
-          items: invoiceItems.map((i) => ({
-            productId: i.productId,
-            quantity: i.quantity,
-            unitPrice: i.wholesalePrice,
-            unitCost: costOf(i.productId),
-          })),
+          items: ledgerItems,
           clientId: invoiceForm.clientId,
           wallet: invoiceForm.wallet,
           paidAmount: invoiceForm.paidAmount,
@@ -587,7 +687,15 @@ export function WholesalePage() {
       invoiceNumber: invNum,
       clientId: invoiceForm.clientId,
       clientName: client.companyName,
-      items: invoiceItems,
+      // The SAME cost and bundle recipe the ledger just booked, stored on the
+      // line. This is what a return reads back — see `resolveWholesaleReturn`.
+      items: invoiceItems.map((i: any, at: number) => ({
+        ...i,
+        unitCost: ledgerItems[at].unitCost,
+        ...(ledgerItems[at].isBundle
+          ? { isBundle: true, bundleItems: ledgerItems[at].bundleItems }
+          : {}),
+      })),
       // Both kept: the printed فاتورة shows what the goods were and what came
       // off, and `totalAmount` is what the client actually owes.
       goodsTotal,
@@ -1981,57 +2089,42 @@ export function WholesalePage() {
           </div>
 
           <div className="space-y-1.5 text-right">
-            <Label>المنتجات الراجعة</Label>
-            <ProductSearch
-              products={products}
-              onSelect={addReturnItem}
-              placeholder="ابحث عن المنتج الراجع..."
-              allowOutOfStock
+            <Label>الفاتورة والبنود الراجعة</Label>
+            <WholesaleInvoiceReturnPicker
+              invoices={returnClientInvoices}
+              priorReturns={returnRecords}
+              selection={returnSelection}
+              onSelectionChange={setReturnSelection}
+              clientMissing={!returnClientId}
             />
           </div>
 
-          {returnItems.length > 0 && (
+          {resolvedReturn.ok && resolvedReturn.ok.lines.length > 0 && (
             <div className="rounded-xl border border-border divide-y">
-              {returnItems.map((item) => (
-                <div key={item.productId} className="flex items-center justify-between gap-3 p-3">
-                  <span className="font-medium flex-1">{item.productName}</span>
-                  <span className="text-sm text-muted-foreground">
-                    {formatMoney(item.unitPrice)}
+              {resolvedReturn.ok.lines.map((line) => (
+                <div
+                  key={`${line.invoiceId}::${line.lineKey}`}
+                  className="flex flex-wrap items-center justify-between gap-3 p-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="font-medium">{line.productName}</span>
+                    {/* The source invoice stays on screen right up to the
+                        confirm button — two lines of the same product from two
+                        invoices must never look like one line. */}
+                    <p className="text-xs text-muted-foreground">
+                      من فاتورة {line.invoiceNumber} · {formatMoney(line.unitPrice)} للوحدة
+                    </p>
+                  </div>
+                  <span className="text-sm font-semibold">× {line.quantity}</span>
+                  <span className="w-24 text-left font-bold">
+                    {formatMoney(line.quantity * line.unitPrice)}
                   </span>
-                  <Input
-                    type="number"
-                    min={1}
-                    value={item.quantity}
-                    onChange={(e) =>
-                      setReturnItems((prev) =>
-                        prev.map((i) =>
-                          i.productId === item.productId
-                            ? { ...i, quantity: parseInt(e.target.value) || 0 }
-                            : i,
-                        ),
-                      )
-                    }
-                    className="w-20 text-center"
-                  />
-                  <span className="font-bold w-24 text-left">
-                    {formatMoney(item.quantity * item.unitPrice)}
-                  </span>
-                  <Button aria-label="حذف سطر الفاتورة"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 text-destructive"
-                    onClick={() =>
-                      setReturnItems((prev) => prev.filter((i) => i.productId !== item.productId))
-                    }
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
                 </div>
               ))}
             </div>
           )}
 
-          {returnItems.length > 0 && (
+          {resolvedReturn.ok && resolvedReturn.ok.lines.length > 0 && (
             <WholesaleReturnPanel
               debt={returnClientDebt}
               returnValue={returnValue}
@@ -2041,9 +2134,11 @@ export function WholesalePage() {
             />
           )}
 
-          {returnError && (
+          {(returnError || resolvedReturn.error) && (
             <div className="rounded-lg p-3 bg-red-50 border border-red-200">
-              <p className="text-sm font-medium text-red-900">{returnError}</p>
+              <p className="text-sm font-medium text-red-900">
+                {returnError ?? resolvedReturn.error}
+              </p>
             </div>
           )}
         </div>
@@ -2054,7 +2149,12 @@ export function WholesalePage() {
           </Button>
           <Button
             onClick={() => void submitReturn()}
-            disabled={isReturning || !returnClientId || returnItems.length === 0}
+            disabled={
+              isReturning ||
+              !returnClientId ||
+              !!resolvedReturn.error ||
+              !resolvedReturn.ok?.lines.length
+            }
           >
             {isReturning ? "جاري التسجيل..." : "تأكيد المرتجع وتسوية الحساب"}
           </Button>

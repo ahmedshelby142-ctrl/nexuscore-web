@@ -25,6 +25,7 @@ import { buildSaleLines } from "../src/lib/ledger/sales.ts";
 import {
   buildWholesaleReturnLines,
   reconcileWholesaleReturn,
+  resolveWholesaleReturn,
 } from "../src/lib/ledger/wholesale.ts";
 import { round } from "../src/lib/math.ts";
 import {
@@ -299,12 +300,39 @@ test("a return of nothing, or of a negative refund, is refused", () => {
 //   R < D    debt absorbs the return; P is a repayment and the till RECEIVES it
 //   R >= D   debt clears and the surplus is paid OUT; P is meaningless
 
+/**
+ * A return is no longer described, it is RESOLVED against a real invoice.
+ * These helpers go through the same resolver the screens do, so the money
+ * tests below now also prove the invoice link cannot be skipped.
+ */
+const wsInvoice = (id, items, extra = {}) => ({
+  id,
+  invoiceNumber: id,
+  clientId: "wc1",
+  items,
+  ...extra,
+});
+
+const wsResolve = (invoices, requests, priorReturns = []) =>
+  resolveWholesaleReturn({
+    clientId: "wc1",
+    requests,
+    invoices,
+    priorReturns,
+    costOf: () => 0,
+  });
+
 /** 5 × 100 = 500 returned, cost 60 each. */
-const wsItems = [{ productId: "p1", quantity: 5, unitPrice: 100, unitCost: 60 }];
+const wsSourceInvoice = wsInvoice("FJ-1", [
+  { id: "l1", productId: "p1", productName: "P1", quantity: 5, wholesalePrice: 100, unitCost: 60 },
+]);
+const wsResolved = wsResolve([wsSourceInvoice], [
+  { invoiceId: "FJ-1", lineKey: "l1", quantity: 5 },
+]);
+
 const wsReturn = (currentDebt, paidNow) =>
   buildWholesaleReturnLines({
-    items: wsItems,
-    clientId: "wc1",
+    resolved: wsResolved,
     wallet: "inStoreSafe",
     currentDebt,
     paidNow,
@@ -369,13 +397,12 @@ test("negative debt or negative payment is refused", () => {
 
 test("a wholesale return of nothing is refused", () => {
   assert.throws(
-    () =>
-      buildWholesaleReturnLines({
-        items: [{ productId: "p1", quantity: 0, unitPrice: 100, unitCost: 60 }],
-        clientId: "wc1",
-        currentDebt: 100,
-      }),
+    () => wsResolve([wsSourceInvoice], [{ invoiceId: "FJ-1", lineKey: "l1", quantity: 0 }]),
     /must be positive/,
+  );
+  assert.throws(
+    () => buildWholesaleReturnLines({ resolved: { clientId: "wc1", lines: [], returnValue: 0 }, currentDebt: 100 }),
+    /nothing resolved/,
   );
 });
 
@@ -383,8 +410,7 @@ test("money moving with no wallet named is refused", () => {
   assert.throws(
     () =>
       buildWholesaleReturnLines({
-        items: wsItems,
-        clientId: "wc1",
+        resolved: wsResolved,
         currentDebt: 0, // full cash refund, so a till is required
       }),
     /needs a wallet/,
@@ -393,26 +419,28 @@ test("money moving with no wallet named is refused", () => {
 
 test("a debt-absorbed return needs no wallet at all", () => {
   assert.doesNotThrow(() =>
-    buildWholesaleReturnLines({ items: wsItems, clientId: "wc1", currentDebt: 800 }),
+    buildWholesaleReturnLines({ resolved: wsResolved, currentDebt: 800 }),
   );
 });
 
 test("a returned بوكس credits the components", () => {
+  const boxInvoice = wsInvoice("FJ-BOX", [
+    {
+      id: "b1",
+      productId: "box",
+      productName: "بوكس",
+      quantity: 2,
+      wholesalePrice: 350,
+      unitCost: 0,
+      isBundle: true,
+      bundleItems: [
+        { productId: "shirt", quantity: 2, unitCost: 100 },
+        { productId: "pants", quantity: 1, unitCost: 150 },
+      ],
+    },
+  ]);
   const l = buildWholesaleReturnLines({
-    items: [
-      {
-        productId: "box",
-        quantity: 2,
-        unitPrice: 350,
-        unitCost: 0,
-        isBundle: true,
-        bundleItems: [
-          { productId: "shirt", quantity: 2, unitCost: 100 },
-          { productId: "pants", quantity: 1, unitCost: 150 },
-        ],
-      },
-    ],
-    clientId: "wc1",
+    resolved: wsResolve([boxInvoice], [{ invoiceId: "FJ-BOX", lineKey: "b1", quantity: 2 }]),
     currentDebt: 1000,
   });
   assert.equal(qtyOn(l, "stock", "shirt"), 4);
@@ -436,8 +464,7 @@ test("the panel and the ledger agree on the CTO numbers", () => {
 
   // And the builder, given that same paidNow, moves exactly those amounts.
   const l = buildWholesaleReturnLines({
-    items: [{ productId: "p1", quantity: 5, unitPrice: 100, unitCost: 60 }],
-    clientId: "wc1",
+    resolved: wsResolved,
     wallet: "inStoreSafe",
     currentDebt: 800,
     paidNow: r.paidNow,
@@ -474,9 +501,11 @@ test("every screen reaches the same answer from the same two numbers", () => {
   // them stops doing so.
   for (const [R, D, P] of [[500, 800, 150], [500, 800, 0], [500, 300, 0], [500, 500, 0], [500, 0, 0]]) {
     const r = reconcileWholesaleReturn(R, D, P);
+    const oneLine = wsInvoice("FJ-N", [
+      { id: "n1", productId: "p1", productName: "P1", quantity: 1, wholesalePrice: R, unitCost: 0 },
+    ]);
     const l = buildWholesaleReturnLines({
-      items: [{ productId: "p1", quantity: 1, unitPrice: R, unitCost: 0 }],
-      clientId: "wc1",
+      resolved: wsResolve([oneLine], [{ invoiceId: "FJ-N", lineKey: "n1", quantity: 1 }]),
       wallet: "inStoreSafe",
       currentDebt: D,
       paidNow: r.paidNow,

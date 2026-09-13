@@ -28,8 +28,6 @@ import logoLight from "@/assets/logo-light.png";
 import logoDark from "@/assets/logo-dark.png";
 import { useAuthStore } from "@/store/useAuthStore";
 import { getOperationMode } from "@/lib/supabase";
-import { clearStoreIdCache } from "@/services/api/storeContext";
-import { toAppRole } from "@/lib/roles";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import {
   BUSINESS_PROFILE_LABELS,
@@ -54,6 +52,10 @@ import { checkLeakedPassword, LEAKED_PASSWORD_MESSAGE_AR } from "@/lib/security"
 import { changePassword as serverChangePassword } from "@/lib/api/authServer";
 import { getMachineFingerprint } from "@/lib/machineId";
 import { getSupabaseClient } from "@/lib/supabase";
+import {
+  establishSupabaseSession,
+  signInWithPassword,
+} from "@/lib/auth/sessionWorkflow";
 
 const PROFILE_ICONS: Record<BusinessProfile, React.ElementType> = {
   omnichannel: Store,
@@ -65,7 +67,6 @@ const PROFILES: BusinessProfile[] = ["omnichannel", "retail_only", "ecommerce_on
 
 export function Login() {
   const navigate = useNavigate();
-  const setSession = useAuthStore((s) => s.setSession);
   const setBusinessType = useAuthStore((s) => s.setBusinessType);
   const setOperationMode = useAuthStore((s) => s.setOperationMode);
   const setBusinessProfile = useAuthStore((s) => s.setBusinessProfile);
@@ -169,19 +170,16 @@ export function Login() {
         return;
       }
 
-      // Braced only to keep this diff to the branch that was deleted.
-      {
-        // --- REAL CLOUD SUPABASE AUTH ---
+      if (authMode === "signup") {
+        // New-owner sign-up remains a desktop-only presentation and
+        // provisioning path. Once Supabase returns a session, it joins the
+        // same canonical session-establishment workflow as password sign-in.
         const sb = getSupabaseClient();
         if (!sb) {
           setLocalError("لم يتم العثور على إعدادات السحابة");
           return;
         }
 
-        let userSession: any = null;
-        let userId = "";
-
-        if (authMode === "signup") {
           // Refuse a password that is already in a public breach corpus.
           //
           // Supabase does this as a project setting, but only on a paid plan.
@@ -193,16 +191,16 @@ export function Login() {
           // Before `signUp`, not after: an account created with a breached
           // password is already a liability, and Supabase has no undo that
           // leaves the address free to register again cleanly.
-          if (await checkLeakedPassword(password.trim())) {
-            setLocalError(LEAKED_PASSWORD_MESSAGE_AR);
-            setError({ code: "invalid_credentials", message: LEAKED_PASSWORD_MESSAGE_AR });
-            return;
-          }
+        if (await checkLeakedPassword(password.trim())) {
+          setLocalError(LEAKED_PASSWORD_MESSAGE_AR);
+          setError({ code: "invalid_credentials", message: LEAKED_PASSWORD_MESSAGE_AR });
+          return;
+        }
 
-          const { data, error } = await sb.auth.signUp({
-            email: username.trim(),
-            password: password.trim(),
-            options: {
+        const { data, error } = await sb.auth.signUp({
+          email: username.trim(),
+          password: password.trim(),
+          options: {
               // Without this, the confirmation link goes to whatever Site URL
               // the Supabase project happens to hold — one fixed origin. Sign
               // up from localhost, from a preview deployment, or from the
@@ -213,29 +211,15 @@ export function Login() {
               // The origin they signed up from is the origin they should come
               // back to. It still has to be listed under Redirect URLs in the
               // dashboard; Supabase refuses anything that is not.
-              emailRedirectTo: window.location.origin,
-            },
-          });
-          if (error) {
-            setLocalError(error.message);
-            return;
-          }
-          userSession = data.session;
-          userId = data.user?.id || "";
-        } else {
-          const { data, error } = await sb.auth.signInWithPassword({
-            email: username.trim(),
-            password: password.trim(),
-          });
-          if (error) {
-            setLocalError(error.message);
-            return;
-          }
-          userSession = data.session;
-          userId = data.user?.id || "";
+            emailRedirectTo: window.location.origin,
+          },
+        });
+        if (error) {
+          setLocalError(error.message);
+          return;
         }
 
-        if (!userSession) {
+        if (!data.session || !data.user?.id) {
           // `signUp` returns no session when the project requires email
           // confirmation (`mailer_autoconfirm: false`). The account EXISTS at
           // this point — it is simply unconfirmed — so telling the user to
@@ -249,97 +233,34 @@ export function Login() {
           return;
         }
 
-        // The role is the SERVER's answer, never a literal.
-        //
-        // This used to hardcode `role: "owner"`, so every cloud login — every
-        // cashier, every accountant — arrived holding full admin in the client.
-        // `store_members.role` is the same column the RLS policies read, so the
-        // screen a user sees and the rows they may touch now come from one fact.
-        //
-        // A missing membership row means the account is not attached to this
-        // shop yet; `toAppRole(null)` lands on the least privileged role rather
-        // than assuming the best case.
-        let { data: membership } = await sb
-          .from("store_members")
-          .select("role")
-          .eq("user_id", userId)
-          .maybeSingle();
-
-        // No membership means this account belongs to no shop yet — which is
-        // where EVERY new signup landed: authenticated, but with no store, no
-        // licence and every write refused. It could not fix itself from the
-        // client either: `stores` has no INSERT policy, and `store_members`
-        // writes require has_role(store_id,'ADMIN') — the very row being
-        // created. `claim_store` is the SECURITY DEFINER routine that exists to
-        // break that deadlock; nothing had called it since the desktop build
-        // was removed, and it inserted role 'owner', which its own CHECK
-        // constraint rejects. Both are fixed (migration 014).
-        //
-        // Idempotent: an existing member gets their current store back, so a
-        // retry or a second tab can never mint a second shop.
-        if (!membership) {
-          const { data: claimed, error: claimError } = await sb.rpc("claim_store", {
-            local_store_id: crypto.randomUUID(),
-          });
-          if (claimError) {
-            setLocalError(
-              `تم تسجيل الدخول، لكن تعذّر ربط الحساب بمتجر. ${claimError.message}`,
-            );
-            return;
-          }
-          if (claimed) {
-            const re = await sb
-              .from("store_members")
-              .select("role")
-              .eq("user_id", userId)
-              .maybeSingle();
-            membership = re.data;
-          }
-        }
-
-        setSession({
-          token: userSession.access_token,
-          expires_at: new Date(userSession.expires_at ? userSession.expires_at * 1000 : Date.now() + 3600000) as any,
-          machine_id: "cloud-device",
-          user: {
-            id: userId,
-            username: username.trim(),
-            role: toAppRole(membership?.role),
-            is_active: true,
-            created_at: new Date() as any,
-            must_change_password: false,
-          }
+        const result = await establishSupabaseSession({
+          accessToken: data.session.access_token,
+          expiresAt: data.session.expires_at,
+          userId: data.user.id,
+          username: username.trim(),
+          businessProfile: selectedProfile,
+          missingMembership: "claim",
+          hydrateCloudData: true,
         });
-
-        // --- Tenancy ---
-        // There is nothing to claim or re-tag: this browser has no local store
-        // id of its own, and `store_members` is the only answer to "which store
-        // is this?". Dropping the cache is all that login has to do.
-        try {
-          clearStoreIdCache();
-          // The store is known now, so reference data can be read. Not awaited:
-          // the dashboard renders and fills in as the tables land.
-          void import("@/services/cloudHydrate")
-            .then((m) => m.hydrateAll())
-            .catch((e) => console.error("hydrate after login failed:", e));
-        } catch (err) {
-          console.error("Failed to resolve tenancy:", err);
+        if (!result.success) {
+          setLocalError(result.message);
+          setError({ code: result.code, message: result.message });
+          return;
+        }
+      } else {
+        const result = await signInWithPassword({
+          email: username,
+          password,
+          businessProfile: selectedProfile,
+          missingMembership: "claim",
+          hydrateCloudData: true,
+        });
+        if (!result.success) {
+          setLocalError(result.message);
+          setError({ code: result.code, message: result.message });
+          return;
         }
       }
-
-      // Apply the business-profile preferences.
-      setBusinessType(BUSINESS_PROFILE_TO_BUSINESS_TYPE[selectedProfile]);
-      setOperationMode(opMode);
-      setBusinessProfile(selectedProfile);
-      setBusinessMode(BUSINESS_TYPE_TO_MODE[BUSINESS_PROFILE_TO_BUSINESS_TYPE[selectedProfile]]);
-
-      // Read the cloud so this device starts the session as a mirror of the
-      // server. Nothing is pushed first — there is no local queue that could be
-      // holding work. Deliberately not awaited: a slow read must not hold the
-      // user on the login screen.
-      void import("@/services/cloudHydrate")
-        .then((m) => m.hydrateAll())
-        .catch((e) => console.error("[Login] hydrate failed:", e));
 
       navigate("/", { replace: true });
     } catch (e) {

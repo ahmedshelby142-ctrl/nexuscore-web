@@ -35,7 +35,27 @@ import { claimOrder, releaseOrder } from "@/lib/orderLifecycle";
 import { customerIdOf } from "@/lib/customers";
 import { OrderSearch } from "@/components/ecommerce/OrderSearch";
 import { buildReturnConfirmedLines, buildOrderRTOLines, buildOrderDeliveredLines } from "@/lib/ledger/orders";
-import { rateFor } from "@/lib/shippingRates";
+import {
+  returnedValue,
+  priceDifference,
+  remainingQuantities,
+  remainingUnits,
+  returnableUnits,
+  returnTypeLabel,
+  exchangedItems,
+  exchangedItemsLabel,
+  movementFor,
+} from "@/lib/exchange";
+import {
+  rateFor,
+  countsAsWastedTrip,
+  shippingBorneBy,
+  RETURN_CAUSES,
+  RETURN_CAUSE_LABELS,
+  RETURN_CAUSE_HINTS,
+  COUNTER_RETURN_CAUSE_HINTS,
+  type ReturnCause,
+} from "@/lib/shippingRates";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
 import { courierIdOf } from "@/lib/courierBatch";
 import { buildSaleLines } from "@/lib/ledger/sales";
@@ -65,6 +85,14 @@ interface ReturnEntry {
   unit_price: number;
   /** Cost snapshotted when the order took the stock out. */
   unit_cost: number;
+  variant_name?: string;
+  /**
+   * A بوكس comes back as ONE unit at the price it was sold for, and expands to
+   * its components only when the ledger moves the stock — see `returnableUnits`.
+   * `unit_cost` is 0 for these; the recipe below carries the real cost.
+   */
+  is_bundle?: boolean;
+  bundle_items?: { productId: string; quantity: number; unitCost: number }[];
 }
 
 export function Returns() {
@@ -98,6 +126,11 @@ export function Returns() {
   const returnedOrders = orders.filter((o) => o.status === "returned" && !o.returnConfirmedAt);
   const [confirmDialog, setConfirmDialog] = useState<{ open: boolean; orderId: string }>({ open: false, orderId: "" });
   const [confirmName, setConfirmName] = useState("");
+  // Who caused the courier return. Defaults to "unknown" so a rushed
+  // confirmation never records blame the operator did not actually enter.
+  const [confirmCause, setConfirmCause] = useState<ReturnCause>("unknown");
+  // …and who caused the counter return/exchange below.
+  const [counterCause, setCounterCause] = useState<ReturnCause>("unknown");
   
 
   // One in-flight write at a time; see `useRunOnce`.
@@ -133,7 +166,12 @@ export function Returns() {
 
     try {
       const returnType = order.returnType ?? "refund";
-      
+      // Decided once: the ledger fee, the wasted-trip debt and the stored
+      // document all read these, so they cannot disagree.
+      const movement = movementFor(order, orders);
+      const cause = confirmCause;
+      const feeBorneBy = shippingBorneBy(cause, movement);
+
       if (returnType === "rto") {
         await appendEvent({
           kind: "rto_confirmed",
@@ -152,6 +190,8 @@ export function Returns() {
             // this screen booked no shipping cost at all, so the same return
             // cost the shop money through الطلبات and nothing through here.
             returnFee: rateFor(shippingRates, order.governorate, "return"),
+            // A refusal the customer caused is recovered from them, not absorbed.
+            feeBorneBy,
             courierId: courierIdOf(order),
             // The deposit is never refunded — store policy.
             forfeitedDeposit: Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0),
@@ -195,8 +235,10 @@ export function Returns() {
             refundAmount: order.totalAmount,
             wallet: "inStoreSafe",
             revenueAmount: order.totalAmount,
-            returnFee: rateFor(shippingRates, order.governorate, "return"),
-            movement: "return",
+            returnFee: rateFor(shippingRates, order.governorate, movement),
+            movement,
+            // Responsibility, not movement, decides who pays.
+            feeBorneBy,
             // `courierIdOf`, not `order.courierId`: the canonical resolver falls
             // back to "default", which is the subject every other screen books
             // this courier under. The raw field is often undefined.
@@ -210,9 +252,20 @@ export function Returns() {
       }
 
       // Their next order is quoted at double shipping — see `shippingFeeFor`.
-      if (customerId) useCustomerStore.getState().recordReturn(customerId);
+      // Unless this was an EXCHANGE, which wastes no trip: the courier carried
+      // the replacement out and this back in one journey. See
+      // `countsAsWastedTrip`. An RTO very much does waste one, and still counts.
+      // AWAITED, with a deliberate `.catch` — same reasoning as the identical
+      // call in OrdersPage: the return is already in the ledger, so a refused
+      // debt increment must not report the return as failed.
+      if (customerId && countsAsWastedTrip(cause, movement)) {
+        await useCustomerStore.getState().recordReturn(customerId).catch(() => {});
+      }
 
-      await useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date().toISOString() as unknown as Date });
+      await useOrderStore.getState().updateOrder(order.id, {
+        returnConfirmedAt: new Date().toISOString() as unknown as Date,
+        return_cause: cause,
+      });
       
       // Back on the shelf — every line, variant or plain. `variantName` now
       // rides on `stockItems`; the name split is the fallback for orders
@@ -243,17 +296,31 @@ export function Returns() {
 
   const selectOrder = (order: EcommerceOrder) => {
     setSelectedOrder(order);
+    // What is still WITH THE CUSTOMER, not what was ordered — see
+    // `remainingOnOrder`. Computed from the order in hand rather than the memo,
+    // which is still looking at the previously selected order at this point.
+    // Bundle-aware: a بوكس is ONE returnable unit at the price it was sold for,
+    // not its components at the `unitPrice: 0` they carry in `stockItems`.
+    // Building from `stockItems` directly is what made a bundle return refund
+    // nothing — see `returnableUnits`.
+    const left = remainingUnits(order, returnRecords);
     setReturnEntries(
-      (order.stockItems ?? []).map((item) => ({
-        product_id: item.productId,
-        product_name: item.productName,
-        quantity: 0,
-        ordered: item.quantity,
-        unit_price: item.unitPrice,
-        // The cost the goods left at. Returning them at today's average would
-        // silently move inventory value that never actually moved.
-        unit_cost: item.unitCost ?? 0,
-      })),
+      returnableUnits(order)
+        .map((unit) => ({
+          product_id: unit.key,
+          product_name: unit.productName,
+          variant_name: unit.variantName,
+          quantity: 0,
+          ordered: left.get(unit.key) ?? 0,
+          unit_price: unit.unitPrice,
+          // The cost the goods left at. Returning them at today's average would
+          // silently move inventory value that never actually moved.
+          unit_cost: unit.unitCost,
+          is_bundle: unit.isBundle,
+          bundle_items: unit.bundleItems,
+        }))
+        // A line with nothing left is not a line to offer a quantity box for.
+        .filter((e) => e.ordered > 0),
     );
   };
 
@@ -261,8 +328,8 @@ export function Returns() {
     setReturnEntries((prev) =>
       prev.map((e) =>
         e.product_id === product_id
-          ? // Never more than were bought — returning 5 of an order of 2 would
-            // invent stock out of nothing.
+          ? // Never more than are still with the customer — returning 5 of an
+            // order of 2, or returning the same 2 twice, invents stock.
             { ...e, quantity: Math.min(Math.max(0, qty), e.ordered) }
           : e,
       ),
@@ -274,30 +341,37 @@ export function Returns() {
   /**
    * What the customer actually PAID for the lines being returned.
    *
-   * `unit_price` on a line is the list price; a discount lives at the ORDER
-   * level (`totalAmount` is the goods already net of it). Refunding
-   * `quantity × unit_price` therefore hands back more than was ever taken:
-   * two items at 500 bought with 10% off cost 900, so returning one is worth
-   * 450 — not 500. The shop paid the promo twice.
-   *
-   * Scaling by the order's own ratio keeps a partial return proportional and
-   * makes a full return add back up to exactly `totalAmount`.
+   * The discount-scaling that used to live here inline is now
+   * `lib/exchange.returnedValue`, shared with the e-commerce screen — which had
+   * no scaling at all and refunded the list price, so the same swap was worth
+   * different money depending on which screen the operator happened to open.
    */
-  const discountFactor = useMemo(() => {
-    const listTotal = (selectedOrder?.stockItems ?? []).reduce(
-      (sum: number, i: any) => sum + i.unitPrice * i.quantity,
-      0,
-    );
-    const paidTotal = selectedOrder?.totalAmount;
-    if (!listTotal || !Number.isFinite(paidTotal) || paidTotal >= listTotal) return 1;
-    return paidTotal / listTotal;
-  }, [selectedOrder]);
-
   const totalReturnValue = round(
-    returnEntries.reduce((s, e) => s + e.quantity * e.unit_price * discountFactor, 0),
+    returnedValue(
+      selectedOrder ?? {},
+      returnEntries.map((e) => ({
+        productId: e.product_id,
+        quantity: e.quantity,
+        unitPrice: e.unit_price,
+      })),
+    ),
   );
   const exchangeTotal = exchangeProduct ? productPrice(exchangeProduct) * exchangeQty : 0;
-  const priceDiff = exchangeTotal - totalReturnValue;
+  const priceDiff = priceDifference(exchangeTotal, totalReturnValue);
+
+  /**
+   * ## Why `ordered` on an entry is no longer the ordered quantity
+   *
+   * This screen returns individual lines and capped each at the quantity
+   * ORDERED, re-read from the order every time. Nothing anywhere subtracted
+   * what had already come back, so the same delivered order could be returned
+   * over and over — stock added and revenue reversed on every pass, from one
+   * delivery. `runOnce` does not catch that: those are separate, deliberate
+   * submissions, not a double-click.
+   *
+   * `selectOrder` now seeds each entry with what is still WITH THE CUSTOMER,
+   * from `remainingQuantities`, and drops the lines that are fully back.
+   */
 
   const handleReturn = async () => runOnce(async () => {
     if (!selectedOrder) return;
@@ -311,7 +385,13 @@ export function Returns() {
       product_id: e.product_id,
       product_name: e.product_name,
       quantity: e.quantity,
-      refund_amount: round(e.quantity * e.unit_price * discountFactor),
+      // Same valuation as `totalReturnValue` above, through the same function,
+      // so the record and the ledger cannot state different refunds.
+      refund_amount: round(
+        returnedValue(selectedOrder ?? {}, [
+          { productId: e.product_id, quantity: e.quantity, unitPrice: e.unit_price },
+        ]),
+      ),
     }));
 
     const returnLineItems = itemsToReturn.map((e) => ({
@@ -319,6 +399,12 @@ export function Returns() {
       quantity: e.quantity,
       unitPrice: e.unit_price,
       unitCost: e.unit_cost,
+      // `stockLinesFor` / `cogsLinesFor` expand these, so a بوكس puts its
+      // COMPONENTS back on the shelf and reverses THEIR cost — while the
+      // revenue reversed above is the box's own price.
+      ...(e.is_bundle && e.bundle_items?.length
+        ? { isBundle: true, bundleItems: e.bundle_items }
+        : {}),
     }));
 
     // LTV comes down for the CRM customer this order belongs to, matched the
@@ -376,6 +462,11 @@ export function Returns() {
           // order, not the order. Withholding a whole-order deposit against a
           // single item would charge the customer for goods they kept.
           returnFee: 0,
+          // Stated rather than defaulted. With no fee this writes no line
+          // either way, but the two movements are not the same event, and a
+          // screen that says "return" while doing a swap is one fee away from
+          // booking the customer's courier trip as the shop's expense.
+          movement: exchangeMode ? "exchange" : "return",
           customerId: customer?.id,
           channel: "ecommerce",
         }),
@@ -449,6 +540,7 @@ export function Returns() {
           },
           financial_difference: -totalReturnValue,
           processed_by: "owner",
+          return_cause: counterCause,
           notes: notes.trim(),
         });
         refreshStock();
@@ -481,18 +573,43 @@ export function Returns() {
       returned_items,
       ...(exchangeMode
         ? {
-            exchanged_item: {
-              product_id: exchange_product_id,
-              product_name: exchangeProduct?.name || "",
-              quantity: exchangeQty,
-              price: productPrice(exchangeProduct),
-            },
+            // Array-shaped, matching the POS writer. One item today — this
+            // picker offers a single replacement — but the two writers must
+            // not disagree about the shape of the same column.
+            exchanged_item: [
+              {
+                product_id: exchange_product_id,
+                product_name: exchangeProduct?.name || "",
+                quantity: exchangeQty,
+                price: productPrice(exchangeProduct),
+              },
+            ],
           }
         : {}),
       financial_difference: exchangeMode ? priceDiff : -totalReturnValue,
       processed_by: "owner",
+      return_cause: counterCause,
       notes: notes.trim(),
     });
+
+    // The cause the operator picked belongs on the ORDER too, not only on the
+    // return record. Only the courier path stamped it, so a counter return for
+    // a shop-caused reason left `orders.return_cause = 'unknown'` while its
+    // record said `shop` — two documents disagreeing about the same fact, and
+    // every "who caused our returns" report reading the order under-counted.
+    //
+    // Deliberately NOT `status` or `returnConfirmedAt`: this screen returns
+    // individual LINES, so a partial return must not mark the whole order
+    // returned. The quantity ceiling is derived from the records
+    // (`remainingUnits`), not from a flag on the order.
+    //
+    // `.catch` and not awaited into the main try: the return is already in the
+    // ledger and the goods are already back, so a refused stamp must not report
+    // the return as failed.
+    await useOrderStore
+      .getState()
+      .updateOrder(selectedOrder.id, { return_cause: counterCause } as never)
+      .catch(() => {});
 
     refreshStock();
     toast.success(
@@ -512,6 +629,9 @@ export function Returns() {
       setExchangeProductId("");
       setExchangeQty(1);
       setNotes("");
+      // Back to "unknown", so the next return starts unclassified rather than
+      // inheriting the last operator's answer.
+      setCounterCause("unknown");
     } catch (e) {
       // The ledger already has the return — the goods ARE back on the shelf.
       // Only the record document failed, so the screen must not claim success
@@ -533,7 +653,7 @@ export function Returns() {
       title: "سجل المرتجعات والاستبدال",
       columns: [
         { label: "التاريخ", accessor: (r: ReturnRecord) => format(new Date(r.created_at), "dd/MM/yyyy HH:mm") },
-        { label: "النوع", accessor: (r: ReturnRecord) => (r.type === "return" ? "إرجاع" : "استبدال"), align: "center" },
+        { label: "النوع", accessor: (r: ReturnRecord) => returnTypeLabel(r.type), align: "center" },
         { label: "العميل", accessor: (r: ReturnRecord) => r.customer_name },
         { label: "الهاتف", accessor: (r: ReturnRecord) => r.customer_phone, align: "center" },
         { label: "عدد المنتجات", accessor: (r: ReturnRecord) => String(r.returned_items.length), align: "center" },
@@ -545,7 +665,8 @@ export function Returns() {
         },
         {
           label: "المنتج البديل",
-          accessor: (r: ReturnRecord) => r.exchanged_item?.product_name ?? "—",
+          // Every replacement item, not just the first — see `exchangedItems`.
+          accessor: (r: ReturnRecord) => exchangedItemsLabel(r),
         },
         {
           label: "فرق السعر",
@@ -812,6 +933,26 @@ export function Returns() {
             </div>
           )}
 
+          {/* Responsibility. Decides who bears any shipping on this movement
+              and whether it counts as a wasted trip against the customer. */}
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground">مين سبب الإرجاع/الاستبدال؟</label>
+            <div className="flex gap-2">
+              {RETURN_CAUSES.map((c) => (
+                <Button
+                  key={c}
+                  type="button"
+                  size="sm"
+                  variant={counterCause === c ? "default" : "outline"}
+                  onClick={() => setCounterCause(c)}
+                >
+                  {RETURN_CAUSE_LABELS[c]}
+                </Button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">{COUNTER_RETURN_CAUSE_HINTS[counterCause]}</p>
+          </div>
+
           {/* Notes */}
           <div className="space-y-1.5">
             <label className="text-xs text-muted-foreground">ملاحظات (اختياري)</label>
@@ -859,15 +1000,15 @@ export function Returns() {
                 >
                   <div className="flex-1 min-w-0">
                     <p className="font-medium">
-                      {rec.type === "return" ? "إرجاع" : "استبدال"} — {rec.customer_name}
+                      {returnTypeLabel(rec.type)} — {rec.customer_name}
                     </p>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       {rec.returned_items.length} منتج —{" "}
                       {rec.returned_items.reduce((s, i) => s + i.refund_amount, 0).toLocaleString()}{" "}
                       ج.م
                       {rec.type === "exchange" &&
-                        rec.exchanged_item &&
-                        ` ← ${rec.exchanged_item.product_name}`}
+                        exchangedItems(rec).length > 0 &&
+                        ` ← ${exchangedItemsLabel(rec)}`}
                       {rec.pending_replacement && (
                         <span className="mr-2 text-amber-700 font-medium">
                           — بديل معلّق: {rec.pending_replacement.product_name} ×{" "}
@@ -934,7 +1075,25 @@ export function Returns() {
               placeholder="اسم العميل"
               autoFocus
             />
-            
+            {/* Responsibility, asked rather than guessed — it decides who pays
+                the courier and whether a wasted trip lands on the customer. */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">مين سبب المرتجع؟</label>
+              <div className="flex gap-2">
+                {RETURN_CAUSES.map((c) => (
+                  <Button
+                    key={c}
+                    type="button"
+                    size="sm"
+                    variant={confirmCause === c ? "default" : "outline"}
+                    onClick={() => setConfirmCause(c)}
+                  >
+                    {RETURN_CAUSE_LABELS[c]}
+                  </Button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">{RETURN_CAUSE_HINTS[confirmCause]}</p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmDialog({ open: false, orderId: "" })} disabled={isWorking}>

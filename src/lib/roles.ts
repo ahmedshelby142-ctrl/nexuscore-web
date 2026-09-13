@@ -148,3 +148,30 @@ export function canAccess(role: string | null | undefined, path: string): boolea
 export function homeFor(role: string | null | undefined): string {
   return ROLE_HOME[toAppRole(role)];
 }
+
+/**
+ * May this role raise a wholesale invoice?
+ *
+ * Mirrors the live `write_wholesale_invoices` / `write_wholesale_clients`
+ * policies, which allow `ADMIN` and `ACCOUNTANT` only.
+ *
+ * ## Why this is not just another route entry
+ *
+ * وضع الجملة is not a screen — it is a MODE inside نقطة البيع and inside
+ * إدارة الطلبات, both of which `POS_ECOMMERCE` and `ECOMMERCE_ONLY` are
+ * supposed to open. So `canAccess` had nothing to say about it and neither
+ * screen asked anything: a cashier could complete a wholesale sale, the ledger
+ * would accept the `sale` event (its INSERT policy lists all four roles), and
+ * then Postgres would refuse the `wholesale_invoices` row. The money moved and
+ * the document did not — accounting with no document, and no invoice for the
+ * trader's return to ever be driven by.
+ *
+ * The policy is the authority, so the UI is brought to it rather than the
+ * other way round. No permission is invented here: this states in TypeScript
+ * what the database already enforces, so the refusal arrives before the
+ * ledger write instead of after it.
+ */
+export function canSellWholesale(role: string | null | undefined): boolean {
+  const app = toAppRole(role);
+  return app === "ADMIN" || app === "ACCOUNTANT";
+}

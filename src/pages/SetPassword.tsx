@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { KeyRound, ShieldCheck } from "lucide-react";
-import { getSupabaseClient } from "@/lib/supabase";
-import { checkLeakedPassword, LEAKED_PASSWORD_MESSAGE_AR } from "@/lib/security";
-import { toAppRole, homeFor, ROLE_LABELS } from "@/lib/roles";
-import { useAuthStore } from "@/store/useAuthStore";
+import { homeFor, ROLE_LABELS } from "@/lib/roles";
+import {
+  completePasswordSetup,
+  readPasswordSetupSession,
+} from "@/lib/auth/sessionWorkflow";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,7 +39,6 @@ import { Label } from "@/components/ui/label";
  */
 export function SetPassword() {
   const navigate = useNavigate();
-  const setSession = useAuthStore((s) => s.setSession);
   const runOnce = useRunOnce();
 
   /** null while we are still asking supabase-js whether the link carried one. */
@@ -52,19 +52,12 @@ export function SetPassword() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const sb = getSupabaseClient();
-      if (!sb) {
-        if (!cancelled) {
-          setError("الإعداد ناقص: التطبيق مش موصول بالسحابة.");
-          setChecking(false);
-        }
-        return;
-      }
       // supabase-js has already consumed the URL fragment by the time this
-      // runs; getSession() is how we find out whether it found anything.
-      const { data } = await sb.auth.getSession();
+      // runs; the shared workflow reads the resulting session.
+      const setupSession = await readPasswordSetupSession();
       if (cancelled) return;
-      setEmail(data.session?.user.email ?? null);
+      setEmail(setupSession.email);
+      setError(setupSession.error);
       setChecking(false);
     })();
     return () => {
@@ -74,9 +67,6 @@ export function SetPassword() {
 
   const submit = async () =>
     runOnce(async () => {
-      const sb = getSupabaseClient();
-      if (!sb) return;
-
       if (password.length < 8) {
         setError("الباسورد لازم يكون 8 حروف على الأقل.");
         return;
@@ -89,58 +79,15 @@ export function SetPassword() {
       setError(null);
       setSaving(true);
       try {
-        // Same guard as signup. It fails open on an outage, so it can never
-        // lock someone out of finishing their own onboarding.
-        if (await checkLeakedPassword(password)) {
-          setError(LEAKED_PASSWORD_MESSAGE_AR);
+        // This shared workflow retains the invite/recovery security boundary:
+        // it never calls claim_store and requires the existing membership.
+        const result = await completePasswordSetup(password);
+        if (!result.success) {
+          setError(result.message);
           return;
         }
 
-        const { data: updated, error: updateError } = await sb.auth.updateUser({ password });
-        if (updateError || !updated?.user) {
-          setError(
-            updateError?.message
-              ? `تعذّر حفظ الباسورد: ${updateError.message}`
-              : "تعذّر حفظ الباسورد.",
-          );
-          return;
-        }
-
-        // Which shop, and which role — from the table, not from the link.
-        const { data: membership } = await sb
-          .from("store_members")
-          .select("role")
-          .eq("user_id", updated.user.id)
-          .maybeSingle();
-
-        if (!membership) {
-          // Deliberately NOT claim_store. See the note at the top.
-          setError(
-            "الحساب اتعمل بس مش مربوط بأي محل. كلّم صاحب المحل يبعتلك دعوة تاني.",
-          );
-          return;
-        }
-
-        const { data: session } = await sb.auth.getSession();
-        const role = toAppRole(membership.role);
-        setSession({
-          token: session.session?.access_token ?? "",
-          expires_at: new Date(
-            session.session?.expires_at
-              ? session.session.expires_at * 1000
-              : Date.now() + 3600000,
-          ) as never,
-          machine_id: "cloud-device",
-          user: {
-            id: updated.user.id,
-            username: updated.user.email ?? "",
-            role,
-            is_active: true,
-            created_at: new Date() as never,
-          },
-        } as never);
-
-        navigate(homeFor(role), { replace: true });
+        navigate(homeFor(result.role), { replace: true });
       } finally {
         setSaving(false);
       }

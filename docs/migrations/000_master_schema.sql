@@ -332,6 +332,9 @@ CREATE TABLE IF NOT EXISTS public.return_records (
   returned_items       JSONB NOT NULL DEFAULT '[]'::JSONB,
   exchanged_item       JSONB,
   pending_replacement  JSONB,
+  -- Migration 026. Who caused it — see orders.return_cause.
+  return_cause         TEXT NOT NULL DEFAULT 'unknown'
+                       CHECK (return_cause IN ('customer','shop','unknown')),
   financial_difference NUMERIC NOT NULL DEFAULT 0,
   processed_by         TEXT NOT NULL DEFAULT '',
   notes                TEXT,
@@ -395,6 +398,15 @@ CREATE TABLE IF NOT EXISTS public.orders (
   "returnType"        TEXT,
   "isExchange"        BOOLEAN DEFAULT FALSE,
   original_order_id   TEXT,
+  -- Migration 026. The repeat-returner surcharge is cost RECOVERY, so it has
+  -- to be possible to tell that this order already charged the doubled fee.
+  -- Without the flag the debt could never be paid down and the surcharge was
+  -- permanent — the one thing the rule says it must not be.
+  "shippingPenaltyApplied" BOOLEAN NOT NULL DEFAULT FALSE,
+  -- Migration 026. WHO caused the return/exchange. `returnType` says when the
+  -- goods came back and the movement says what travelled; neither says fault.
+  return_cause        TEXT NOT NULL DEFAULT 'unknown'
+                      CHECK (return_cause IN ('customer','shop','unknown')),
   -- Set when an online order was delivered as a wholesale sale, so its return
   -- settles against a trader's account instead of refunding cash.
   "wholesaleClientId" TEXT,

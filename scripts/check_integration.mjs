@@ -26,6 +26,7 @@ import { buildSaleLines } from "../src/lib/ledger/sales.ts";
 import {
   buildPurchaseLines,
   buildSupplierReturnLines,
+  resolveSupplierReturn,
   averageCost,
 } from "../src/lib/ledger/purchases.ts";
 import {
@@ -206,9 +207,20 @@ test("a full return leaves the books where they started", () => {
 });
 
 test("a supplier return unwinds the buying side without touching revenue", () => {
+  // Resolved off the receipt that brought the goods in, at ITS cost.
   const back = buildSupplierReturnLines({
-    items: [{ productId: "p1", quantity: 10, unitCost: 150 }],
-    supplierId: "s1",
+    resolved: resolveSupplierReturn({
+      supplierId: "s1",
+      requests: [{ invoiceId: "inv-i", lineKey: "li", quantity: 10 }],
+      invoices: [
+        {
+          id: "inv-i",
+          invoiceNumber: "FM-I",
+          supplierId: "s1",
+          items: [{ id: "li", productId: "p1", productName: "P1", quantity: 20, unitCost: 150 }],
+        },
+      ],
+    }),
     wallet: "inStoreSafe",
     currentDebt: 1500,
   });

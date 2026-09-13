@@ -21,6 +21,7 @@ import {
   buildSupplierPaymentLines,
   buildSupplierReturnLines,
   reconcileSupplierReturn,
+  resolveSupplierReturn,
   averageCost,
   purchaseTotal,
 } from "../src/lib/ledger/purchases.ts";
@@ -144,13 +145,29 @@ test("purchaseTotal agrees with the lines it will become", () => {
 
 // ── §2 the supplier return, reconciled ──────────────────────────────────────
 
-/** 5 units that cost us 100 each = 500 going back. */
-const backItems = [{ productId: "p1", quantity: 5, unitCost: 100 }];
+/**
+ * 5 units that cost us 100 each = 500 going back.
+ *
+ * Built through the REAL resolver against a real receipt, so these money tests
+ * now also prove the invoice link cannot be skipped. `costOf` deliberately
+ * returns a WILDLY different number: if the shelf's weighted average ever leaks
+ * back into a supplier return, every assertion below fails.
+ */
+const RECEIPT = {
+  id: "inv-1",
+  invoiceNumber: "FM-0001",
+  supplierId: "s1",
+  items: [{ id: "l1", productId: "p1", productName: "P1", quantity: 5, unitCost: 100 }],
+};
+
+const resolveBack = (requests, invoices = [RECEIPT], priorReturns = [], supplierId = "s1") =>
+  resolveSupplierReturn({ supplierId, requests, invoices, priorReturns });
+
+const backResolved = resolveBack([{ invoiceId: "inv-1", lineKey: "l1", quantity: 5 }]);
 
 test("a return smaller than the debt just reduces what we owe", () => {
   const l = buildSupplierReturnLines({
-    items: backItems,
-    supplierId: "s1",
+    resolved: backResolved,
     wallet: "inStoreSafe",
     currentDebt: 800,
   });
@@ -165,8 +182,7 @@ test("the mixed case: return 500 against 800 debt, pay 150 now", () => {
   assert.deepEqual(r, { remainingDebt: 300, cashBack: 0, paidNow: 150, newDebt: 150 });
 
   const l = buildSupplierReturnLines({
-    items: backItems,
-    supplierId: "s1",
+    resolved: backResolved,
     wallet: "inStoreSafe",
     currentDebt: 800,
     paidNow: r.paidNow,
@@ -179,8 +195,7 @@ test("the mixed case: return 500 against 800 debt, pay 150 now", () => {
 test("a return bigger than the debt brings cash back INTO the till", () => {
   // The direction that differs from a trader's return.
   const l = buildSupplierReturnLines({
-    items: backItems,
-    supplierId: "s1",
+    resolved: backResolved,
     wallet: "inStoreSafe",
     currentDebt: 300,
   });
@@ -190,8 +205,7 @@ test("a return bigger than the debt brings cash back INTO the till", () => {
 
 test("a return with no debt at all is a straight refund to us", () => {
   const l = buildSupplierReturnLines({
-    items: backItems,
-    supplierId: "s1",
+    resolved: backResolved,
     wallet: "inStoreSafe",
     currentDebt: 0,
   });
@@ -203,8 +217,7 @@ test("a supplier return reverses NO revenue and NO cogs", () => {
   // The goods were never sold. Reversing COGS here would credit a cost that
   // was never booked and inflate margin on every supplier return.
   const l = buildSupplierReturnLines({
-    items: backItems,
-    supplierId: "s1",
+    resolved: backResolved,
     wallet: "inStoreSafe",
     currentDebt: 800,
   });
@@ -217,8 +230,7 @@ test("paying when the return already clears the debt is refused", () => {
   assert.throws(
     () =>
       buildSupplierReturnLines({
-        items: backItems,
-        supplierId: "s1",
+        resolved: backResolved,
         wallet: "inStoreSafe",
         currentDebt: 300,
         paidNow: 50,
@@ -231,8 +243,18 @@ test("the panel and the builder land on the same numbers", () => {
   for (const [R, D, P] of [[500, 800, 150], [500, 800, 0], [500, 300, 0], [500, 500, 0], [500, 0, 0]]) {
     const r = reconcileSupplierReturn(R, D, P);
     const l = buildSupplierReturnLines({
-      items: [{ productId: "p1", quantity: 1, unitCost: R }],
-      supplierId: "s1",
+      resolved: resolveSupplierReturn({
+        supplierId: "s1",
+        requests: [{ invoiceId: "inv-n", lineKey: "ln", quantity: 1 }],
+        invoices: [
+          {
+            id: "inv-n",
+            invoiceNumber: "FM-N",
+            supplierId: "s1",
+            items: [{ id: "ln", productId: "p1", productName: "P1", quantity: 1, unitCost: R }],
+          },
+        ],
+      }),
       wallet: "inStoreSafe",
       currentDebt: D,
       paidNow: r.paidNow,
@@ -252,19 +274,13 @@ test("nonsense never invents money", () => {
     assert.equal(reconcileSupplierReturn(500, 800, bad).paidNow, 0, `input ${String(bad)}`);
   }
   assert.throws(
-    () =>
-      buildSupplierReturnLines({
-        items: [{ productId: "p1", quantity: -1, unitCost: 100 }],
-        supplierId: "s1",
-        currentDebt: 0,
-      }),
+    () => resolveBack([{ invoiceId: "inv-1", lineKey: "l1", quantity: -1 }]),
     /must be positive/,
   );
   assert.throws(
     () =>
       buildSupplierReturnLines({
-        items: backItems,
-        supplierId: "s1",
+        resolved: backResolved,
         currentDebt: -5,
       }),
     /cannot be negative/,
@@ -273,7 +289,7 @@ test("nonsense never invents money", () => {
 
 test("a return that moves money needs a till to move it through", () => {
   assert.throws(
-    () => buildSupplierReturnLines({ items: backItems, supplierId: "s1", currentDebt: 0 }),
+    () => buildSupplierReturnLines({ resolved: backResolved, currentDebt: 0 }),
     /needs a wallet/,
   );
 });
@@ -287,8 +303,18 @@ test("buy 10, return 4: the shelf and the average both stay honest", () => {
     paidAmount: 0,
   });
   const back = buildSupplierReturnLines({
-    items: [{ productId: "p1", quantity: 4, unitCost: 100 }],
-    supplierId: "s1",
+    resolved: resolveSupplierReturn({
+      supplierId: "s1",
+      requests: [{ invoiceId: "inv-10", lineKey: "l10", quantity: 4 }],
+      invoices: [
+        {
+          id: "inv-10",
+          invoiceNumber: "FM-0010",
+          supplierId: "s1",
+          items: [{ id: "l10", productId: "p1", productName: "P1", quantity: 10, unitCost: 100 }],
+        },
+      ],
+    }),
     wallet: "inStoreSafe",
     currentDebt: 1000,
   });

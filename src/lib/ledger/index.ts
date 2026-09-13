@@ -22,7 +22,15 @@
 
 import { driver, toPiastres } from "./driver";
 import { assertFiniteLines } from "./money";
-import type { Balance, BalanceQuery, EventQuery, LedgerEvent, NewEvent } from "./types";
+import type {
+  Balance,
+  BalanceQuery,
+  EventQuery,
+  LedgerEvent,
+  NewEvent,
+  RefBalance,
+  RefBalanceQuery,
+} from "./types";
 
 export type {
   Account,
@@ -34,6 +42,8 @@ export type {
   LedgerEvent,
   NewEvent,
   NewLine,
+  RefBalance,
+  RefBalanceQuery,
   SyncStatus,
 } from "./types";
 export { fromPiastres, toPiastres } from "./driver";
@@ -103,6 +113,16 @@ export async function appendEvent(event: NewEvent): Promise<string> {
 
 export async function balances(query: BalanceQuery): Promise<Balance[]> {
   return driver.balances(query);
+}
+
+/**
+ * The same sums, split by the document each movement points at.
+ *
+ * What a supplier-return ceiling is measured against — see `balancesByRef` in
+ * the driver for why the cap lives in the ledger rather than in a counter.
+ */
+export async function balancesByRef(query: RefBalanceQuery): Promise<RefBalance[]> {
+  return driver.balancesByRef(query);
 }
 
 export async function eventLines(eventId: string) {

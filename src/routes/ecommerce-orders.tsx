@@ -24,8 +24,16 @@ import { useBusinessStore } from "@/store/useBusinessStore";
 import { useOrderStore, expandStockItems } from "@/store/useOrderStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
 import { rateFor, shippingFeeFor } from "@/lib/shippingRates";
+import { useSearchParams } from "react-router-dom";
 import { appendEvent } from "@/lib/ledger";
-import { buildOrderPlacedLines } from "@/lib/ledger/orders";
+import { buildOrderPlacedLines, buildOrderCancelledLines } from "@/lib/ledger/orders";
+import {
+  exchangeBlock,
+  returnedValue,
+  priceDifference,
+  remainingQuantities,
+  EXCHANGE_BLOCK_TEXT,
+} from "@/lib/exchange";
 import { useStock } from "@/lib/ledger/useStock";
 import type { PromoDiscount } from "@/types";
 
@@ -40,6 +48,8 @@ import { resolveByPhone } from "@/lib/customers";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { productPrice, activeProducts, getVariantStock } from "@/lib/product";
 import { formatMoney, formatQty, discountAmountFor } from "@/lib/math";
+import { applyDiscountCode } from "@/lib/discounts";
+import { claimDiscountUse, releaseDiscountUse } from "@/services/discountUsage";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import type { EcommerceOrderItem, WalletType } from "@/types";
 import { WALLET_LABELS } from "@/types";
@@ -91,7 +101,14 @@ function rowIsSound(row: RowItem): boolean {
   return (
     identified &&
     Number.isFinite(row.quantity) &&
-    row.quantity !== 0 &&
+    // `!== 0` used to be the whole test, which let a NEGATIVE quantity through.
+    // The exchange flow relied on that to carry the returned item in the same
+    // cart as the replacement, and `buildOrderPlacedLines` then refused the
+    // event — so every attempted exchange died at the first write, with
+    // "quantity must be positive" shown to the operator as if they had typed
+    // something wrong. An order reserves goods; there is no such thing as
+    // reserving minus one.
+    row.quantity > 0 &&
     Number.isFinite(row.unit_price) &&
     row.unit_price >= 0
   );
@@ -171,6 +188,20 @@ function EcommerceOrdersInner() {
   const [detailedAddress, setDetailedAddress] = useDraftState("eco-order:detailedAddress", "");
   const [isExchange, setIsExchange] = useDraftState("eco-order:isExchange", false);
   const [originalOrderId, setOriginalOrderId] = useDraftState("eco-order:originalOrderId", "");
+  /**
+   * The lines of the ORIGINAL order the customer is sending back.
+   *
+   * Kept apart from `rows` on purpose. They used to be pushed INTO the cart at
+   * `quantity: -1`, which is what broke the whole feature: `buildOrderPlacedLines`
+   * refuses a non-positive quantity, so the very first ledger write threw and
+   * no exchange could ever be saved. It is also wrong on its own terms — a
+   * replacement order is a normal order for the NEW goods; the old ones come
+   * back through the original order's own return lifecycle, at the moment the
+   * courier actually hands them over, not when the swap is typed.
+   */
+  const [returningLines, setReturningLines] = useDraftState<
+    { product_id: string; product_name: string; quantity: number; unit_price: number }[]
+  >("eco-order:returningLines", []);
   const [rows, setRows] = useDraftState<RowItem[]>("eco-order:rows", []);
   const [paymentMethod, setPaymentMethod] = useDraftState<PaymentMethod>("eco-order:paymentMethod", "full_prepaid");
   
@@ -205,14 +236,103 @@ function EcommerceOrdersInner() {
     }
   }, [customer_phone, customers, customerId, setCustomerId, setCustomerName, setCustomerPhone, setDetailedAddress, setGovernorate, setCity]);
 
+  const returnRecords = useBusinessStore((s) => s.returnRecords);
+
+  /**
+   * Arrived from an order's own استبدال button, which carries the order it is
+   * for. The screen used to be reachable only by a context-free link that
+   * opened an empty form, leaving the operator to re-find the order by hand —
+   * and the exchange toggle off, so most never did.
+   *
+   * Runs once per id: `setSearchParams` clears the parameter afterwards so a
+   * reload does not re-stamp the form over what the operator has since typed.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const exchangeOf = searchParams.get("exchangeOf");
+  useEffect(() => {
+    if (!exchangeOf) return;
+    const origin = allOrders.find((o) => o.id === exchangeOf);
+    if (!origin) {
+      // The orders store hydrates from Supabase AFTER first paint, so on a cold
+      // load — the link opened in a new tab, pasted, or reloaded — this effect
+      // runs once against an empty list. Clearing the parameter there threw the
+      // context away before it could ever be used, and the operator landed on a
+      // blank form with the exchange toggle off: exactly the context-free
+      // screen this link exists to replace. It only appeared to work when
+      // navigating from an already-hydrated Order Management.
+      //
+      // So: keep the parameter and let the effect run again when the orders
+      // arrive. Only give up once there ARE orders and none of them match,
+      // which means the id is stale or wrong and waiting would hang forever.
+      if (allOrders.length > 0) setSearchParams({}, { replace: true });
+      return;
+    }
+    setIsExchange(true);
+    setOriginalOrderId(origin.id);
+    setCustomerId(origin.customerId || "");
+    setCustomerName(origin.customerName || "");
+    setCustomerPhone(origin.customerPhone || "");
+    if (origin.governorate) setGovernorate(origin.governorate);
+    if (origin.city) setCity(origin.city);
+    setReturningLines([]);
+    setSearchParams({}, { replace: true });
+  }, [exchangeOf, allOrders, setSearchParams, setIsExchange, setOriginalOrderId,
+      setCustomerId, setCustomerName, setCustomerPhone, setGovernorate, setCity,
+      setReturningLines]);
+
   const deliveredOrdersForCustomer = useMemo(() => {
     if (!customerId) return [];
-    return allOrders.filter(o => o.customerId === customerId && o.status === "delivered");
-  }, [allOrders, customerId]);
+    // Only the ones that are actually still exchangeable. The list used to
+    // offer every delivered order, including ones already swapped or already
+    // fully returned, and the screen then let the operator do it again.
+    return allOrders.filter(
+      (o) =>
+        o.customerId === customerId &&
+        exchangeBlock(o, returnRecords, allOrders) === null,
+    );
+  }, [allOrders, customerId, returnRecords]);
 
   const selectedOriginalOrder = useMemo(() => {
     return allOrders.find(o => o.id === originalOrderId) || null;
   }, [allOrders, originalOrderId]);
+
+  /**
+   * The rule, re-asked here rather than trusted from the row that linked in.
+   * That row may have been rendered minutes ago, and the same order can be
+   * returned or swapped from three other screens in the meantime.
+   */
+  const originalBlock = useMemo(
+    () =>
+      selectedOriginalOrder
+        ? exchangeBlock(selectedOriginalOrder, returnRecords, allOrders)
+        : null,
+    [selectedOriginalOrder, returnRecords, allOrders],
+  );
+
+  /** How many of each line are still with the customer — the return ceiling. */
+  const remainingOnOriginal = useMemo(
+    () =>
+      selectedOriginalOrder
+        ? remainingQuantities(selectedOriginalOrder, returnRecords)
+        : new Map<string, number>(),
+    [selectedOriginalOrder, returnRecords],
+  );
+
+  /** What the returned lines are worth, at what the customer actually PAID. */
+  const returningValue = useMemo(
+    () =>
+      selectedOriginalOrder
+        ? returnedValue(
+            selectedOriginalOrder,
+            returningLines.map((l) => ({
+              productId: l.product_id,
+              quantity: l.quantity,
+              unitPrice: l.unit_price,
+            })),
+          )
+        : 0,
+    [selectedOriginalOrder, returningLines],
+  );
 
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null);
 
@@ -447,6 +567,54 @@ function EcommerceOrdersInner() {
       });
       return;
     }
+
+    // An exchange has to say WHAT it replaces and WHAT is coming back, and the
+    // original has to still be eligible right now — the form may have been open
+    // for a while, and the same order can be returned from three other screens.
+    // Checked here and not only in the UI: this is the last point before a
+    // ledger write, and the ledger is append-only.
+    if (isExchange) {
+      const origin = allOrders.find((o) => o.id === originalOrderId);
+      if (!origin) {
+        setResult({ success: false, message: "اختر الطلب الأصلي المراد استبداله" });
+        return;
+      }
+      const block = exchangeBlock(origin, returnRecords, allOrders);
+      if (block) {
+        setResult({ success: false, message: EXCHANGE_BLOCK_TEXT[block] });
+        return;
+      }
+      if (returningLines.length === 0) {
+        setResult({
+          success: false,
+          message: "حدد المنتج اللي راجع من الطلب الأصلي",
+        });
+        return;
+      }
+      // Quantities re-checked against what is STILL with the customer. The
+      // form is a draft that survives navigation and reloads, so a line marked
+      // "return 3" can outlive a return of 2 recorded on another screen. The
+      // box clamps as you type; this is the clamp that matters, because it is
+      // the last one before the write.
+      const left = remainingQuantities(origin, returnRecords);
+      for (const line of returningLines) {
+        const available = left.get(line.product_id) ?? 0;
+        if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
+          setResult({
+            success: false,
+            message: `كمية المرتجع من "${line.product_name}" غير صالحة`,
+          });
+          return;
+        }
+        if (line.quantity > available) {
+          setResult({
+            success: false,
+            message: `"${line.product_name}" مع العميل منه ${available} بس — مش ${line.quantity}`,
+          });
+          return;
+        }
+      }
+    }
     const validRows = rows.filter(rowIsSound);
     const items: EcommerceOrderItem[] = validRows.map((r) => {
       if (r.kind === "bundle") {
@@ -510,6 +678,24 @@ function EcommerceOrdersInner() {
       0,
     );
 
+    // ── The discount use is CLAIMED before anything is reserved ──────────────
+    //
+    // Atomically, inside a Postgres row lock. The browser cannot check a limit
+    // and consume it without a gap, so a sold-out code must not be spendable by
+    // two order forms a millisecond apart. Every failure path below gives the
+    // claim back, so a refused order never leaves a use burnt — and on a
+    // one-use code, never burns the only one.
+    let claimedDiscount: { id: string; amount: number } | null = null;
+    if (appliedDiscount?.id && discountAmount > 0) {
+      try {
+        await claimDiscountUse(appliedDiscount.id, discountAmount);
+        claimedDiscount = { id: appliedDiscount.id, amount: discountAmount };
+      } catch (e) {
+        setResult({ success: false, message: e instanceof Error ? e.message : String(e) });
+        return;
+      }
+    }
+
     try {
       await appendEvent({
         kind: "order_placed",
@@ -532,6 +718,10 @@ function EcommerceOrdersInner() {
         }),
       });
     } catch (e) {
+      // The reservation failed, so the use claimed for it goes back.
+      if (claimedDiscount) {
+        await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+      }
       setResult({
         success: false,
         message: `لم يُسجَّل الطلب ولم يتغيّر المخزون. ${e instanceof Error ? e.message : String(e)}`,
@@ -550,7 +740,14 @@ function EcommerceOrdersInner() {
       })),
     );
 
-    const orderResult = await addOrder({
+    // `addOrder` can REJECT, not just return `{success:false}` — a dropped
+    // connection or a refused write throws out of the Supabase client. Nothing
+    // caught that, so `runOnce` swallowed it into an unhandled rejection and
+    // the operator was shown NOTHING AT ALL: no success, no error, a form that
+    // simply sat there while stock had already moved.
+    let orderResult: Awaited<ReturnType<typeof addOrder>>;
+    try {
+      orderResult = await addOrder({
       customerId: customerId || undefined,
       customerName: customer_name.trim(),
       customerPhone: customer_phone.trim(),
@@ -566,8 +763,17 @@ function EcommerceOrdersInner() {
         governorate,
         city,
         address: detailedAddress,
-        ...(isExchange && originalOrderId ? { original_order_id: originalOrderId } : {}),
       },
+      // TOP-LEVEL, not inside `metadata`. `orders.original_order_id` is a real
+      // column and IS whitelisted in `cloudSchema`, but the link was only ever
+      // written into `metadata`, which is not a column — so `toRemoteRow`
+      // dropped it exactly the way it used to drop `city`. The database proves
+      // it: of the exchange orders that exist, not one carries a link back.
+      //
+      // The link is not cosmetic. It is what `movementFor` reads to know the
+      // original's return is a SWAP and not a refund, which decides whether the
+      // courier's trip is the shop's cost or the customer's.
+      ...(isExchange && originalOrderId ? { original_order_id: originalOrderId } : {}),
       paymentMethod,
       shippingFee: shipping_fee,
       // Marks this order as the one recovering a previous wasted trip. Delivery
@@ -586,10 +792,82 @@ function EcommerceOrdersInner() {
       courierFee: courierFeeValue,
       status: "pending",
       isExchange,
-    });
-
-    if (!orderResult.success) {
-      setResult({ success: false, message: orderResult.reason });
+      });
+      // A refused write and a thrown one leave the SAME wreckage, so they get
+      // the same handler rather than one `return` that skips the cleanup.
+      if (!orderResult.success) throw new Error(orderResult.reason);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      /**
+       * Put back everything the `order_placed` above took out.
+       *
+       * The ledger is append-only, so this is a COMPENSATING event, not a
+       * rollback — the same shape a cancellation writes, because that is what
+       * this is: an order that reserved goods and then never came to exist.
+       *
+       * Without it, a refused order document left the `order_placed` event and
+       * its reservation standing with nothing pointing at them. Proven on
+       * QA-STORE by blocking the POST to `/rest/v1/orders`: a unit of
+       * QA-EXCH-DEARER left the shelf, in the ledger AND in the mirror, for an
+       * order that does not exist and never will.
+       *
+       * Written inline rather than as a nested `async` helper on purpose: the
+       * gate check in `check_online_only` reads handler declarations, and a
+       * nested one looks exactly like an ungated handler to it. This code is
+       * already inside `runOnce`, and keeping it here keeps that obvious.
+       */
+      try {
+        await appendEvent({
+          kind: "order_cancelled",
+          actor: "أونلاين",
+          refType: "ecommerce_order",
+          payload: {
+            customerName: customer_name.trim(),
+            reason: "order document refused — reservation released",
+          },
+          lines: buildOrderCancelledLines({
+            items: stockItems.map((line) => ({
+              productId: line.productId,
+              quantity: line.quantity,
+              unitPrice: line.unitPrice,
+              unitCost: line.unitCost ?? 0,
+            })),
+            depositAmount: depositVal,
+            wallet: depositVal > 0 ? depositWallet : undefined,
+          }),
+        });
+        useBusinessStore.getState().applyStockMoves(
+          stockItems.map((line: any) => ({
+            productId: line.productId,
+            delta: line.quantity,
+            variantName: line.variantName,
+          })),
+        );
+        // The order does not exist, so neither does the use it claimed.
+        if (claimedDiscount) {
+          await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+        }
+        refreshStock();
+        setResult({
+          success: false,
+          message: `لم يُسجَّل الطلب، والمخزون رجع زي ما كان. ${why}`,
+        });
+      } catch (releaseError) {
+        // The compensation itself failed. Nothing can be rolled back, so the
+        // only correct move is to name exactly what is outstanding rather than
+        // let it read as an ordinary error.
+        if (claimedDiscount) {
+          await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+        }
+        setResult({
+          success: false,
+          message:
+            `لم يُسجَّل الطلب، لكن المخزون المحجوز لسه متسجّل كخارج. ` +
+            `بلّغ المسؤول وراجع حركة المخزون. ${why} / ${
+              releaseError instanceof Error ? releaseError.message : String(releaseError)
+            }`,
+        });
+      }
       return;
     }
 
@@ -616,6 +894,7 @@ function EcommerceOrdersInner() {
     setDetailedAddress("");
     setIsExchange(false);
     setOriginalOrderId("");
+    setReturningLines([]);
     setRows([]);
     setDepositAmount("");
     setDepositWallet("instaPay");
@@ -643,6 +922,12 @@ function EcommerceOrdersInner() {
     detailedAddress,
     isExchange,
     originalOrderId,
+    // Read in the body by the eligibility re-check. Stale values here would
+    // let a swap through against an order that has since been returned.
+    returningLines,
+    allOrders,
+    returnRecords,
+    setReturningLines,
     shippingPenaltyApplied,
     updateCustomer,
     shipping_fee,
@@ -852,44 +1137,150 @@ function EcommerceOrdersInner() {
             )}
           </div>
 
-          {selectedOriginalOrder && (
+          {/* The rule that hid the button on the order row, re-asked. */}
+          {originalBlock && (
+            <p className="text-sm rounded-lg p-3 bg-red-50 border border-red-200 text-red-900">
+              {EXCHANGE_BLOCK_TEXT[originalBlock]}
+            </p>
+          )}
+
+          {selectedOriginalOrder && !originalBlock && (
             <div className="mt-4 space-y-3">
               <h4 className="text-sm font-medium">المنتجات في الطلب الأصلي:</h4>
               <div className="border border-border rounded-lg overflow-hidden divide-y divide-border">
-                {selectedOriginalOrder.items.map((item, idx) => {
-                  const cartItem = rows.find(r => r.kind === 'product' && r.product_id === item.productId);
-                  const isReturned = cartItem && cartItem.quantity < 0;
+                {selectedOriginalOrder.items.map((item: any, idx: number) => {
+                  // Marked for return — held in its OWN list, never in the cart.
+                  // A negative cart row is what `buildOrderPlacedLines` threw on.
+                  const marked = returningLines.find((l) => l.product_id === item.productId);
+                  // Capped at what is still with the customer, not at what was
+                  // ordered: returning the same unit twice added it to stock
+                  // twice and reversed the revenue twice.
+                  const left = remainingOnOriginal.get(item.productId) ?? 0;
+
+                  /**
+                   * Per-line quantity, clamped to what is still with the
+                   * customer.
+                   *
+                   * The counter screen (`routes/returns.tsx`) has always had a
+                   * quantity box per line, so partial quantities are part of
+                   * this ERP's return model, not a new idea. This screen used
+                   * to take the whole remaining quantity whenever a line was
+                   * marked, which meant a customer swapping ONE of three
+                   * identical units had all three reversed — stock, revenue and
+                   * LTV — and was refunded for two he still had.
+                   */
+                  const setQty = (qty: number) => {
+                    const clamped = Math.min(Math.max(1, Math.floor(qty) || 1), left);
+                    setReturningLines((prev) =>
+                      prev.map((l) =>
+                        l.product_id === item.productId ? { ...l, quantity: clamped } : l,
+                      ),
+                    );
+                  };
 
                   return (
-                    <div key={idx} className="p-3 flex justify-between items-center bg-background text-sm">
+                    <div key={idx} className="p-3 flex justify-between items-center gap-3 bg-background text-sm">
                       <div className="space-y-1">
                         <p className="font-medium">{item.productName}</p>
-                        <p className="text-xs text-muted-foreground">الكمية: {item.quantity} | السعر: {item.unitPrice} ج.م</p>
+                        <p className="text-xs text-muted-foreground">
+                          مع العميل: {left} | السعر: {item.unitPrice} ج.م
+                        </p>
                       </div>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={!!isReturned}
-                        onClick={() => {
-                          setRows(prev => [
-                            ...prev,
-                            {
-                              kind: "product",
-                              product_id: item.productId,
-                              product_name: item.productName,
-                              quantity: -1,
-                              unit_price: item.unitPrice
-                            }
-                          ])
-                        }}
-                      >
-                        <CornerDownLeft className="size-3.5 mr-1.5" />
-                        {isReturned ? "تم الاسترجاع" : "استرجاع هذا المنتج"}
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        {/* Only once the line is actually coming back. A
+                            quantity box on a line nobody is returning is just
+                            something else to get wrong. */}
+                        {marked && left > 1 && (
+                          <div className="flex items-center gap-1">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="size-8 p-0"
+                              aria-label={`تقليل كمية المرتجع من ${item.productName}`}
+                              onClick={() => setQty(marked.quantity - 1)}
+                            >
+                              −
+                            </Button>
+                            <input
+                              type="number"
+                              min={1}
+                              max={left}
+                              value={marked.quantity}
+                              aria-label={`كمية المرتجع من ${item.productName}`}
+                              onChange={(e) => setQty(parseInt(e.target.value, 10))}
+                              className="h-8 w-14 rounded-md border border-input bg-background px-2 text-center text-sm"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="size-8 p-0"
+                              aria-label={`زيادة كمية المرتجع من ${item.productName}`}
+                              onClick={() => setQty(marked.quantity + 1)}
+                            >
+                              +
+                            </Button>
+                          </div>
+                        )}
+                        <Button
+                          variant={marked ? "default" : "secondary"}
+                          size="sm"
+                          disabled={left <= 0}
+                          onClick={() => {
+                            setReturningLines((prev) =>
+                              prev.some((l) => l.product_id === item.productId)
+                                ? prev.filter((l) => l.product_id !== item.productId)
+                                : [
+                                    ...prev,
+                                    {
+                                      product_id: item.productId,
+                                      product_name: item.productName,
+                                      // Starts at one. The operator raises it;
+                                      // taking the whole line by default is how
+                                      // a single-unit swap reversed three.
+                                      quantity: 1,
+                                      unit_price: item.unitPrice,
+                                    },
+                                  ],
+                            );
+                          }}
+                        >
+                          <CornerDownLeft className="size-3.5 mr-1.5" />
+                          {left <= 0 ? "اترجع بالفعل" : marked ? "هيترجع ✓" : "استرجاع هذا المنتج"}
+                        </Button>
+                      </div>
                     </div>
                   );
                 })}
               </div>
+
+              {/* The difference, SHOWN and never booked. The two legs each go
+                  through at full value — the replacement order when it is
+                  delivered, the original when its return is confirmed — and
+                  what the books end up with is this number, with this sign. */}
+              {returningLines.length > 0 && (
+                <div className="rounded-lg border border-border bg-background p-3 space-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">قيمة المرتجع (بعد الخصم)</span>
+                    <span>{formatMoney(returningValue)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">قيمة البديل</span>
+                    <span>{formatMoney(subtotal)}</span>
+                  </div>
+                  <div className="flex justify-between font-semibold border-t border-border pt-1">
+                    <span>
+                      {priceDifference(subtotal, returningValue) >= 0
+                        ? "العميل يدفع فرق"
+                        : "للعميل مسترد"}
+                    </span>
+                    <span>
+                      {formatMoney(Math.abs(priceDifference(subtotal, returningValue)))}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1089,15 +1480,16 @@ function EcommerceOrdersInner() {
                 setAppliedDiscount(null);
                 return;
               }
-              const d = promoDiscounts.find(
-                (x) => x.code === discountCodeInput.trim() && x.active,
-              );
-              if (d) {
-                setAppliedDiscount(d);
+              // ONE authority, shared with نقطة البيع. This was
+              // `x.code === input && x.active`: no expiry, no usage limit, and
+              // a case-sensitive compare against an upper-cased stored code.
+              const applied = applyDiscountCode(promoDiscounts, discountCodeInput, subtotal);
+              if (applied.ok) {
+                setAppliedDiscount(applied.code as PromoDiscount);
                 setResult({ success: true, message: "تم تطبيق الخصم بنجاح!" });
               } else {
                 setAppliedDiscount(null);
-                setResult({ success: false, message: "كود الخصم غير موجود أو غير نشط" });
+                setResult({ success: false, message: applied.message });
               }
               setTimeout(() => setResult(null), 4000);
             }}

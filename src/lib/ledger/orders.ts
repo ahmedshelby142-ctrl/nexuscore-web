@@ -18,6 +18,7 @@
 
 import type { NewLine } from "./types";
 import { toPiastres } from "./money.ts";
+import { lineCostOf, stockLinesFor, cogsLinesFor } from "./bundles.ts";
 
 export interface OrderLineItem {
   productId: string;
@@ -73,23 +74,8 @@ export function buildOrderPlacedLines(order: OrderPlacedInput): NewLine[] {
       throw new Error(`order: quantity for ${item.productId} must be positive`);
     }
     
-    if (item.isBundle && item.bundleItems) {
-      for (const comp of item.bundleItems) {
-        lines.push({
-          account: "stock",
-          subjectId: comp.productId,
-          qty: -(comp.quantity * item.quantity),
-          amount: -(comp.unitCost * comp.quantity * item.quantity),
-        });
-      }
-    } else {
-      lines.push({
-        account: "stock",
-        subjectId: item.productId,
-        qty: -item.quantity,
-        amount: -(item.unitCost * item.quantity),
-      });
-    }
+    // A بوكس reserves its COMPONENTS — it has no shelf of its own.
+    lines.push(...stockLinesFor(item, -1));
   }
 
   const deposit = order.depositAmount ?? 0;
@@ -196,22 +182,18 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
 
   let cogs = 0;
   for (const item of order.items) {
-    cogs += item.unitCost * item.quantity;
+    cogs += lineCostOf(item);
   }
 
   // Cost of what left, per product. The stock itself already moved at
   // order_placed — this books that value as a cost of goods SOLD, which it
   // only became now.
+  //
+  // Bundle-aware for the same reason as everywhere else. E-commerce callers
+  // hand this pre-expanded component lines, so it changes nothing for them; a
+  // caller that passes a بوكس whole no longer books zero cost for it.
   for (const item of order.items) {
-    const lineCost = item.unitCost * item.quantity;
-    if (lineCost !== 0) {
-      lines.push({
-        account: "cogs",
-        subjectId: item.productId,
-        amount: lineCost,
-        unitCost: item.unitCost,
-      });
-    }
+    lines.push(...cogsLinesFor(item, 1));
   }
 
   const deposit = order.depositAmount ?? 0;
@@ -318,23 +300,8 @@ export function buildOrderCancelledLines(order: OrderPlacedInput): NewLine[] {
       throw new Error(`order: quantity for ${item.productId} must be positive`);
     }
 
-    if (item.isBundle && item.bundleItems) {
-      for (const comp of item.bundleItems) {
-        lines.push({
-          account: "stock",
-          subjectId: comp.productId,
-          qty: comp.quantity * item.quantity,
-          amount: comp.unitCost * comp.quantity * item.quantity,
-        });
-      }
-    } else {
-      lines.push({
-        account: "stock",
-        subjectId: item.productId,
-        qty: item.quantity,
-        amount: item.unitCost * item.quantity,
-      });
-    }
+    // The reservation goes back, components and all.
+    lines.push(...stockLinesFor(item, 1));
   }
 
   // If the customer paid a deposit at order_placed, it was booked as
@@ -461,6 +428,18 @@ export interface ReturnConfirmedInput {
    * bore and quietly understate profit on every swap.
    */
   movement?: "return" | "exchange";
+  /**
+   * Who actually bears the fee, from `shippingBorneBy(return_cause, movement)`.
+   *
+   * `movement` alone cannot answer this: a swap because the shop sent the wrong
+   * size is the shop's cost, and a swap because the customer changed their mind
+   * is theirs, and the two movements are identical. Migration 026 added
+   * `return_cause` so the caller can decide properly.
+   *
+   * Omitted → falls back to the movement-keyed default this builder always had,
+   * so every existing caller and every pre-026 row keeps its exact accounting.
+   */
+  feeBorneBy?: "customer" | "shop";
   /** The courier owed the fee. Required when there is one. */
   courierId?: string;
   /** The customer whose LTV must come back down. */
@@ -491,36 +470,14 @@ export function buildReturnConfirmedLines(ret: ReturnConfirmedInput): NewLine[] 
       throw new Error(`return: quantity for ${item.productId} must be positive`);
     }
 
-    const lineCost = item.unitCost * item.quantity;
+    // The units come back, carrying their value back into inventory. A بوكس
+    // comes back as its components.
+    lines.push(...stockLinesFor(item, 1));
 
-    // The units come back, carrying their value back into inventory.
-    if (item.isBundle && item.bundleItems) {
-      for (const comp of item.bundleItems) {
-        lines.push({
-          account: "stock",
-          subjectId: comp.productId,
-          qty: comp.quantity * item.quantity,
-          amount: comp.unitCost * comp.quantity * item.quantity,
-        });
-      }
-    } else {
-      lines.push({
-        account: "stock",
-        subjectId: item.productId,
-        qty: item.quantity,
-        amount: lineCost,
-      });
-    }
-
-    // And their cost stops being a cost of goods sold.
-    if (lineCost !== 0) {
-      lines.push({
-        account: "cogs",
-        subjectId: item.productId,
-        amount: -lineCost,
-        unitCost: item.unitCost,
-      });
-    }
+    // And their cost stops being a cost of goods sold. Bundle-aware: this used
+    // `item.unitCost`, which is 0 for a virtual box, so a returned bundle put
+    // stock back at component value while COGS stayed exactly where it was.
+    lines.push(...cogsLinesFor(item, -1));
   }
 
   if (ret.refundAmount < 0) {
@@ -562,17 +519,19 @@ export function buildReturnConfirmedLines(ret: ReturnConfirmedInput): NewLine[] 
   if (fee > 0) {
     if (!ret.courierId) throw new Error("return: needs a courier to owe the fee to");
     const movement = ret.movement ?? "return";
+    // Responsibility decides who pays. Falls back to the movement-keyed default
+    // when the caller has no cause to give — see `feeBorneBy`.
+    const borneBy = ret.feeBorneBy ?? (movement === "exchange" ? "customer" : "shop");
 
     // We owe the courier either way — they did the work.
     lines.push({ account: "payable_courier", subjectId: ret.courierId, amount: fee });
 
-    if (movement === "return") {
-      // Goods coming back to us is the ONE shipping movement the shop pays for.
+    if (borneBy === "shop") {
+      // Our mistake, or an unclassified return: the trip is our cost.
       lines.push({ account: "expense", subjectId: "shipping_return", amount: fee });
     } else {
-      // An exchange fee is the customer's. The courier collects it on our
-      // behalf, so it lands as a receivable and cancels what we owe them —
-      // it is never our cost.
+      // The customer's. The courier collects it on our behalf, so it lands as a
+      // receivable and cancels what we owe them — it is never our cost.
       lines.push({ account: "receivable_courier", subjectId: ret.courierId, amount: fee });
     }
   }
@@ -599,6 +558,14 @@ export interface OrderRTOInput {
   returnFee?: number;
   /** The courier owed the fee. Required when there is one. */
   courierId?: string;
+  /**
+   * Who bears the fee, from `shippingBorneBy(return_cause, "return")`.
+   *
+   * An RTO is usually the customer's doing — they refused at the door — but not
+   * always: a wrong address WE typed produces the same refusal. Omitted keeps
+   * the original behaviour, where the shop bore every RTO.
+   */
+  feeBorneBy?: "customer" | "shop";
   /**
    * The deposit the shop keeps, EGP. Never refunded, by store policy.
    *
@@ -631,25 +598,7 @@ export function buildOrderRTOLines(rto: OrderRTOInput): NewLine[] {
       throw new Error(`RTO: quantity for ${item.productId} must be positive`);
     }
 
-    const lineCost = item.unitCost * item.quantity;
-
-    if (item.isBundle && item.bundleItems) {
-      for (const comp of item.bundleItems) {
-        lines.push({
-          account: "stock",
-          subjectId: comp.productId,
-          qty: comp.quantity * item.quantity,
-          amount: comp.unitCost * comp.quantity * item.quantity,
-        });
-      }
-    } else {
-      lines.push({
-        account: "stock",
-        subjectId: item.productId,
-        qty: item.quantity,
-        amount: lineCost,
-      });
-    }
+    lines.push(...stockLinesFor(item, 1));
     // No COGS line, because COGS was never booked at order_placed.
   }
 
@@ -657,7 +606,13 @@ export function buildOrderRTOLines(rto: OrderRTOInput): NewLine[] {
   if (fee > 0) {
     if (!rto.courierId) throw new Error("RTO: needs a courier to owe the fee to");
     lines.push({ account: "payable_courier", subjectId: rto.courierId, amount: fee });
-    lines.push({ account: "expense", subjectId: "shipping_return", amount: fee });
+    if ((rto.feeBorneBy ?? "shop") === "shop") {
+      lines.push({ account: "expense", subjectId: "shipping_return", amount: fee });
+    } else {
+      // The customer refused a delivery they asked for, so the wasted trip is
+      // recovered from them rather than absorbed.
+      lines.push({ account: "receivable_courier", subjectId: rto.courierId, amount: fee });
+    }
   }
 
   const forfeited = rto.forfeitedDeposit ?? 0;

@@ -7,7 +7,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
+    "dev:mobile": "vite dev --config vite.mobile.config.ts --port 3100",
     "build": "vite build",
+    "build:mobile": "vite build --config vite.mobile.config.ts",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "eslint .",

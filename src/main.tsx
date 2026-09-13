@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { initializeTheme } from "./lib/theme";
 import { registerWipeCommand } from "./lib/localWipe";
+import { installStaleChunkRecovery } from "./lib/staleChunkRecovery";
 import "./styles.css";
 
 // Initialize theme before rendering
@@ -35,17 +36,7 @@ registerWipeCommand();
 // left in localStorage. See `purgeStoredIntegrationSecrets`.
 purgeStoredIntegrationSecrets();
 
-window.addEventListener("vite:preloadError", (event) => {
-  const RELOAD_ONCE = "nexus-chunk-reload";
-  if (sessionStorage.getItem(RELOAD_ONCE)) return;
-  try {
-    sessionStorage.setItem(RELOAD_ONCE, String(Date.now()));
-  } catch {
-    return; // storage blocked — never risk an unbounded reload loop
-  }
-  event.preventDefault();
-  window.location.reload();
-});
+installStaleChunkRecovery();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

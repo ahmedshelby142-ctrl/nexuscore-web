@@ -58,12 +58,49 @@ async function runTest() {
 
   const saleA = saleLines.filter(l => l.account === "stock" && l.subjectId === "COMP-A");
   const saleB = saleLines.filter(l => l.account === "stock" && l.subjectId === "COMP-B");
-  const cogsLine = saleLines.filter(l => l.account === "cogs" && l.subjectId === "BUNDLE-X");
+  // COGS is attributed to the COMPONENTS, matching the stock lines above, so a
+  // per-product margin report reads the same subject on both sides. A بوكس has
+  // no stock lines of its own, so COGS against the bundle id was an orphan.
+  const cogsTotal = saleLines
+    .filter(l => l.account === "cogs")
+    .reduce((sum, l) => sum + (l.amount ?? 0), 0);
+  const cogsOnBundle = saleLines.filter(l => l.account === "cogs" && l.subjectId === "BUNDLE-X");
+  const cogsA = saleLines.filter(l => l.account === "cogs" && l.subjectId === "COMP-A");
+  const cogsB = saleLines.filter(l => l.account === "cogs" && l.subjectId === "COMP-B");
 
-  if (saleA[0]?.qty === -2 && saleB[0]?.qty === -1 && cogsLine[0]?.amount === 40) {
+  if (
+    saleA[0]?.qty === -2 && saleB[0]?.qty === -1 &&
+    cogsTotal === 40 && cogsA[0]?.amount === 20 && cogsB[0]?.amount === 20 &&
+    cogsOnBundle.length === 0
+  ) {
     console.log("✅ POS Sale unpacking and COGS correct.");
   } else {
-    console.log("❌ POS Sale unpacking failed.");
+    console.log("❌ POS Sale unpacking failed.", { cogsTotal, cogsA, cogsB, cogsOnBundle });
+    process.exit(1);
+  }
+
+  // 4. The case the fixture above cannot catch on its own.
+  //
+  // A real بوكس is virtual: no purchases, no stock of its own, so
+  // `costOf(bundleId)` is 0 and that is exactly what `CheckoutForm` passes as
+  // `unitCost`. The old builder derived COGS from THAT, so `lineCost` was 0,
+  // the `!== 0` guard skipped the line entirely, and the sale booked full
+  // revenue against no cost at all. The fixture above only passed because it
+  // set an artificial `unitCost: 40` that happened to equal the component sum.
+  console.log("\n4. Testing a REAL virtual bundle (unitCost 0)...");
+  const virtualBox = { ...bundleProduct, unitCost: 0 };
+  const virtualLines = buildSaleLines({ items: [virtualBox], wallet: "safe" });
+  const virtualCogs = virtualLines
+    .filter(l => l.account === "cogs")
+    .reduce((sum, l) => sum + (l.amount ?? 0), 0);
+  const virtualRevenue = virtualLines
+    .filter(l => l.account === "revenue")
+    .reduce((sum, l) => sum + (l.amount ?? 0), 0);
+
+  if (virtualCogs === 40 && virtualRevenue === 100 && virtualRevenue - virtualCogs === 60) {
+    console.log("✅ Virtual bundle books component cost, not zero.");
+  } else {
+    console.log("❌ Virtual bundle COGS wrong:", { virtualCogs, virtualRevenue });
     process.exit(1);
   }
 }

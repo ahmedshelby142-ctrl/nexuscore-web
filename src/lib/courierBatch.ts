@@ -16,16 +16,54 @@
 import type { EcommerceOrder } from "@/types";
 
 /**
- * The courier an order's money belongs to.
+ * The subject id every courier ledger line is booked against.
  *
- * `order.courierId` is optional, and every ledger line already falls back to
- * `"default"`. This existed inline in four places, and the courier STORE used a
- * different fallback (`"default-courier"`) — so an order with no courier booked
- * its COD to subject `default` while the screen looked up `default-courier` and
- * showed zero. One function, one fallback, no drift.
+ * `"default"` is the LEGACY bucket, not a company. Before the courier registry
+ * (migration 030) an order carried a typed `courierName` and usually no id at
+ * all, so its money landed here. Audited on 2026-09-14: of QA-STORE's 2,520
+ * EGP sitting under this subject, **2,340 belongs to orders with no courier
+ * named whatsoever** — no evidence exists that could assign it to anybody. It
+ * is therefore preserved as unassigned rather than migrated; inventing an
+ * identity for it would be a worse answer than admitting we do not have one.
+ *
+ * The fallback stays because history must stay READABLE: remove it and those
+ * balances become unreachable from the screen that reconciles them. What must
+ * not happen is a NEW order landing here — see `requiresCourierAssignment`.
  */
+export const LEGACY_COURIER_SUBJECT = "default";
+
+/** What to call the legacy bucket on screen. Never "the default company". */
+export const LEGACY_COURIER_LABEL = "شحن غير محدد (سجلات قديمة)";
+
 export function courierIdOf(order: Pick<EcommerceOrder, "courierId">): string {
-  return order.courierId || "default";
+  return order.courierId || LEGACY_COURIER_SUBJECT;
+}
+
+/** Is this the legacy bucket rather than a registered company? */
+export function isLegacyCourier(courierId: string | null | undefined): boolean {
+  return !courierId || courierId === LEGACY_COURIER_SUBJECT;
+}
+
+/**
+ * Does this order need a courier picked before it may be saved?
+ *
+ * Only when shipping is actually involved: a walk-in or a collected order has
+ * no courier and must not be forced to invent one. When shipping IS involved,
+ * a registered courier is required — otherwise the order's COD and fees book
+ * to the legacy bucket and the money becomes unattributable the moment it is
+ * written, which is exactly how 2,340 EGP of it got there.
+ */
+export function requiresCourierAssignment(order: {
+  courierId?: string | null;
+  shippingFee?: number | null;
+  expectedCod?: number | null;
+  governorate?: string | null;
+}): boolean {
+  const shipping =
+    Number(order.shippingFee) > 0 ||
+    Number(order.expectedCod) > 0 ||
+    Boolean(String(order.governorate ?? "").trim());
+  return shipping && isLegacyCourier(order.courierId);
 }
 
 /** Has this order's COD already been handed over and reconciled? */

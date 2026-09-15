@@ -69,7 +69,16 @@ test("getActualStock reads the snapshot, not the record", () => {
   // mirror fallback is not possible.
   const src = readFileSync(new URL("../src/lib/product.ts", import.meta.url), "utf8");
   assert.match(src, /ledgerQty\(product\.id\)/, "getActualStock must consult the ledger");
-  assert.match(src, /Math\.min\(fromMirror, getActualStock\(product\)\)/, "variants must be clamped");
+  // The clamp now lives in `variantStockFrom`, which `getVariantStock`
+  // delegates to so mobile can supply the ledger total it sums itself.
+  // Same rule, one definition — assert the rule, and that the delegation
+  // is real rather than a second copy.
+  assert.match(src, /Math\.min\(fromMirror, total\)/, "variants must be clamped");
+  assert.match(
+    src,
+    /return variantStockFrom\(product, variantName, getActualStock\(product\)\)/,
+    "getVariantStock must delegate to the one clamp, not re-implement it",
+  );
 });
 
 test("قيمة المخزون is priced from the ledger, not a stored cost", () => {

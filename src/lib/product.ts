@@ -183,23 +183,36 @@ export function bundleAvailableStock(
   bundle: Product | null | undefined,
   products: Product[],
 ): number {
-  const recipe = (bundle as any)?.bundleItems as
-    | { productId: string; quantity: number; variantName?: string }[]
-    | undefined;
+  const byId = new Map(products.map((p) => [p.id, p]));
+  return buildableFromRecipe((bundle as any)?.bundleItems, (productId, variantName) =>
+    variantName
+      ? getVariantStock(byId.get(productId), variantName)
+      : getActualStock(byId.get(productId)),
+  );
+}
+
+/**
+ * The buildable-boxes rule itself, with on-hand supplied by the caller.
+ *
+ * Split out so there is ONE definition of "how many boxes can we make" while
+ * the two surfaces answer "how much of the component is there" differently:
+ * desktop reads the hydrated product records, mobile sums the ledger because it
+ * never hydrates. Two stock sources, one formula — the alternative was a second
+ * copy of `min(floor(stock / per))` on the mobile side.
+ */
+export function buildableFromRecipe(
+  recipe: { productId: string; quantity: number; variantName?: string }[] | undefined | null,
+  onHandOf: (productId: string, variantName?: string) => number,
+): number {
+  // A box that lists nothing is not infinitely available, it is unbuildable.
   if (!recipe?.length) return 0;
 
-  const byId = new Map(products.map((p) => [p.id, p]));
   let buildable = Infinity;
-
   for (const component of recipe) {
     const per = Number(component.quantity);
     if (!Number.isFinite(per) || per <= 0) continue;
-    const onHand = component.variantName
-      ? getVariantStock(byId.get(component.productId), component.variantName)
-      : getActualStock(byId.get(component.productId));
-    buildable = Math.min(buildable, Math.floor(onHand / per));
+    buildable = Math.min(buildable, Math.floor(onHandOf(component.productId, component.variantName) / per));
   }
-
   return Number.isFinite(buildable) ? Math.max(0, buildable) : 0;
 }
 
@@ -229,17 +242,40 @@ export function getVariantStock(
   product: Product | null | undefined,
   variantName?: string,
 ): number {
-  if (!variantName) return getActualStock(product);
-  const variants = product?.metadata?.variants ?? product?.variants;
+  return variantStockFrom(product, variantName, getActualStock(product));
+}
+
+/**
+ * The درجة-splitting rule itself, with the product's total supplied by the
+ * caller.
+ *
+ * Split out of `getVariantStock` for the same reason `buildableFromRecipe` was
+ * split out of `bundleAvailableStock`: the RULE is one thing, and "how much of
+ * this product is there in total" is answered two different ways. Desktop
+ * reads the hydrated record through `getActualStock`; mobile never hydrates
+ * and sums the ledger itself. Before this split, mobile's bundle reader simply
+ * dropped `variantName` on the floor and fed `buildableFromRecipe` the whole
+ * product's ledger quantity — so a بوكس needing the red one was reported
+ * buildable out of the blue ones, and desktop and mobile gave two different
+ * answers for the same box.
+ *
+ * The clamp is the point. The ledger keeps ONE quantity per product — there
+ * are no per-درجة lines — so the split between درجات can only come from the
+ * mirror on the product record, and that mirror must never offer units the
+ * product as a whole does not have. That is exactly how the fondation came to
+ * show "احمر — المتاح: 30" against a ledger holding zero.
+ */
+export function variantStockFrom(
+  product: Product | null | undefined,
+  variantName: string | undefined,
+  actualStock: number,
+): number {
+  const total = Math.max(0, Number(actualStock) || 0);
+  if (!variantName) return total;
+  const variants = product?.metadata?.variants ?? (product as any)?.variants;
   const hit = Array.isArray(variants)
     ? variants.find((v: any) => v?.name === variantName)
     : undefined;
   const fromMirror = Math.max(0, Number(hit?.stock) || 0);
-
-  // The ledger keeps ONE quantity per product — there are no per-درجة lines —
-  // so the split between درجات can only come from the mirror. It is still
-  // clamped to the product's authoritative total: a درجة must never offer
-  // units the product as a whole does not have, which is exactly how the
-  // fondation showed "احمر — المتاح: 30" against a ledger holding zero.
-  return Math.min(fromMirror, getActualStock(product));
+  return Math.min(fromMirror, total);
 }

@@ -43,6 +43,7 @@ import {
 import { buildSaleLines } from "../src/lib/ledger/sales.ts";
 import {
   countsAsWastedTrip,
+  depositForfeitedOn,
   shippingFeeFor,
   shippingBorneBy,
   toReturnCause,
@@ -648,13 +649,72 @@ test("a waived delivery stays waived however many trips are owed", () => {
 // the shop caused was absorbed even when the customer had walked away. Movement
 // describes the journey; it cannot describe fault.
 
-test("return_cause validation: only the three values survive", () => {
-  assert.deepEqual([...RETURN_CAUSES], ["customer", "shop", "unknown"]);
+test("return_cause validation: only the four values survive", () => {
+  // 029 added `courier`. The set stays closed — a typo must never become blame.
+  assert.deepEqual([...RETURN_CAUSES], ["customer", "courier", "shop", "unknown"]);
   for (const good of RETURN_CAUSES) assert.equal(toReturnCause(good), good);
-  // Anything else lands on "unknown" — never on blame.
-  for (const bad of [null, undefined, "", "CUSTOMER", "courier", "customer ", "1", 7]) {
+  for (const bad of [null, undefined, "", "CUSTOMER", "COURIER", "customer ", "1", 7]) {
     assert.equal(toReturnCause(bad), "unknown", `${String(bad)} must not become a cause`);
   }
+});
+
+test("a courier-caused failure is billed to the courier, never to the shop", () => {
+  assert.equal(shippingBorneBy("courier", "return"), "courier");
+  assert.equal(shippingBorneBy("courier", "exchange"), "courier");
+});
+
+test("the deposit is kept only when the CUSTOMER walked away", () => {
+  // The established rule, and the three cases it was being misapplied to.
+  assert.equal(depositForfeitedOn("customer", "return"), true);
+  assert.equal(depositForfeitedOn("unknown", "return"), true, "pre-026 default must not move");
+  assert.equal(depositForfeitedOn("shop", "return"), false, "our mistake, their money back");
+  assert.equal(depositForfeitedOn("courier", "return"), false, "courier's fault, their money back");
+  for (const c of RETURN_CAUSES) {
+    assert.equal(depositForfeitedOn(c, "exchange"), false, `${c} exchange funds the replacement`);
+  }
+});
+
+test("a courier-caused RTO refunds the deposit instead of booking it as income", () => {
+  const lines = buildOrderRTOLines({
+    items: [{ productId: "A", quantity: 1, unitPrice: 300, unitCost: 100 }],
+    refundedDeposit: 50,
+    wallet: "inStoreSafe",
+    customerId: "c1",
+  });
+  const wallet = lines.find((l) => l.account === "wallet");
+  assert.equal(wallet?.amount, -50, "the money actually goes back out of the till");
+  assert.ok(
+    !lines.some((l) => l.subjectId === "forfeited_deposit"),
+    "nothing was earned, so nothing may be booked as income",
+  );
+  assert.ok(
+    !lines.some((l) => l.account === "customer_ltv"),
+    "and the customer did not spend it",
+  );
+});
+
+test("the same deposit cannot be both kept and refunded", () => {
+  assert.throws(
+    () =>
+      buildOrderRTOLines({
+        items: [{ productId: "A", quantity: 1, unitPrice: 300, unitCost: 100 }],
+        forfeitedDeposit: 50,
+        refundedDeposit: 50,
+        wallet: "inStoreSafe",
+      }),
+    /both kept and refunded/,
+  );
+});
+
+test("a refunded deposit needs a till to come out of", () => {
+  assert.throws(
+    () =>
+      buildOrderRTOLines({
+        items: [{ productId: "A", quantity: 1, unitPrice: 300, unitCost: 100 }],
+        refundedDeposit: 50,
+      }),
+    /needs a wallet/,
+  );
 });
 
 test("every cause has an operator-facing label", () => {

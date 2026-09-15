@@ -12,13 +12,20 @@ import {
   ChevronDown,
   ChevronUp,
   Printer,
+  Loader2,
 } from "lucide-react";
 import { useCourierStore } from "@/store/useCourierStore";
 import { useOrderStore } from "@/store/useOrderStore";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { appendEvent, events } from "@/lib/ledger";
 import { buildCourierBatchSettlementLines } from "@/lib/ledger/orders";
-import { batchSummary, courierIdOf, unsettledDeliveries } from "@/lib/courierBatch";
+import {
+  batchSummary,
+  courierIdOf,
+  isLegacyCourier,
+  LEGACY_COURIER_LABEL,
+  unsettledDeliveries,
+} from "@/lib/courierBatch";
 import { generateCourierPdf, storeIdentity } from "@/lib/pdfGenerator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -170,11 +177,49 @@ export function CourierLedgerPage() {
     for (const order of orders) {
       const id = courierIdOf(order);
       if (!found.has(id)) {
-        found.set(id, { id, name: order.courierName || "شركة الشحن الافتراضية" });
+        // The legacy bucket is labelled as what it is. Calling it «شركة الشحن
+        // الافتراضية» read as a real company with a real balance; it is
+        // unassigned history — see `LEGACY_COURIER_LABEL`.
+        found.set(id, {
+          id,
+          name: isLegacyCourier(id)
+            ? LEGACY_COURIER_LABEL
+            : order.courierName || LEGACY_COURIER_LABEL,
+        });
       }
     }
     return [...found.values()];
   }, [accounts, orders]);
+
+  // ── Registering a courier ────────────────────────────────────────────────
+  const [newCourierName, setNewCourierName] = useState("");
+  const [newCourierPhone, setNewCourierPhone] = useState("");
+  const [registering, setRegistering] = useState(false);
+  const [registerError, setRegisterError] = useState<string | null>(null);
+
+  async function registerCourier() {
+    const name = newCourierName.trim();
+    if (!name || registering) return;
+    setRegistering(true);
+    setRegisterError(null);
+    try {
+      // `couriers_name_per_store` is UNIQUE on (store_id, lower(name)) among
+      // live rows, so the duplicate is refused by Postgres rather than by a
+      // check this screen could race with.
+      await useCourierStore.getState().addCourier({ name, phone: newCourierPhone.trim() });
+      setNewCourierName("");
+      setNewCourierPhone("");
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      setRegisterError(
+        /duplicate|unique/i.test(detail)
+          ? `«${name}» متسجّلة قبل كده.`
+          : `تعذّر تسجيل شركة الشحن. ${detail}`,
+      );
+    } finally {
+      setRegistering(false);
+    }
+  }
 
   const openByCourier = useMemo(() => {
     const map = new Map<string, number>();
@@ -399,6 +444,37 @@ export function CourierLedgerPage() {
           </p>
         </div>
       )}
+
+      {/* Registration. THE management screen for couriers — the order form now
+          selects from this list instead of taking a typed name, so a company
+          that is not registered here cannot be assigned to an order. */}
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <h3 className="font-bold mb-3">تسجيل شركة شحن / مندوب</h3>
+        <div className="flex gap-2 flex-wrap items-end">
+          <div className="space-y-1.5 flex-1 min-w-[12rem]">
+            <Label htmlFor="courier-name">الاسم</Label>
+            <Input
+              id="courier-name"
+              value={newCourierName}
+              onChange={(e) => setNewCourierName(e.target.value)}
+              placeholder="مثال: أرامكس"
+            />
+          </div>
+          <div className="space-y-1.5 flex-1 min-w-[10rem]">
+            <Label htmlFor="courier-phone">الهاتف (اختياري)</Label>
+            <Input
+              id="courier-phone"
+              value={newCourierPhone}
+              onChange={(e) => setNewCourierPhone(e.target.value)}
+            />
+          </div>
+          <Button onClick={registerCourier} disabled={!newCourierName.trim() || registering}>
+            {registering ? <Loader2 className="size-4 ml-2 animate-spin" /> : null}
+            تسجيل
+          </Button>
+        </div>
+        {registerError && <p className="text-sm text-red-600 mt-2">{registerError}</p>}
+      </div>
 
       <div className="rounded-2xl border border-border bg-card overflow-hidden">
         <Table>

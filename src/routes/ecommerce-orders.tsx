@@ -1,5 +1,7 @@
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { CourierSelect } from "@/components/shipping/CourierSelect";
+import { requiresCourierAssignment } from "@/lib/courierBatch";
 import { Component, useState, useMemo, useCallback, useEffect, type ReactNode } from "react";
 import {
   ShoppingBag,
@@ -52,7 +54,7 @@ import { applyDiscountCode } from "@/lib/discounts";
 import { claimDiscountUse, releaseDiscountUse } from "@/services/discountUsage";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import type { EcommerceOrderItem, WalletType } from "@/types";
-import { WALLET_LABELS } from "@/types";
+import { WALLET_LABELS, canonicalWallet } from "@/types";
 
 type PaymentMethod = "full_prepaid" | "partial_cod";
 
@@ -208,8 +210,13 @@ function EcommerceOrdersInner() {
   const [pendingVariantSelection, setPendingVariantSelection] = useState<{ product: any; qty: number } | null>(null);
 
   const [deposit_amount, setDepositAmount] = useDraftState("eco-order:deposit", "");
-  const [depositWallet, setDepositWallet] = useDraftState<WalletType>("eco-order:depositWallet", "instaPay");
+  // A draft saved before the key was canonicalised can still hold `instapay`
+  // in localStorage, so the stored value is folded on the way in too.
+  const [depositWalletRaw, setDepositWallet] = useDraftState<WalletType>("eco-order:depositWallet", "instaPay");
+  const depositWallet = canonicalWallet(depositWalletRaw);
   const [courierName, setCourierName] = useDraftState("eco-order:courierName", "");
+  /** The registry id. This is what `receivable_courier` books against. */
+  const [courierId, setCourierId] = useDraftState("eco-order:courierId", "");
   const [courierFee, setCourierFee] = useDraftState("eco-order:courierFee", "");
   
   const [discountCodeInput, setDiscountCodeInput] = useDraftState("eco-order:discountCode", "");
@@ -568,6 +575,26 @@ function EcommerceOrdersInner() {
       return;
     }
 
+    // A shipped order MUST name a registered courier. Without this the order's
+    // COD and fees book to the legacy `default` subject, and that money is
+    // unattributable from the moment it is written — which is how 2,340 EGP of
+    // it accumulated before the registry existed. Checked here because this is
+    // the last point before an append-only ledger write.
+    if (
+      requiresCourierAssignment({
+        courierId,
+        shippingFee: shipping_fee,
+        expectedCod: remaining_balance,
+        governorate,
+      })
+    ) {
+      setResult({
+        success: false,
+        message: "اختر شركة الشحن من القائمة — لو مش موجودة سجّلها الأول من حسابات الشحن.",
+      });
+      return;
+    }
+
     // An exchange has to say WHAT it replaces and WHAT is coming back, and the
     // original has to still be eligible right now — the form may have been open
     // for a while, and the same order can be returned from three other screens.
@@ -696,11 +723,21 @@ function EcommerceOrdersInner() {
       }
     }
 
+    // Allocated HERE, before the ledger event, because `order_placed` reserves
+    // the stock and banks the deposit and must be traceable to its order.
+    // Every other event in an order's life carries `refId: orderNumber`;
+    // measured on QA-STORE, every client-written `order_placed` carried none —
+    // so a per-order ledger reconciliation was missing the one event that
+    // opens the order. Same shape the store used, so nothing about the number
+    // itself changes.
+    const orderNumber = `ECO-${Date.now()}`;
+
     try {
       await appendEvent({
         kind: "order_placed",
         actor: "أونلاين",
         refType: "ecommerce_order",
+        refId: orderNumber,
         payload: {
           customerName: customer_name.trim(),
           governorate,
@@ -748,6 +785,8 @@ function EcommerceOrdersInner() {
     let orderResult: Awaited<ReturnType<typeof addOrder>>;
     try {
       orderResult = await addOrder({
+      // The number the ledger event above already points at.
+      orderNumber,
       customerId: customerId || undefined,
       customerName: customer_name.trim(),
       customerPhone: customer_phone.trim(),
@@ -789,6 +828,9 @@ function EcommerceOrdersInner() {
       depositWallet: depositVal > 0 ? depositWallet : undefined,
       expectedCod: remaining_balance,
       courierName,
+      // Without this the order named a company in `courierName` while every
+      // ledger line booked to the subject `"default"` — see `courierIdOf`.
+      courierId: courierId || undefined,
       courierFee: courierFeeValue,
       status: "pending",
       isExchange,
@@ -821,6 +863,9 @@ function EcommerceOrdersInner() {
           kind: "order_cancelled",
           actor: "أونلاين",
           refType: "ecommerce_order",
+          // The same number the refused `order_placed` used, so the reservation
+          // and its release are one traceable pair rather than two orphans.
+          refId: orderNumber,
           payload: {
             customerName: customer_name.trim(),
             reason: "order document refused — reservation released",
@@ -941,6 +986,7 @@ function EcommerceOrdersInner() {
     refreshStock,
     courierFee,
     courierName,
+    courierId,
     paymentMethod,
     appliedDiscount,
     discountAmount,
@@ -1528,11 +1574,20 @@ function EcommerceOrdersInner() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label className="text-sm font-medium">شركة الشحن / المندوب</Label>
-            <input
-              value={courierName}
-              onChange={(e) => setCourierName(e.target.value)}
-              placeholder="اسم شركة الشحن"
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            {/* SELECTED, not typed. A free-text box made «أرامكس», «اراميكس»
+                and «Aramex » three couriers whose money could never be
+                reconciled into one account — and the order's MONEY books
+                against `courierId`, which a typed name never set at all.
+                Companies are registered in حسابات الشحن; see migration 030. */}
+            <CourierSelect
+              value={courierId}
+              onChange={(id, name) => {
+                setCourierId(id);
+                // The name is snapshotted alongside the id so a printed order
+                // and an archived courier still render.
+                setCourierName(name);
+              }}
+              legacyName={courierName}
             />
           </div>
           <div className="space-y-1.5">

@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useCustomerStore } from "@/store/useCustomerStore";
-import { activeCustomers, duplicateOf, isCustomerArchived, orderBelongsTo, deriveCustomerMetrics, type CustomerMetrics } from "@/lib/customers";
+import { activeCustomers, duplicateOf, isCustomerArchived, orderBelongsTo, saleBelongsTo, deriveCustomerMetrics, type CustomerMetrics } from "@/lib/customers";
 import { CustomerRemovalDialog } from "@/components/ecommerce/CustomerRemovalDialog";
 import { useOrderStore } from "@/store/useOrderStore";
 import { useBalances } from "@/lib/ledger/useBalances";
@@ -184,7 +184,9 @@ export function CRMPage() {
       originalData: o,
     }));
     
-    const pos = posSales.filter(sale => (sale.payload as any)?.customerId === selectedCustomer.id).map(s => {
+    // `saleBelongsTo`, not a raw id compare: a till sale taken before the
+    // customer was linked still belongs in their history.
+    const pos = posSales.filter((sale) => saleBelongsTo(sale, selectedCustomer)).map(s => {
       const p = s.payload as any;
       const totalAmount = p.totalAmount || (p.items || []).reduce((acc: number, item: any) => acc + (item.quantity * item.unitPrice), 0);
       return {
@@ -206,13 +208,13 @@ export function CRMPage() {
   const customerMetrics = useMemo(() => {
     const map = new Map();
     for (const c of listed) {
-      map.set(c.id, deriveCustomerMetrics(c.id, orders, posSales));
+      map.set(c.id, deriveCustomerMetrics(c, orders, posSales));
     }
     return map;
   }, [listed, orders, posSales]);
 
   const selectedMetrics: CustomerMetrics = selectedCustomer
-    ? customerMetrics.get(selectedCustomer.id) || deriveCustomerMetrics(selectedCustomer.id, orders, posSales)
+    ? customerMetrics.get(selectedCustomer.id) || deriveCustomerMetrics(selectedCustomer, orders, posSales)
     : { totalOrders: 0, preferredProducts: [], lastOrderAt: undefined };
 
   const [selectedTimelineOrder, setSelectedTimelineOrder] = useState<any | null>(null);

@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { balances } from "./index";
 import type { Account, EventKind } from "./types";
+import { canonicalWallet } from "@/types";
 
 export interface BalancesView {
   /** Signed EGP for one subject. Absent means zero — no events yet. */
@@ -48,7 +49,21 @@ export function useBalances(account: Account, kind?: EventKind): BalancesView {
       try {
         const rows = await balances({ account, kind });
         if (cancelled) return;
-        setAmounts(new Map(rows.map((r) => [r.subjectId, r.amount])));
+        // Wallet subjects are folded onto their canonical key before the map is
+        // built. The ledger holds two spellings of one till — `instaPay` and
+        // `instapay` — from a period when `WALLET_LABELS` disagreed with every
+        // writer, and a Map keyed on the raw subject turns one account into two
+        // entries of which the screens can only ever see one. Folding on READ
+        // fixes the display without rewriting a single append-only line.
+        //
+        // Only wallets: every other account is keyed by a real id (product,
+        // supplier, courier, customer) where case is meaningful and unique.
+        const folded = new Map<string, number>();
+        for (const row of rows) {
+          const key = account === "wallet" ? canonicalWallet(row.subjectId) : row.subjectId;
+          folded.set(key, (folded.get(key) ?? 0) + row.amount);
+        }
+        setAmounts(folded);
         setError(null);
       } catch (e) {
         if (cancelled) return;

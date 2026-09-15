@@ -37,6 +37,7 @@ import {
   rateFor,
   clearsShippingDebt,
   countsAsWastedTrip,
+  depositForfeitedOn,
   shippingBorneBy,
   toReturnCause,
   RETURN_CAUSES,
@@ -110,7 +111,7 @@ import { actionsFor, canDo, claimOrder, releaseOrder } from "@/lib/orderLifecycl
 import { exchangeBlock, movementFor, EXCHANGE_BLOCK_TEXT } from "@/lib/exchange";
 import { courierIdOf } from "@/lib/courierBatch";
 import type { EcommerceOrder, EcommerceOrderItem, EcommerceOrderStatus, WalletType } from "@/types";
-import { WALLET_LABELS } from "@/types";
+import { WALLET_LABELS, canonicalWallet } from "@/types";
 import { generateOrdersPdf } from "@/lib/pdfGenerator";
 
 const STATUS_META: Record<
@@ -202,6 +203,8 @@ export function OrdersPage() {
   // Who caused it. Defaults to "unknown" so a rushed confirmation never files
   // blame the operator did not actually enter.
   const [confirmCause, setConfirmCause] = useState<ReturnCause>("unknown");
+  /** Cash out of the till now, or netted off the courier's account. See §5. */
+  const [refundVia, setRefundVia] = useState<"wallet" | "courier">("wallet");
   // Editing a pending order. `draft` holds the new contents until saved; the
   // order document and the ledger are only touched on confirm.
   const [editOrderId, setEditOrderId] = useState<string | null>(null);
@@ -594,7 +597,12 @@ export function OrdersPage() {
           // the builder skips the refund line. That is correct: you cannot
           // reverse something that was never recorded.
           depositAmount: order.depositAmount,
-          wallet: order.depositWallet,
+          // Canonicalised on the way back OUT of the document. Three QA-STORE
+          // orders still carry the legacy `instapay` spelling from before
+          // `WALLET_LABELS` and the writers agreed; refunding into that raw
+          // value would keep growing a subject no picker can show. Reading it
+          // through `canonicalWallet` keeps the write on the one real till.
+          wallet: canonicalWallet(order.depositWallet ?? ""),
         }),
       });
       
@@ -666,6 +674,9 @@ export function OrdersPage() {
       const movement = movementFor(order, orders);
       const cause = confirmCause;
       const feeBorneBy = shippingBorneBy(cause, movement);
+      // Capped at the order total, exactly as the refund branch caps it: a
+      // deposit larger than the goods must not turn a refusal into a payout.
+      const deposit = Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0);
 
       if (returnType === "rto") {
         await appendEvent({
@@ -682,13 +693,19 @@ export function OrdersPage() {
               unitCost: line.unitCost ?? 0,
             })),
             returnFee: rateFor(shippingRates, order.governorate, "return"),
-            // An RTO the customer caused is recovered from them, not absorbed.
+            // An RTO the customer caused is recovered from them; one the COURIER
+            // caused is compensated by them. Neither is the shop's expense.
             feeBorneBy,
             courierId: courierIdOf(order),
             // Refused at the door: the trip was still made and paid for, so the
             // deposit stays and is booked as income rather than sitting in the
-            // till unexplained.
-            forfeitedDeposit: order.depositAmount ?? 0,
+            // till unexplained — but ONLY when the customer is the one who
+            // walked away. A refusal caused by the courier or by us is not the
+            // customer's doing, and keeping their money for it was the policy
+            // applied to the wrong person. Then it goes back out of the till.
+            ...(depositForfeitedOn(cause, movement)
+              ? { forfeitedDeposit: deposit }
+              : { refundedDeposit: deposit, wallet: targetWallet }),
             customerId: customerId ?? undefined,
           }),
         });
@@ -775,6 +792,15 @@ export function OrdersPage() {
               variantName: l.variantName,
             })),
           );
+
+          // The DOCUMENTS, so the per-invoice «متبقي» matches the balance the
+          // ledger now holds — see `recordWholesaleReturn`.
+          for (const line of resolved.lines) {
+            await useBusinessStore
+              .getState()
+              .recordWholesaleReturn(line.invoiceId, line.unitPrice * line.quantity)
+              .catch(() => {});
+          }
           await useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date() });
           await updateOrderStatus(order.id, "returned");
           refreshStock();
@@ -792,7 +818,14 @@ export function OrdersPage() {
           actor: "أونلاين",
           refType: "ecommerce_order",
           refId: order.orderNumber,
-          payload: { customerName: order.customerName, confirmedBy: confirmName.trim() },
+          payload: {
+            customerName: order.customerName,
+            confirmedBy: confirmName.trim(),
+            // Recorded so a settlement can be read back without re-deriving it
+            // from the lines: who was responsible, and how the money went.
+            return_cause: cause,
+            refundVia,
+          },
           lines: buildReturnConfirmedLines({
             items: (order.stockItems ?? []).map((line) => ({
               productId: line.productId,
@@ -824,10 +857,15 @@ export function OrdersPage() {
             // revenue/LTV net to the price difference — which is the whole
             // invariant. The courier's trip is still paid for, by the customer,
             // through the pass-through exchange fee below.
-            forfeitedDeposit:
-              movement === "exchange"
-                ? 0
-                : Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0),
+            // `depositForfeitedOn` holds both halves of the rule: an exchange
+            // never forfeits (the money funds the replacement), and neither does
+            // a return we or the courier caused.
+            forfeitedDeposit: depositForfeitedOn(cause, movement)
+              ? Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0)
+              : 0,
+            // Cash now, or off the courier's account — see the picker in the
+            // confirm dialog and `refundVia` on the builder.
+            refundVia,
             wallet: targetWallet,
             revenueAmount: order.totalAmount,
             // The fee comes from the Settings matrix, and WHICH rate applies
@@ -890,6 +928,7 @@ export function OrdersPage() {
       setConfirmDialog({ orderId: "", open: false });
       setConfirmName("");
       setConfirmCause("unknown");
+      setRefundVia("wallet");
     } catch (e) {
       setActionError(
         `لم يتأكد المرتجع ولم يتغيّر المخزون. ${e instanceof Error ? e.message : String(e)}`,
@@ -1048,7 +1087,7 @@ export function OrdersPage() {
         expectedCod: round(Math.max(0, (order.expectedCod ?? 0) - payValue)),
         // Remember the till of the FIRST money in, so an order that was never
         // topped up reads exactly as it did before.
-        depositWallet: order.depositWallet ?? payWallet,
+        depositWallet: canonicalWallet(order.depositWallet ?? payWallet),
       });
 
       refreshWallets();
@@ -2172,21 +2211,45 @@ export function OrdersPage() {
                 {RETURN_CAUSE_HINTS[confirmCause]}
               </p>
             </div>
+            {/* HOW the refund reaches the customer. A COD order that comes
+                back was never paid into our till — the courier is still
+                holding that cash — so forcing a treasury debit would pay the
+                customer twice and leave the courier owing us the full amount.
+                Asked explicitly rather than assumed. */}
             <div className="space-y-2">
-              <Label>الخزينة اللي هيتخصم منها المسترد</Label>
-              <Select value={targetWallet} onValueChange={(v) => setTargetWallet(v as WalletType)}>
+              <Label>المسترد هيترد إزاي؟</Label>
+              <Select value={refundVia} onValueChange={(v) => setRefundVia(v as "wallet" | "courier")}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.entries(WALLET_LABELS).map(([key, label]) => (
-                    <SelectItem key={key} value={key}>
-                      {label}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="wallet">كاش من الخزينة دلوقتي</SelectItem>
+                  <SelectItem value="courier">يتخصم من حساب شركة الشحن</SelectItem>
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground">
+                {refundVia === "courier"
+                  ? "مش هيتخصم من الخزينة — المبلغ هينزل من اللي شركة الشحن مستحقّاه لنا ويتسوّى في الدفعة."
+                  : "الفلوس هتطلع من الخزينة اللي تحت دلوقتي."}
+              </p>
             </div>
+            {refundVia === "wallet" && (
+              <div className="space-y-2">
+                <Label>الخزينة اللي هيتخصم منها المسترد</Label>
+                <Select value={targetWallet} onValueChange={(v) => setTargetWallet(v as WalletType)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(WALLET_LABELS).map(([key, label]) => (
+                      <SelectItem key={key} value={key}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             {/* Delivered on a trader's account: the goods pay down the debt
                 instead of the till paying out. Same panel as نقطة البيع. */}
             {returnClientId && resolvedOrderReturn.ok && (

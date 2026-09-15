@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
-import { formatMoney, discountAmountFor, subtract, includedVat, round } from "@/lib/math";
+import { formatMoney, formatBalance, discountAmountFor, subtract, includedVat, round } from "@/lib/math";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
-import { productWholesalePrice, getActualStock, getVariantStock, activeProducts } from "@/lib/product";
+import { productWholesalePrice, getActualStock, getVariantStock, sellableStock, activeProducts } from "@/lib/product";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import {
@@ -423,6 +423,16 @@ export function WholesalePage() {
           variantName: l.variantName,
         })),
       );
+
+      // The DOCUMENTS, so the per-invoice «متبقي» matches the balance the
+      // ledger now holds. Without this the invoice list kept showing an open
+      // amount that had already come back — see `recordWholesaleReturn`.
+      for (const line of resolved.lines) {
+        await useBusinessStore
+          .getState()
+          .recordWholesaleReturn(line.invoiceId, line.unitPrice * line.quantity)
+          .catch(() => {});
+      }
 
       refreshStock();
       refreshDebt();
@@ -870,7 +880,8 @@ export function WholesalePage() {
           { label: "الهاتف", accessor: (c) => c.phone, align: "center" },
           { label: "إجمالي مفوتر", accessor: (c) => formatMoney(totalsOf(c.id).invoiced), align: "center" },
           { label: "مدفوع", accessor: (c) => formatMoney(totalsOf(c.id).paid), align: "center" },
-          { label: "متبقي", accessor: (c) => formatMoney(debtOf(c.id)), align: "center" },
+          // Signed, and said in words — see `formatBalance`.
+          { label: "الرصيد", accessor: (c) => formatBalance(debtOf(c.id)), align: "center" },
         ],
         rows: filteredClients,
         footer: `إجمالي العملاء: ${filteredClients.length}`,
@@ -942,9 +953,13 @@ export function WholesalePage() {
           <CardContent className="p-5">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-xs tracking-wider text-muted-foreground">الديون المستحقة</p>
+                <p className="text-xs tracking-wider text-muted-foreground">
+                  {totalReceivables < 0 ? "أرصدة للعملاء عندنا" : "الديون المستحقة"}
+                </p>
                 <p className="font-display text-3xl font-semibold mt-2">
-                  {formatMoney(totalReceivables)}
+                  {/* The heading flips with the sign. A bare «؜-٥٠٠ ج.م» under
+                      «الديون المستحقة» reads as the opposite of a credit. */}
+                  {formatMoney(Math.abs(totalReceivables))}
                 </p>
               </div>
               <div
@@ -1193,7 +1208,7 @@ export function WholesalePage() {
                               (hasDebt ? " text-amber-600 dark:text-amber-500" : "")
                             }
                           >
-                            {formatMoney(owed)}
+                            {formatBalance(owed)}
                           </TableCell>
                           <TableCell className="text-right px-4">
                             <Badge
@@ -1201,7 +1216,13 @@ export function WholesalePage() {
                                 hasOverdue ? "destructive" : hasDebt ? "secondary" : "default"
                               }
                             >
-                              {hasOverdue ? "حساب متأخر" : hasDebt ? "عليه رصيد" : "حساب جيد"}
+                              {hasOverdue
+                                ? "حساب متأخر"
+                                : hasDebt
+                                  ? "عليه رصيد"
+                                  : owed < 0
+                                    ? "له رصيد عندنا"
+                                    : "حساب جيد"}
                             </Badge>
                           </TableCell>
                           <TableCell
@@ -1415,7 +1436,14 @@ export function WholesalePage() {
                         <CommandEmpty>لم يتم العثور على منتجات.</CommandEmpty>
                         <CommandGroup>
                           {activeProducts(products).map((p) => {
-                            const stock = getActualStock(p);
+                            // `sellableStock`, not `getActualStock`: a بوكس owns
+                            // no ledger stock of its own, so `getActualStock`
+                            // correctly returns 0 for it — and this picker then
+                            // showed «نفد المخزون» for every box while المخزون
+                            // showed the 7 you could actually build. نقطة البيع
+                            // hit the same wall and was fixed; this screen was
+                            // missed, so a box could never be sold wholesale.
+                            const stock = sellableStock(p, products);
                             return (
                               <CommandItem
                                 key={p.id}
@@ -1956,7 +1984,16 @@ export function WholesalePage() {
           const mInvoices = wholesaleInvoices.filter((i) => i.clientId === selectedMerchant.id);
           const mVolume = mInvoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
           const mPaid = mInvoices.reduce((sum, inv) => sum + (inv.paidAmount || 0), 0);
-          const mOwed = mInvoices.reduce((sum, inv) => sum + (inv.remainingAmount ?? ((inv.totalAmount || 0) - (inv.paidAmount || 0))), 0);
+          // THE LEDGER, exactly as the list column and the invoice panel read
+          // it. This used to sum `remainingAmount` off the invoice DOCUMENTS,
+          // which is a second balance that drifts: a return and an overpayment
+          // both move `receivable_client` and neither writes back to an
+          // invoice row. That is why this dialog could read −500 for a trader
+          // the rest of the screen showed as owing 1,300.
+          //
+          // Sign, stated once: `receivable_client` is POSITIVE when the trader
+          // owes US, negative when they are in credit with us.
+          const mOwed = debtOf(selectedMerchant.id);
           const hasOverdue = mInvoices.some(
             (i) => i.remainingAmount > 0 && i.dueDate && new Date(i.dueDate) < new Date(),
           );
@@ -1967,8 +2004,8 @@ export function WholesalePage() {
                 <div className="hidden print:block text-center text-2xl font-black mb-6 border-b pb-4">كشف حساب عميل - Statement of Account</div>
                 <DialogTitle className="flex items-center gap-3">
                   <span className="text-2xl font-bold">{selectedMerchant.companyName}</span>
-                  <Badge variant={mOwed > 0 ? "destructive" : "default"} className={mOwed === 0 ? "bg-green-600 hover:bg-green-700" : ""}>
-                    {mOwed > 0 ? "عليه مديونية" : "حساب جيد"}
+                  <Badge variant={mOwed > 0 ? "destructive" : "default"} className={mOwed <= 0 ? "bg-green-600 hover:bg-green-700" : ""}>
+                    {mOwed > 0 ? "عليه مديونية" : mOwed < 0 ? "له رصيد عندنا" : "حساب جيد"}
                   </Badge>
                 </DialogTitle>
                 <DialogDescription className="flex items-center gap-4 text-base pt-1">
@@ -1998,8 +2035,12 @@ export function WholesalePage() {
                 </Card>
                 <Card className="bg-amber-50 dark:bg-amber-950/30 border-amber-200 print:break-inside-avoid print:border-gray-300">
                   <CardContent className="p-4 flex flex-col items-center justify-center text-center">
-                    <p className="text-sm text-amber-800 dark:text-amber-500 mb-1">المتبقي / المديونية</p>
-                    <p className="text-2xl font-bold text-amber-700 dark:text-amber-400">{formatMoney(mOwed)}</p>
+                    <p className="text-sm text-amber-800 dark:text-amber-500 mb-1">
+                      {mOwed < 0 ? "رصيد له عندنا" : "المتبقي / المديونية"}
+                    </p>
+                    <p className="text-2xl font-bold text-amber-700 dark:text-amber-400">
+                      {formatMoney(Math.abs(mOwed))}
+                    </p>
                   </CardContent>
                 </Card>
               </div>

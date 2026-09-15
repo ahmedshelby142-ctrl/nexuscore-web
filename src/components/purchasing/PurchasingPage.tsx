@@ -27,6 +27,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
@@ -35,8 +42,9 @@ import { useStock } from "@/lib/ledger/useStock";
 import { appendEvent, balancesByRef } from "@/lib/ledger";
 import { buildPurchaseLines } from "@/lib/ledger/purchases";
 import { nextDocumentNumber } from "@/services/documentNumber";
+import { commitReceipt } from "@/lib/receiving";
 import { ProductSearch } from "@/components/products/ProductSearch";
-import { formatMoney, formatQty, round } from "@/lib/math";
+import { formatMoney, formatBalance, formatQty, round } from "@/lib/math";
 import { useBalances } from "@/lib/ledger/useBalances";
 import {
   buildSupplierReturnLines,
@@ -51,7 +59,10 @@ import {
   type SupplierReturnSelection,
 } from "@/components/purchasing/SupplierReturnPicker";
 import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
+import { allocateSupplierPayment, openInvoicesFor } from "@/lib/supplierSettlement";
+import { commitSupplierPayment, formatSupplierPaymentSuccess } from "@/lib/supplierPaymentCommand";
 import { WALLET_LABELS } from "@/types";
+import type { WalletType } from "@/types";
 import { cn } from "@/lib/utils";
 
 const NEW_SUPPLIER = "__new__";
@@ -108,13 +119,69 @@ export function PurchasingPage() {
   const supplierMetrics = selectedSupplier ? (() => {
     const invs = purchaseInvoices.filter(i => i.supplierId === selectedSupplier.id);
     const totalVolume = invs.reduce((sum, i) => sum + i.totalAmount, 0);
-    return { invs, totalVolume };
+    // The still-open ones, oldest first — the same order a payment settles
+    // them in, so what the operator sees is what the allocator will do.
+    const open = openInvoicesFor(invs as never, selectedSupplier.id);
+    // THE LEDGER decides what is owed. `remainingAmount` on the documents is
+    // the per-invoice breakdown of this number, never a second opinion on it.
+    const owed = debtOf(selectedSupplier.id);
+    return { invs, totalVolume, open, owed };
   })() : null;
 
   // One submit at a time. See `useSubmitGate` — `saving`/`returning` state
   // cannot do this on its own.
   const receiveGate = useSubmitGate();
   const returnGate = useSubmitGate();
+  const payGate = useSubmitGate();
+
+  // ── تسوية المورد ──────────────────────────────────────────────────────────
+  const [isPayOpen, setIsPayOpen] = useState(false);
+  const [payWallet, setPayWallet] = useState<WalletType>("inStoreSafe");
+  const [payInput, setPayInput] = useState("");
+  const [payNote, setPayNote] = useState("");
+  const [payError, setPayError] = useState<string | null>(null);
+  const [paying, setPaying] = useState(false);
+
+  const payAmount = Math.max(0, Number(payInput) || 0);
+  /** The plan the operator is about to confirm. Recomputed as they type. */
+  const payPlan = useMemo(() => {
+    if (!selectedSupplier || payAmount <= 0) return null;
+    try {
+      return allocateSupplierPayment(supplierMetrics?.open ?? [], payAmount);
+    } catch {
+      return null;
+    }
+  }, [selectedSupplier, payAmount, supplierMetrics?.open]);
+
+  const canPay = Boolean(selectedSupplier) && payAmount > 0 && !paying;
+
+  async function paySupplier() {
+    if (!selectedSupplier || !canPay || !payGate.enter()) return;
+    setPaying(true);
+    setPayError(null);
+    try {
+      const result = await commitSupplierPayment({
+        supplierId: selectedSupplier.id,
+        supplierName: selectedSupplier.companyName,
+        wallet: payWallet,
+        amount: payAmount,
+        invoices: purchaseInvoices as never,
+        note: payNote.trim(),
+        actor: "المشتريات",
+      });
+      toast.success(formatSupplierPaymentSuccess(result));
+      setIsPayOpen(false);
+      setPayInput("");
+      setPayNote("");
+      // Both halves of what changed: the ledger balance and the documents.
+      refreshDebt();
+    } catch (e) {
+      setPayError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPaying(false);
+      payGate.exit();
+    }
+  }
 
   const registeringNew = supplierId === NEW_SUPPLIER;
   const supplierReady = registeringNew ? newSupplierName.trim().length > 0 : supplierId !== "";
@@ -408,6 +475,18 @@ export function PurchasingPage() {
           lastReturnedAt: new Date().toISOString(),
         };
       }),
+      // …and the open balance, which this write used to leave alone. Measured
+      // on QA-STORE: `payable_supplier` for محمود held 2,600 — a 3,000 فاتورة
+      // آجل less a 400 return — while FM-0003 still read «متبقي ٣٬٠٠٠». The
+      // ledger is the authority either way, but the invoice list was showing
+      // an amount that had already gone back.
+      //
+      // `resolved.returnValue` is the same rounded figure `buildSupplierReturnLines`
+      // credited to the ledger, so the two cannot differ by a piastre.
+      remainingAmount: Math.max(
+        0,
+        (Number(invoice.remainingAmount) || 0) - resolved.returnValue,
+      ),
     });
   }
 
@@ -428,116 +507,51 @@ export function PurchasingPage() {
         : suppliers.find((s) => s.id === supplierId);
       if (!supplier?.id) throw new Error("المورد مش موجود");
 
-      // Allocated by Postgres, not by this browser's array length.
-      //
-      // `"FM-" + (purchaseInvoices.length + 1)` was the exact scheme
-      // `nextDocumentNumber` was written to delete — this was the last screen
-      // still using it. Two devices receiving at the same moment both reached
-      // FM-0003, and a browser that had not finished hydrating reached FM-0001
-      // again. `purchase_invoices_number_per_store` is a UNIQUE index, so the
-      // second write was REFUSED — after `appendEvent` had already put the
-      // stock and the payable on the ledger. Accounting with no document.
-      //
-      // ## Why the loop, instead of a migration
-      //
-      // Every store that has already received goods holds FM-0001… written by
-      // the old scheme, while `store_counters` has no `purchase_invoice` row at
-      // all — so the very first allocation would hand back FM-0001 and collide
-      // on day one. Seeding the counter per store is a data migration that
-      // every installed database would have to run before this build was safe.
-      // Skipping numbers already taken costs a few wasted draws ONCE per store,
-      // needs no migration, and leaves no window where a shop is broken.
-      // Numbering has never been gap-free anyway: a refused invoice burns a
-      // number by design.
-      let invoiceNumber = "";
-      for (let attempt = 0; attempt < 50; attempt++) {
-        const candidate = await nextDocumentNumber("purchase_invoice", "FM-");
-        if (!purchaseInvoices.some((i: any) => i.invoiceNumber === candidate)) {
-          invoiceNumber = candidate;
-          break;
-        }
-      }
-      if (!invoiceNumber) throw new Error("تعذّر إصدار رقم فاتورة جديد — جرّب تاني");
+      // The cost the goods leave at, frozen per line, plus the بوكس recipe.
+      // `buildPurchaseLines` has always known how to charge a bundle to its
+      // COMPONENTS, but this screen never told it the line WAS one — so a
+      // bundle received here booked stock and cost against a virtual product
+      // that has neither.
+      const ledgerItems = draft.map((i: any) => {
+        const record: any = products.find((p: any) => p.id === i.productId);
+        const bundle =
+          record?.isBundle && record.bundleItems?.length
+            ? {
+                isBundle: true,
+                bundleItems: record.bundleItems.map((c: any) => ({
+                  productId: c.productId,
+                  quantity: c.quantity,
+                  unitCost: c.unitCost ?? 0,
+                })),
+              }
+            : {};
+        return {
+          productId: i.productId,
+          productName: i.productName,
+          sku: i.product?.sku ?? "",
+          quantity: i.quantity,
+          unitCost: i.unitCost,
+          variantName: i.variantName,
+          ...bundle,
+        };
+      });
 
-      // ## Document BEFORE ledger
-      //
-      // The unique index on the invoice number is the only thing that can still
-      // refuse this receipt, and it refuses the DOCUMENT. Writing the document
-      // first means a refusal costs nothing; writing the ledger first meant a
-      // refusal left stock and a payable on the books with no receipt behind
-      // them — the "accounting without a document" §16 forbids. If the event
-      // then fails, the document is deleted again below.
-      const invoiceDoc = await addPurchaseInvoice({
-        invoiceNumber,
+      // ONE shared write path — `commitReceipt`. It draws an invoice number
+      // that is not already taken, writes the DOCUMENT before the ledger, and
+      // takes the document back if the ledger refuses. That ordering and that
+      // numbering used to live here and nowhere else, while desktop quick
+      // restock and the mobile receipt carried their own broken copies.
+      await commitReceipt({
         supplierId: supplier.id,
         supplierName: supplier.companyName,
-        items: draft.map((l) => ({
-          id: crypto.randomUUID(),
-          productId: l.productId,
-          productName: l.productName,
-          sku: l.product.sku,
-          // The draft merges by product AND variant, and every restock path
-          // keys on the shade — but the invoice document dropped it, so a
-          // return resolved off this receipt could not say which one came
-          // back. Free to carry: `items` is jsonb.
-          variantName: l.variantName,
-          quantity: l.quantity,
-          unitCost: l.unitCost,
-          total: l.quantity * l.unitCost,
-        })),
-        totalAmount: total,
+        items: ledgerItems,
+        wallet,
         paidAmount,
-        remainingAmount: owedAmount,
         dueDate: new Date().toISOString().slice(0, 10),
-        status: owedAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid",
         notes: owedAmount > 0 ? "فاتورة مشتريات (آجل جزئي)" : "فاتورة مشتريات (دفع نقدي)",
-      });
-
-      try {
-
-      await appendEvent({
-        kind: "purchase",
         actor: "الكاشير",
-        refType: "supplier_invoice",
-        refId: invoiceNumber,
-        payload: {
-          invoiceNumber,
-          supplierName: supplier.companyName,
-          itemCount: draft.length,
-          wallet,
-          via: "purchasing_page",
-        },
-        lines: buildPurchaseLines({
-          items: draft.map((l) => ({
-            productId: l.productId,
-            quantity: l.quantity,
-            unitCost: l.unitCost,
-            variantName: l.variantName,
-          })),
-          wallet,
-          supplierId: supplier.id,
-          paidAmount,
-        }),
+        via: "purchasing_page",
       });
-      } catch (e) {
-        // The money never moved, so the receipt must not stand. Deterministic
-        // compensation, not a hope — and if the delete itself fails the user is
-        // told, because an invoice with no ledger effect overstates what we owe.
-        await removePurchaseInvoice(invoiceDoc.id).catch(() => {
-          toast.error("الفاتورة اتسجلت بس الحركة المالية فشلت — امسح الفاتورة يدوياً");
-        });
-        throw e;
-      }
-
-      // Goods arriving. Plain products count too — that is what the old
-      // `if (line.variantName)` guard here silently excluded.
-      applyStockMoves(
-        draft.map((line) => ({
-          productId: line.productId,
-          delta: line.quantity,
-          variantName: line.variantName,
-        })),
-      );
 
       refreshStock();
       refreshDebt();
@@ -1133,7 +1147,7 @@ export function PurchasingPage() {
           <DialogTitle>ملف المورد: {selectedSupplier?.companyName}</DialogTitle>
         </DialogHeader>
         <div className="space-y-6 mt-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="rounded-xl border bg-muted/30 p-4">
               <p className="text-sm text-muted-foreground">عدد أوامر التوريد (POs)</p>
               <p className="text-2xl font-bold mt-2 text-gray-900 dark:text-white">{supplierMetrics?.invs.length || 0}</p>
@@ -1142,7 +1156,62 @@ export function PurchasingPage() {
               <p className="text-sm text-muted-foreground">إجمالي التعاملات</p>
               <p className="text-2xl font-bold mt-2 text-gray-900 dark:text-white">{formatMoney(supplierMetrics?.totalVolume || 0)}</p>
             </div>
+            {/* The balance, from `payable_supplier`. This card did not exist,
+                which is why a supplier account could only be read as a list of
+                invoices and never as "what do we still owe this person". */}
+            <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/30 border-amber-200 p-4">
+              <p className="text-sm text-amber-800 dark:text-amber-500">الرصيد المستحق</p>
+              <p className="text-2xl font-bold mt-2 text-amber-700 dark:text-amber-400">
+                {formatBalance(supplierMetrics?.owed ?? 0, { owed: "علينا", credit: "لنا" })}
+              </p>
+              <Button
+                size="sm"
+                className="mt-3 w-full"
+                onClick={() => {
+                  // Pre-filled with the whole outstanding balance: paying in
+                  // full is the common case, and a credit balance pre-fills
+                  // nothing because there is nothing to pay.
+                  setPayInput(
+                    (supplierMetrics?.owed ?? 0) > 0 ? String(round(supplierMetrics!.owed)) : "",
+                  );
+                  setPayError(null);
+                  setIsPayOpen(true);
+                }}
+              >
+                <CreditCard className="size-4 ml-2" />
+                تسجيل دفعة / تسوية
+              </Button>
+            </div>
           </div>
+
+          {/* الفواتير الآجلة — what the balance above is actually made of. */}
+          {(supplierMetrics?.open.length ?? 0) > 0 && (
+            <div>
+              <h4 className="font-bold mb-3 text-lg">الفواتير الآجلة</h4>
+              <div className="border rounded-lg overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-right px-4 text-gray-900 dark:text-white font-bold">رقم الفاتورة</TableHead>
+                      <TableHead className="text-right px-4 text-gray-900 dark:text-white font-bold">الاستحقاق</TableHead>
+                      <TableHead className="text-right px-4 text-gray-900 dark:text-white font-bold">المتبقي</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {supplierMetrics?.open.map((inv: any) => (
+                      <TableRow key={inv.id}>
+                        <TableCell className="text-right px-4 font-mono font-bold text-gray-900 dark:text-white">{inv.invoiceNumber}</TableCell>
+                        <TableCell className="text-right px-4">{inv.dueDate || "—"}</TableCell>
+                        <TableCell className="text-right px-4 font-mono font-bold text-amber-700 dark:text-amber-400">
+                          {formatMoney(inv.remainingAmount ?? 0)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
           
           <div>
             <h4 className="font-bold mb-3 text-lg">سجل أوامر التوريد</h4>
@@ -1174,6 +1243,90 @@ export function PurchasingPage() {
             </div>
           </div>
         </div>
+      </DialogContent>
+    </Dialog>
+
+    {/* تسوية المورد — the settlement the supplier account never had */}
+    <Dialog open={isPayOpen} onOpenChange={(open) => { if (!paying) setIsPayOpen(open); }}>
+      <DialogContent className="sm:max-w-lg" dir="rtl">
+        <DialogHeader>
+          <DialogTitle>تسجيل دفعة للمورد</DialogTitle>
+          <DialogDescription>
+            {selectedSupplier?.companyName} — الرصيد الحالي{" "}
+            {formatBalance(supplierMetrics?.owed ?? 0, { owed: "علينا", credit: "لنا" })}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="pay-amount">المبلغ المدفوع</Label>
+            <Input
+              id="pay-amount"
+              type="number"
+              min="0"
+              step="0.01"
+              inputMode="decimal"
+              value={payInput}
+              onChange={(e) => setPayInput(e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="pay-wallet">الخزينة</Label>
+            <Select value={payWallet} onValueChange={(v) => setPayWallet(v as WalletType)}>
+              <SelectTrigger id="pay-wallet">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(WALLET_LABELS).map(([key, label]) => (
+                  <SelectItem key={key} value={key}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="pay-note">ملاحظة (اختياري)</Label>
+            <Input id="pay-note" value={payNote} onChange={(e) => setPayNote(e.target.value)} />
+          </div>
+
+          {/* What this payment will actually do, before it does it. The
+              allocation is oldest-invoice-first — see `openInvoicesFor`. */}
+          {payPlan && (
+            <div className="rounded-xl border bg-muted/30 p-3 space-y-1.5 text-sm">
+              {payPlan.allocations.length === 0 ? (
+                <p className="text-muted-foreground">مفيش فواتير آجلة مفتوحة للمورد ده.</p>
+              ) : (
+                payPlan.allocations.map((a) => (
+                  <div key={a.invoiceId} className="flex justify-between gap-2">
+                    <span className="font-mono">{a.invoiceNumber}</span>
+                    <span>
+                      {formatMoney(a.applied)}
+                      {a.applied < a.outstanding ? ` من ${formatMoney(a.outstanding)}` : " (تسدّدت كاملة)"}
+                    </span>
+                  </div>
+                ))
+              )}
+              {payPlan.unapplied > 0 && (
+                <p className="text-amber-700 dark:text-amber-400 pt-1 border-t border-border">
+                  {formatMoney(payPlan.unapplied)} زيادة عن المستحق — هتتسجّل رصيد مقدَّم للمورد.
+                </p>
+              )}
+            </div>
+          )}
+
+          {payError && <p className="text-sm text-red-600">{payError}</p>}
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => setIsPayOpen(false)} disabled={paying}>
+            إلغاء
+          </Button>
+          <Button onClick={paySupplier} disabled={!canPay}>
+            {paying ? <Loader2 className="size-4 ml-2 animate-spin" /> : <CreditCard className="size-4 ml-2" />}
+            تأكيد الدفعة
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
 

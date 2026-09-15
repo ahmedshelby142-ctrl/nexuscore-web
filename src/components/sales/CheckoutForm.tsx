@@ -303,7 +303,20 @@ export default function CheckoutForm() {
 
   const selectedProduct = products.find((p) => p.id === selectedProductId);
 
-  const addItemToCart = (product: any, qty: number, variantName?: string) => {
+  /**
+   * @param historical  For a return resolved against a past receipt: the price
+   *   the customer was ACTUALLY charged, the name on that receipt, and which
+   *   receipt it was. Today's catalog price is the wrong number to refund — a
+   *   product repriced since the sale would give back more or less than was
+   *   taken — and `returnOfEventId` is what lets the next return know how much
+   *   of that line has already come back.
+   */
+  const addItemToCart = (
+    product: any,
+    qty: number,
+    variantName?: string,
+    historical?: { unitPrice: number; productName: string; sourceEventId: string },
+  ) => {
     if (!product) return;
 
     // A trader's return is proved against their invoice, never typed into the
@@ -318,7 +331,15 @@ export default function CheckoutForm() {
     }
 
     // Intercept if product has variants but none is selected yet
-    if (product.metadata?.variants && product.metadata.variants.length > 0 && !variantName) {
+    // A line resolved off a receipt already names its shade, so it must not be
+    // sent back through the variant picker — that would drop the historical
+    // price and the source receipt on the floor.
+    if (
+      !historical &&
+      product.metadata?.variants &&
+      product.metadata.variants.length > 0 &&
+      !variantName
+    ) {
       setPendingVariantSelection({ product, qty });
       return;
     }
@@ -348,11 +369,14 @@ export default function CheckoutForm() {
         ...cart,
         {
           productId: product.id,
-          productName: String(product.name),
-          unitPrice: Number(product.unitPrice ?? 0),
+          // The receipt's own name and price win over the catalog's whenever
+          // this line came from a receipt.
+          productName: historical?.productName ?? String(product.name),
+          unitPrice: historical ? historical.unitPrice : Number(product.unitPrice ?? 0),
           quantity: requestedQty,
           variantName,
-        },
+          ...(historical ? { returnOfEventId: historical.sourceEventId } : {}),
+        } as any,
       ]);
     }
     setPendingVariantSelection(null);
@@ -604,6 +628,12 @@ export default function CheckoutForm() {
             customerName: customerName.trim() || undefined,
             customerPhone: customerPhone.trim() || undefined,
             items: cart.map((i) => ({ productId: i.productId, productName: i.productName, unitPrice: i.unitPrice, quantity: i.quantity, variantName: i.variantName })),
+            // Which receipt this came back against, when it was resolved from
+            // one. `remainingSaleLines` reads it to cap the NEXT return of the
+            // same line — without it a customer could return the same shirt
+            // five times off one receipt.
+            returnOfEventId:
+              cart.map((i: any) => i.returnOfEventId).find(Boolean) ?? undefined,
             totalAmount: totalAmount,
             // The code as well as the amount. These already reached
             // `buildSaleLines` below — which is why revenue was correctly net —
@@ -725,6 +755,15 @@ export default function CheckoutForm() {
               variantName: l.variantName,
             })),
           );
+
+          // The DOCUMENTS, so the per-invoice «متبقي» matches the balance the
+          // ledger now holds — see `recordWholesaleReturn`.
+          for (const line of resolved.lines) {
+            await useBusinessStore
+              .getState()
+              .recordWholesaleReturn(line.invoiceId, line.unitPrice * line.quantity)
+              .catch(() => {});
+          }
 
           refreshStock();
           refreshWallets();
@@ -1055,9 +1094,21 @@ export default function CheckoutForm() {
               </div>
               <div className="flex items-center gap-4">
                 <POSReturnModal
-                  onReturnItem={(product, variantName) => {
+                  onReturnItem={({ line, sourceEventId, product }) => {
                     if (!isReturnMode) setIsReturnMode(true);
-                    addItemToCart(product, -1, variantName);
+                    addItemToCart(
+                      // The catalog row when it still exists, otherwise a
+                      // stand-in built from the receipt: a product archived
+                      // since the sale must still be returnable.
+                      product ?? { id: line.productId, name: line.productName, unitPrice: line.unitPrice },
+                      -1,
+                      line.variantName,
+                      {
+                        unitPrice: line.unitPrice,
+                        productName: line.productName,
+                        sourceEventId,
+                      },
+                    );
                   }}
                 />
                 <Switch

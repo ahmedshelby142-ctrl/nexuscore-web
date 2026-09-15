@@ -32,7 +32,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useFinancialStore } from "@/store/useFinancialStore";
 import { getPartnerEarnings } from "@/services/financeService";
-import { add, subtract, multiply, divide, round, formatMoney } from "@/lib/math";
+import { add, subtract, multiply, divide, round, formatMoney, formatBalance } from "@/lib/math";
 import type { BusinessPersona, ExpenseCategory } from "@/types";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { totalAssetsOf, netWorthOf } from "@/lib/dashboard";
@@ -259,7 +259,10 @@ const PERSONA_KPI_CONFIG: Record<
       iconBg: "bg-amber-100",
       iconColor: "text-amber-600",
       valueColor: "text-amber-600",
-      compute: (ls) => formatMoney(ls.receivableClient),
+      // Signed: positive means the traders owe US, negative that one of them
+      // is in credit with us. `formatMoney` alone printed a credit as a
+      // negative "debt", which reads as the opposite of what it is.
+      compute: (ls) => formatBalance(ls.receivableClient, { owed: "لنا", credit: "علينا" }),
     },
     {
       key: "supplierDebts",
@@ -270,7 +273,9 @@ const PERSONA_KPI_CONFIG: Record<
       iconBg: "bg-red-100",
       iconColor: "text-red-600",
       valueColor: "text-red-600",
-      compute: (ls) => formatMoney(ls.payableSupplier),
+      // Positive means WE owe the supplier; negative is a credit we hold with
+      // them, which a supplier return worth more than the invoices creates.
+      compute: (ls) => formatBalance(ls.payableSupplier, { owed: "علينا", credit: "لنا" }),
     },
     {
       key: "totalAssets",
@@ -363,7 +368,10 @@ const PERSONA_KPI_CONFIG: Record<
       iconBg: "bg-amber-100",
       iconColor: "text-amber-600",
       valueColor: "text-amber-600",
-      compute: (ls) => formatMoney(ls.receivableClient),
+      // Signed: positive means the traders owe US, negative that one of them
+      // is in credit with us. `formatMoney` alone printed a credit as a
+      // negative "debt", which reads as the opposite of what it is.
+      compute: (ls) => formatBalance(ls.receivableClient, { owed: "لنا", credit: "علينا" }),
     },
     {
       key: "supplierDebts",
@@ -374,7 +382,9 @@ const PERSONA_KPI_CONFIG: Record<
       iconBg: "bg-red-100",
       iconColor: "text-red-600",
       valueColor: "text-red-600",
-      compute: (ls) => formatMoney(ls.payableSupplier),
+      // Positive means WE owe the supplier; negative is a credit we hold with
+      // them, which a supplier return worth more than the invoices creates.
+      compute: (ls) => formatBalance(ls.payableSupplier, { owed: "علينا", credit: "لنا" }),
     },
     {
       key: "totalAssets",

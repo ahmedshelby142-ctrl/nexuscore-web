@@ -37,8 +37,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { appendEvent } from "@/lib/ledger";
-import { buildPurchaseLines } from "@/lib/ledger/purchases";
+import { executeQuickRestock, formatQuickRestockSuccess, NEW_SUPPLIER } from "@/lib/receiving";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { formatMoney } from "@/lib/math";
@@ -46,7 +45,8 @@ import { WALLET_LABELS } from "@/types";
 import type { Product, Supplier, WalletType } from "@/types";
 
 /** Sentinel for "this supplier is not registered yet". */
-const NEW_SUPPLIER = "__new__";
+// `NEW_SUPPLIER` now comes from the shared receiving module — one sentinel,
+// so the dialog and the command cannot disagree about what "new" means.
 
 interface QuickRestockDialogProps {
   /**
@@ -124,149 +124,42 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
     if (!canSave || !gate.enter()) return;
     setSaving(true);
 
-    // Staged on purpose. Each step depends on the one before it, and the error
-    // the user sees has to say WHICH stage failed — "nothing was saved" and
-    // "the stock is in but the invoice is not" are different facts and lead to
-    // different next actions.
-    let supplier: Supplier | undefined;
+    // ONE shared command, the same one mobile calls. This handler used to carry
+    // its own copy of the receipt write — supplier lookup, `FM-` numbering off
+    // the local array, ledger-then-document — and that copy still had the
+    // numbering and ordering defects شاشة المشتريات had already been fixed for.
+    // Three copies of one rule meant it was wrong in two of them.
     try {
-      // ── 1. The supplier (parent) ────────────────────────────────────────
-      // AWAITED. This used to be a bare call to an async action, so `supplier`
-      // was a pending Promise: `supplier.id` and `supplier.companyName` were
-      // both `undefined`, and the receipt below was written against a supplier
-      // that had no id. The invoice then never appeared in anyone's account.
-      // TypeScript could not catch it because `Supplier` is `any` — see the
-      // note at the top of src/types/index.ts.
-      supplier = registeringNew
-        ? await addSupplier({
-            companyName: newSupplierName.trim(),
-            contactPerson: "",
-            phone: newSupplierPhone.trim(),
-          })
-        : suppliers.find((s) => s.id === supplierId);
-
-      if (!supplier?.id) throw new Error("المورد مش موجود");
-    } catch (e) {
-      toast.error(
-        `المورد متسجّلش، وبالتالي التوريد مااتسجّلش. المخزون زي ما هو. ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-      setSaving(false);
-      gate.exit();
-      return;
-    }
-
-    try {
-
-      // Same numbering as the invoice screen, off the same list, so the
-      // sequence stays continuous however the receipt was entered.
-      const invoiceNumber = "FM-" + String(purchaseInvoices.length + 1).padStart(4, "0");
-
-      // ONE event. Same builder as the invoice screen: stock + (qty AND value,
-      // which is what keeps the weighted-average cost derivable) and the cash
-      // leaving the chosen wallet. Paid in full, so no supplier debt is booked.
-      await appendEvent({
-        kind: "purchase",
-        actor: "توريد",
-        refType: "supplier_invoice",
-        refId: invoiceNumber,
-        payload: {
-          invoiceNumber,
-          supplierName: supplier.companyName,
-          itemCount: received.length,
-          wallet,
-          via: "quick_restock",
-        },
-        // Many lines or one — `buildPurchaseLines` has always taken an items
-        // array, so a bulk receive is the SAME single event, not a loop of
-        // events. A loop would make five products five receipts, any of which
-        // could half-fail.
-        lines: buildPurchaseLines({
-          items: received.map((l) => ({
-            productId: l.product.id,
-            quantity: l.quantity,
-            unitCost: l.unitCost,
-            variantName: l.variantName,
-          })),
-          wallet,
-          supplierId: supplier.id,
-          paidAmount: total,
-        }),
-      });
-
-      // Past this point the ledger HAS the event: stock and cash have moved.
-      ledgerWritten.current = true;
-
-      // The same movement a توريد makes, and the same hole it used to have:
-      // this loop was gated on `variantName`, so a bulk restock of plain
-      // products moved the ledger and left the record untouched.
-      useBusinessStore.getState().applyStockMoves(
-        received.map((line) => ({
-          productId: line.product.id,
-          delta: line.quantity,
-          variantName: line.variantName,
-        })),
-      );
-
-      // ── 3. The document, only after the event ───────────────────────────
-      // A supplier invoice with no stock behind it is the drift we delete
-      // everywhere else. This is what makes the receipt show up in that
-      // supplier's totals and history.
-      //
-      // Awaited and caught SEPARATELY: by this point the stock and the money
-      // are already in the ledger, so telling the user "nothing was saved"
-      // would be a lie that makes them enter the receipt twice.
-      await addPurchaseInvoice({
-        invoiceNumber,
-        supplierId: supplier.id,
-        supplierName: supplier.companyName,
-        items: received.map((l) => ({
-          id: crypto.randomUUID(),
+      const result = await executeQuickRestock({
+        lines: received.map((l) => ({
           productId: l.product.id,
           productName: l.product.name,
-          sku: l.product.sku,
+          sku: l.product.sku ?? "",
           quantity: l.quantity,
           unitCost: l.unitCost,
-          total: l.quantity * l.unitCost,
+          variantName: l.variantName,
         })),
-        totalAmount: total,
-        paidAmount: total,
-        remainingAmount: 0,
-        dueDate: new Date().toISOString().slice(0, 10),
-        status: "paid",
+        supplier: {
+          supplierId: registeringNew ? NEW_SUPPLIER : supplierId,
+          newSupplierName,
+          newSupplierPhone,
+        },
+        wallet,
         notes: "توريد سريع من شاشة المنتجات",
+        idempotencyKey: crypto.randomUUID(),
       });
 
-      toast.success(
-        received.length > 1
-          ? `اتسجّل توريد ${received.length} أصناف باسم ${supplier.companyName}`
-          : `اتسجّل التوريد باسم ${supplier.companyName}`,
-      );
-
+      toast.success(formatQuickRestockSuccess(result));
       // Re-read the ledger so the rows' quantities move immediately.
       onReceived();
       close();
     } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
-
-      // `appendEvent` is all-or-nothing, and it runs before the invoice. So a
-      // failure here is one of two different situations, and the user needs to
-      // know which: if the ledger took the event, the stock and the cash HAVE
-      // moved and re-entering the receipt would double it.
-      if (ledgerWritten.current) {
-        toast.error(
-          `المخزون والفلوس اتسجّلوا، لكن فاتورة المورد متسجّلتش. ` +
-            `متعملش التوريد تاني — سجّل الفاتورة من شاشة المشتريات. ${detail}`,
-        );
-        // The stock DID move, so the list must still refresh.
-        onReceived();
-        close();
-      } else {
-        toast.error(`التوريد متسجّلش، والمخزون زي ما هو. ${detail}`);
-      }
+      // `commitReceipt` writes the DOCUMENT before the ledger and takes the
+      // document back if the ledger refuses, so a throw means the receipt does
+      // not exist and the stock has not moved. The message it carries already
+      // says which of the two failure shapes happened.
+      toast.error(e instanceof Error ? e.message : String(e));
     } finally {
-      ledgerWritten.current = false;
       setSaving(false);
       gate.exit();
     }

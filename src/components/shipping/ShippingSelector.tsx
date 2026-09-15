@@ -5,6 +5,7 @@ import { useFinancialStore } from "@/store/useFinancialStore";
 import type { ShippingInfo } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CourierSelect } from "./CourierSelect";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -57,6 +58,7 @@ export function ShippingSelector({ value, onChange, personaLabel }: ShippingSele
       destination: undefined,
       customerCharge: 0,
       actualCost: 0,
+      courierId: undefined,
       courierName: undefined,
       trackingId: undefined,
       status: undefined,
@@ -133,11 +135,17 @@ export function ShippingSelector({ value, onChange, personaLabel }: ShippingSele
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>اسم شركة الشحن / المندوب</Label>
-              <Input
-                placeholder="مثال: أرامكس / أحمد"
-                value={value.courierName || ""}
-                onChange={(e) => onChange({ ...value, courierName: e.target.value })}
+              <Label htmlFor="shipping-courier">شركة الشحن / المندوب</Label>
+              {/* Selected from the registry, not typed. See `CourierSelect`
+                  and migration 030 for what a free-text name did to the
+                  courier's ledger account. */}
+              <CourierSelect
+                id="shipping-courier"
+                value={value.courierId || ""}
+                onChange={(courierId, courierName) =>
+                  onChange({ ...value, courierId, courierName })
+                }
+                legacyName={value.courierName}
               />
             </div>
             <div className="space-y-1.5">

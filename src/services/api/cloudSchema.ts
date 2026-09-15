@@ -85,6 +85,19 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
     ],
   },
 
+  // A courier is a counterparty directory, exactly like `suppliers` — and its
+  // id is what `receivable_courier` / `payable_courier` book against, which is
+  // why it had to stop being a string typed on each order. Migration 030.
+  couriers: {
+    columns: ["id", "name", "phone", "notes", "createdAt", "updatedAt", ...COMMON],
+    // Declared rather than merely dropped: both are DERIVED, not stored.
+    // `settlements` are `courier_settlement` events and `orderIds` is
+    // "which orders make up this balance", answered from the order documents
+    // by `unsettledDeliveries`. Sending either would be a second copy of a
+    // number the ledger already owns.
+    localOnly: ["orderIds", "settlements"],
+  },
+
   discount_codes: {
     // `usedCount` and `totalDiscount` are ABSENT on purpose — do not add them.
     //

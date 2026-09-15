@@ -84,21 +84,28 @@ export const RETURN_PENALTY_MULTIPLIER = 2;
  * when — and neither can express whether the shop sent the wrong item or the
  * customer changed their mind.
  */
-export type ReturnCause = "customer" | "shop" | "unknown";
+export type ReturnCause = "customer" | "courier" | "shop" | "unknown";
 
-export const RETURN_CAUSES: readonly ReturnCause[] = ["customer", "shop", "unknown"] as const;
+export const RETURN_CAUSES: readonly ReturnCause[] = [
+  "customer",
+  "courier",
+  "shop",
+  "unknown",
+] as const;
 
 /** What the operator picks. Arabic only — this reaches the user. */
 export const RETURN_CAUSE_LABELS: Record<ReturnCause, string> = {
   customer: "العميل",
+  courier: "المندوب / شركة الشحن",
   shop: "المحل",
   unknown: "غير محدد",
 };
 
 /** One line of help under each choice, so the money consequence is visible. */
 export const RETURN_CAUSE_HINTS: Record<ReturnCause, string> = {
-  customer: "العميل هو السبب — الشحن عليه، والرحلة الضائعة تتحسب عليه",
-  shop: "غلطة من المحل — الشحن علينا، ومش هيتحسب على العميل",
+  customer: "العميل هو السبب — الشحن عليه، والرحلة الضائعة تتحسب عليه، والعربون ميترجعش",
+  courier: "غلطة من المندوب/شركة الشحن — الشحن يتحمّله الشحن نفسه، والعربون يرجع للعميل، ومش هيتحسب على العميل",
+  shop: "غلطة من المحل — الشحن علينا، والعربون يرجع للعميل، ومش هيتحسب عليه",
   unknown: "مش متأكد — الحسبة هتمشي بالقاعدة الافتراضية ومش هيتسجّل على العميل",
 };
 
@@ -119,6 +126,7 @@ export const RETURN_CAUSE_HINTS: Record<ReturnCause, string> = {
  */
 export const COUNTER_RETURN_CAUSE_HINTS: Record<ReturnCause, string> = {
   customer: "العميل هو السبب — هيتسجّل عليه في التقارير، ومفيش شحن على المرتجع ده",
+  courier: "غلطة من المندوب/شركة الشحن — هتتسجّل عليهم، ومفيش شحن على المرتجع ده",
   shop: "غلطة من المحل — هتتسجّل علينا، ومفيش شحن على المرتجع ده",
   unknown: "مش متأكد — هيتسجّل كـ(غير محدد) ومش هيتحسب على حد",
 };
@@ -129,6 +137,16 @@ export function toReturnCause(value: string | null | undefined): ReturnCause {
     ? (value as ReturnCause)
     : "unknown";
 }
+
+/**
+ * Who ends up carrying the courier's fee.
+ *
+ * `"courier"` is the axis migration 029 added. A trip that failed through the
+ * courier's own fault is not the shop's cost and is certainly not the
+ * customer's — the company compensates us for it, which lands as a receivable
+ * against them rather than as an expense.
+ */
+export type FeeBearer = "customer" | "shop" | "courier";
 
 /**
  * Who bears the courier's fee for this movement.
@@ -148,10 +166,37 @@ export function toReturnCause(value: string | null | undefined): ReturnCause {
 export function shippingBorneBy(
   cause: ReturnCause,
   movement: "return" | "exchange",
-): "customer" | "shop" {
+): FeeBearer {
   if (cause === "customer") return "customer";
+  if (cause === "courier") return "courier";
   if (cause === "shop") return "shop";
   return movement === "exchange" ? "customer" : "shop";
+}
+
+/**
+ * Does the shop keep the deposit on this movement?
+ *
+ * The established rule is that a deposit is NOT refundable when the customer
+ * walks away: the courier trip was still made and still paid for, so the money
+ * is earned. That rule is about the CUSTOMER'S choice, and it was being applied
+ * to every return regardless of who caused it — so a delivery that failed
+ * because we sent the wrong item, or because the courier never showed up, kept
+ * the customer's money anyway.
+ *
+ * `"unknown"` keeps forfeiting, exactly as it does today. Every row written
+ * before the cause axis existed defaults to `'unknown'`, and flipping it would
+ * move historical figures; not knowing who was at fault is not a finding that
+ * the shop was.
+ *
+ * An exchange never forfeits — the same money funds the replacement. See the
+ * long note at the `forfeitedDeposit` call site in شاشة الطلبات.
+ */
+export function depositForfeitedOn(
+  cause: ReturnCause,
+  movement: "return" | "exchange",
+): boolean {
+  if (movement === "exchange") return false;
+  return cause !== "shop" && cause !== "courier";
 }
 
 /**

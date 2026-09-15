@@ -281,6 +281,35 @@ export function orderBelongsTo(order: CustomerBearingOrder, customer: MatchableC
   return sameCustomer({ phone: order.customerPhone, name: order.customerName }, customer);
 }
 
+/**
+ * Is this POS sale part of that customer's history?
+ *
+ * The till writes the customer onto the sale EVENT's payload, so a POS sale is
+ * not an order row and `orderBelongsTo` cannot read it. The identity rule is
+ * the same one though — a linked id wins, and a phone key resolves the rest —
+ * so it lives here beside its twin rather than being re-derived per screen.
+ *
+ * A raw `payload.customerId === id` compare, which is what both screens used,
+ * silently drops every sale taken before the till learned to link a customer
+ * and every sale where the cashier typed a number without picking the match.
+ */
+export function saleBelongsTo(
+  sale: { payload?: unknown },
+  customer: MatchableCustomer,
+): boolean {
+  const payload = sale.payload;
+  if (!payload || typeof payload !== "object") return false;
+  const p = payload as Record<string, unknown>;
+  return orderBelongsTo(
+    {
+      customerId: p.customerId ? String(p.customerId) : undefined,
+      customerPhone: p.customerPhone ? String(p.customerPhone) : undefined,
+      customerName: p.customerName ? String(p.customerName) : undefined,
+    },
+    customer,
+  );
+}
+
 // ── Dynamic CRM Metrics ──────────────────────────────────────────────────────
 
 export interface CustomerMetrics {
@@ -294,8 +323,17 @@ export interface CustomerMetrics {
  * Sums the EcommerceOrders and POS sales tied to that customerId.
  * Favorite products are derived by aggregating the items from those exact same orders.
  */
+/**
+ * @param customer The customer, not just their id.
+ *
+ * It used to take an id and compare `order.customerId === customerId`, while
+ * the timeline on the very same screen used `orderBelongsTo`. Two identity
+ * rules for one customer: «إجمالي الطلبات» could read 0 next to a timeline
+ * listing five, because every order placed before the id existed — or entered
+ * with a phone and no picked match — failed the strict compare.
+ */
 export function deriveCustomerMetrics(
-  customerId: string,
+  customer: MatchableCustomer,
   orders: EcommerceOrder[],
   sales: LedgerEvent[],
 ): CustomerMetrics {
@@ -318,7 +356,7 @@ export function deriveCustomerMetrics(
   };
 
   for (const order of orders) {
-    if (order.customerId === customerId) {
+    if (orderBelongsTo(order, customer)) {
       totalOrders++;
       updateTime(order.createdAt);
       for (const item of order.items) {
@@ -335,7 +373,7 @@ export function deriveCustomerMetrics(
   for (const sale of sales) {
     if (sale.kind === "sale" && sale.payload) {
       const payload = sale.payload as any; // SaleInput
-      if (payload.customerId === customerId) {
+      if (saleBelongsTo(sale, customer)) {
         totalOrders++;
         updateTime(sale.occurredAt);
         if (Array.isArray(payload.items)) {

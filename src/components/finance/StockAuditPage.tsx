@@ -313,13 +313,20 @@ export function StockAuditPage() {
 
   const handleExportPdf = () => {
     const discrepancies = auditResults.filter((r) => r.discrepancy !== 0);
+    // Valued at the ledger's weighted-average cost, exactly as
+    // `buildStockAdjustmentLines` values the correction it writes. This used
+    // `Math.abs(discrepancy) * 10` — ten pounds a unit for every product in the
+    // shop — so the printed جرد disagreed with the event it was reporting on.
+    // `auditNetValue` is negative when the shop is short, and a shortfall is a
+    // cost, so the expense figure is its negation.
+    const variance = auditNetValue(auditItems);
     generateFinancialPdf({
       companyName: "تقرير جرد المخزون",
       reportDate: new Date(),
       financialSummary: {
         totalSales: 0,
-        totalExpenses: discrepancies.reduce((s, r) => s + Math.abs(r.discrepancy) * 10, 0),
-        netProfit: 0,
+        totalExpenses: Math.max(0, -variance),
+        netProfit: variance,
         shippingProfit: 0,
       },
       walletBalances: [],

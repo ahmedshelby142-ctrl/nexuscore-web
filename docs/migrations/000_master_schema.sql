@@ -147,9 +147,21 @@ RETURNS TEXT AS $$
   WHERE user_id = auth.uid() AND store_id = p_store_id;
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
+-- TRUE or FALSE. Never NULL.
+--
+-- `member_role` is NULL for someone who is not a member of this store, and
+-- `NULL = ANY(...)` is NULL. An RLS policy reads that as false, but PL/pgSQL
+-- does not: `IF NOT has_role(...)` sees `NOT NULL` = NULL and does not fire, so
+-- the guard is skipped for exactly the caller it exists to stop. COALESCE can
+-- only ever turn an undefined answer into a denial — it cannot widen access.
+-- See migration 031.
+--
+-- Migration 024 later adds the licence term (`AND store_licensed(...)`), which
+-- cannot appear here because neither that function nor `store_licenses` exists
+-- yet at this point in the bootstrap. 031 is the final form.
 CREATE OR REPLACE FUNCTION public.has_role(p_store_id UUID, VARIADIC p_roles TEXT[])
 RETURNS BOOLEAN AS $$
-  SELECT public.member_role(p_store_id) = ANY(p_roles);
+  SELECT COALESCE(public.member_role(p_store_id) = ANY(p_roles), false);
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
 -- ════════════════════════════════════════════════════════════════════════════

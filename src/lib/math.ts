@@ -94,6 +94,40 @@ export function formatMoney(value: number | string | null | undefined): string {
 }
 
 /**
+ * A counterparty balance, said the same way on every screen.
+ *
+ * ## The one semantic
+ *
+ * `receivable_client` and `payable_supplier` are both SIGNED, and the sign is
+ * the whole meaning:
+ *
+ *   * `receivable_client` **positive** → the trader owes US
+ *   * `payable_supplier`  **positive** → WE owe the supplier
+ *
+ * In both accounts a NEGATIVE balance is the other direction — a credit. That
+ * happens for real: a return worth more than the outstanding invoices, or an
+ * overpayment, drives the account past zero, and both are deliberately allowed
+ * (see `buildSupplierPaymentLines` and `buildWholesalePaymentLines`).
+ *
+ * ## Why this exists
+ *
+ * A bare `formatMoney(balance)` under a header that says «المتبقي» reads a
+ * credit of 500 as "-500 outstanding", which is the inverted-sign report: the
+ * number was right and the sentence around it was wrong. Printing the
+ * magnitude and NAMING the direction is the only rendering that cannot be read
+ * backwards.
+ */
+export function formatBalance(
+  amount: number | null | undefined,
+  labels: { owed: string; credit: string } = { owed: "عليه", credit: "له" },
+): string {
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value === 0) return formatMoney(0);
+  const side = value > 0 ? labels.owed : labels.credit;
+  return `${formatMoney(Math.abs(value))} ${side}`;
+}
+
+/**
  * The same guard for a bare number with no currency (counts, quantities).
  * Returns "0" rather than a dash: a count the app failed to compute is still
  * a count, and "0 قطعة" is the safe reading.

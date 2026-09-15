@@ -159,7 +159,27 @@ const supabaseDriver: LedgerDriver = {
       );
 
       if (lnErr) {
-        await sb.from("ledger_events").delete().eq("id", event.id);
+        // NO compensating delete. There used to be one here —
+        // `sb.from("ledger_events").delete().eq("id", event.id)` — and it
+        // could never once have worked: `no_delete_ledger_events` is
+        // `USING (false)`, so Postgres matches zero rows, PostgREST answers
+        // 204, and the call resolves without an error to check. Proven by
+        // forcing this exact failure against the live QA store: the header
+        // survived, and it was the only line-less `purchase` event in the
+        // database.
+        //
+        // Removing it is not giving up on cleanliness — it is deleting a line
+        // that made the code LOOK safe while doing nothing, which is worse
+        // than an honest gap. The gap itself is inert: every balance is
+        // `SUM(ledger_lines)`, so a header with no lines moves no stock and no
+        // money, and `appendEvent` already treats a line-less header as a
+        // legitimate state for `order_returned_pending`.
+        //
+        // The real fix is to stop needing compensation: one
+        // `ledger_append(event jsonb)` SQL function writing header and lines
+        // in a single transaction. That is a migration against the certified
+        // core, so it is written up rather than slipped in here; this method
+        // is still the only caller, so it stays a contained change.
         throw new Error(`[ledger_lines] ${lnErr.message}`);
       }
     }

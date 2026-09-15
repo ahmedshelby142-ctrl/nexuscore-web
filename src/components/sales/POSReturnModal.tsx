@@ -1,3 +1,12 @@
+/**
+ * استرجاع بفاتورة — pick a past POS receipt and bring one of its lines back.
+ *
+ * The lines come from the sale DOCUMENT (`payload.items`), never from the
+ * ledger's aggregate rows and never from today's catalog. See the header of
+ * `@/lib/posReturn` for what the old reconstruction did and why every one of
+ * its three symptoms had the same cause.
+ */
+
 import { useState } from "react";
 import {
   Dialog,
@@ -9,20 +18,36 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search, Receipt, ArrowLeftRight } from "lucide-react";
-import { events, eventLines, fromPiastres } from "@/lib/ledger";
+import { events } from "@/lib/ledger";
 import type { LedgerEvent } from "@/lib/ledger";
+import { formatMoney } from "@/lib/math";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import {
+  priorReturnsFrom,
+  remainingSaleLines,
+  type PriorPosReturn,
+  type ReturnableSaleLine,
+} from "@/lib/posReturn";
+
+/** What the cart is handed back: the historical line, plus where it came from. */
+export interface PosReturnPick {
+  line: ReturnableSaleLine;
+  sourceEventId: string;
+  /** Today's catalog row, when it still exists — for stock and variants only. */
+  product?: any;
+}
 
 interface POSReturnModalProps {
-  onReturnItem: (product: any, variantName?: string) => void;
+  onReturnItem: (pick: PosReturnPick) => void;
   trigger?: React.ReactNode;
 }
 
 export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
-  const products = useBusinessStore(state => state.products);
+  const products = useBusinessStore((state) => state.products);
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [receipts, setReceipts] = useState<(LedgerEvent & { parsedLines?: any[] })[]>([]);
+  const [receipts, setReceipts] = useState<LedgerEvent[]>([]);
+  const [priorReturns, setPriorReturns] = useState<PriorPosReturn[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -33,11 +58,19 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
     setReceipts([]);
 
     try {
-      const rawEvents = await events({ refType: "pos_sale", limit: 100 });
-      
-      const filtered = rawEvents.filter(ev => {
+      const rawEvents = await events({ refType: "pos_sale", limit: 200 });
+
+      // Every past return, whichever receipt it belongs to, so the returnable
+      // ceiling below is the real one. Derived from the events themselves —
+      // there is no counter to drift.
+      setPriorReturns(priorReturnsFrom(rawEvents as any));
+
+      const query = searchQuery.trim();
+      const filtered = rawEvents.filter((ev) => {
+        // A return is itself a `pos_sale`; it is not a receipt to return from.
+        if ((ev.payload as any)?.returnOfEventId) return false;
         const payloadStr = JSON.stringify(ev.payload || {});
-        return ev.id.includes(searchQuery) || payloadStr.includes(searchQuery);
+        return ev.id.includes(query) || payloadStr.includes(query);
       });
 
       setReceipts(filtered);
@@ -51,71 +84,15 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
     }
   };
 
-  const loadLines = async (rec: LedgerEvent) => {
-    try {
-      const lines = await eventLines(rec.id);
-      
-      // We want revenue lines that have subject_id (which is productId) and amount > 0
-      const revenueLines = lines.filter(l => l.account === "revenue" && l.amount_delta > 0);
-      
-      // Get stock lines to find quantity
-      const stockLines = lines.filter(l => l.account === "stock" && l.qty_delta < 0);
-
-      const parsedLines = revenueLines.map(rl => {
-        // Find matching stock line
-        const sl = stockLines.find(s => s.subject_id === rl.subject_id);
-        const qty = sl ? Math.abs(sl.qty_delta) : 1;
-        const unitPrice = fromPiastres(rl.amount_delta) / qty;
-
-        const product = products.find((p: any) => String(p.id) === String(rl.subject_id));
-        let name = product?.name || "منتج غير معروف";
-        let variantName = undefined;
-
-        try {
-          if (typeof rec.payload === "object" && rec.payload && "items" in rec.payload) {
-            const pItems = (rec.payload as any).items as any[];
-            const match = pItems.find(pl => String(pl.productId) === String(rl.subject_id));
-            if (match && match.variantName) {
-              variantName = match.variantName;
-            }
-            if (match && match.productName && !product) {
-              name = match.productName;
-            } else if (match && match.name && !product) {
-              name = match.name;
-            }
-          } else if (typeof rec.payload === "object" && rec.payload && "lines" in rec.payload) {
-            const pLines = (rec.payload as any).lines as any[];
-            const match = pLines.find(pl => Math.abs(pl.qty) === qty);
-            if (match && match.variantName) variantName = match.variantName;
-            if (match && match.name && !product) name = match.name;
-          }
-        } catch {
-          // Deliberately swallowed, and narrowly so: everything in this block
-          // only resolves a nicer DISPLAY name/variant for the returned line.
-          // The refund amount and quantity above do not depend on it, so a
-          // malformed payload must degrade to the raw name rather than take
-          // the whole return modal down.
-        }
-
-        return {
-          productId: rl.subject_id,
-          name,
-          unitPrice,
-          qty,
-          variantName,
-          product
-        };
-      });
-
-      setReceipts(prev => prev.map(p => p.id === rec.id ? { ...p, parsedLines } : p));
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleReturn = (line: any, rec: LedgerEvent) => {
-    onReturnItem(line.product || { id: line.productId, name: line.name, unitPrice: line.unitPrice }, line.variantName);
-    // don't close modal immediately, they might return multiple things
+  const handleReturn = (line: ReturnableSaleLine, rec: LedgerEvent) => {
+    onReturnItem({
+      line,
+      sourceEventId: rec.id,
+      // Passed for stock/variant handling only. The NAME and the PRICE come
+      // off the receipt — a product renamed or repriced since the sale must
+      // not rewrite what the customer was charged.
+      product: products.find((p: any) => String(p.id) === String(line.productId)),
+    });
   };
 
   return (
@@ -151,42 +128,69 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
         {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
 
         <div className="space-y-4 mt-6">
-          {receipts.map((rec) => (
-            <div key={rec.id} className="border border-border rounded-xl p-4 bg-muted/20">
-              <div className="flex justify-between items-center mb-3">
-                <div>
-                  <span className="text-xs font-mono text-muted-foreground ml-2">{rec.id.split("-")[0]}</span>
-                  <span className="text-sm font-medium">{new Date(rec.occurredAt).toLocaleDateString("ar-EG")}</span>
-                </div>
-                {!rec.parsedLines && (
-                  <Button variant="ghost" size="sm" onClick={() => loadLines(rec)}>
-                    عرض المنتجات
-                  </Button>
-                )}
-              </div>
-              <div className="space-y-2">
-                {!rec.parsedLines && (
-                  <p className="text-xs text-muted-foreground italic">
-                    اضغط "عرض المنتجات" لتحميل الفاتورة...
-                  </p>
-                )}
-                {rec.parsedLines && rec.parsedLines.map((line, idx) => (
-                  <div key={idx} className="flex items-center justify-between bg-background p-2 rounded border border-border">
-                    <div>
-                      <p className="text-sm font-medium">
-                        {line.name} {line.variantName ? `- (${line.variantName})` : ""}
-                      </p>
-                      <p className="text-xs text-muted-foreground">{line.unitPrice.toLocaleString("ar-EG")} ج.م (الكمية: {line.qty})</p>
-                    </div>
-                    <Button variant="secondary" size="sm" onClick={() => handleReturn(line, rec)}>
-                      <ArrowLeftRight className="size-3 ml-1" />
-                      إرجاع 1
-                    </Button>
+          {receipts.map((rec) => {
+            // No async load step: the lines are already in the event's own
+            // payload. The old "عرض المنتجات" button existed because the lines
+            // had to be fetched separately and then guessed at.
+            const lines = remainingSaleLines(rec as any, priorReturns);
+            const customerName = (rec.payload as any)?.customerName;
+
+            return (
+              <div key={rec.id} className="border border-border rounded-xl p-4 bg-muted/20">
+                <div className="flex justify-between items-center mb-3 gap-2 flex-wrap">
+                  <div>
+                    <span className="text-xs font-mono text-muted-foreground ml-2">
+                      {rec.id.split("-")[0]}
+                    </span>
+                    <span className="text-sm font-medium">
+                      {new Date(rec.occurredAt).toLocaleString("ar-EG")}
+                    </span>
                   </div>
-                ))}
+                  {customerName && (
+                    <span className="text-xs text-muted-foreground">{customerName}</span>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  {lines.length === 0 && (
+                    <p className="text-xs text-muted-foreground italic">
+                      الفاتورة دي مفيهاش تفاصيل أصناف محفوظة — الاسترجاع منها لازم يتعمل يدوي.
+                    </p>
+                  )}
+                  {lines.map((line) => (
+                    <div
+                      key={line.key}
+                      className="flex items-center justify-between gap-2 bg-background p-2 rounded border border-border"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {line.productName}
+                          {line.variantName ? ` — (${line.variantName})` : ""}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatMoney(line.unitPrice)} × {line.sold}
+                          {line.returned > 0 ? ` — رجع منها ${line.returned}` : ""}
+                        </p>
+                      </div>
+                      {line.remaining > 0 ? (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => handleReturn(line, rec)}
+                        >
+                          <ArrowLeftRight className="size-3 ml-1" />
+                          إرجاع 1 (فاضل {line.remaining})
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground shrink-0">رجعت كلها</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </DialogContent>
     </Dialog>

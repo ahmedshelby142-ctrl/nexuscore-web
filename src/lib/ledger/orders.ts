@@ -409,8 +409,24 @@ export interface ReturnConfirmedInput {
    * separately from goods sold, because it is not a sale.
    */
   forfeitedDeposit?: number;
-  /** The till the refund comes out of. */
+  /** The till the refund comes out of. Required when `refundVia` is "wallet". */
   wallet: string;
+  /**
+   * How the refund actually reaches the customer.
+   *
+   * `"wallet"` — cash out of the till, now. The original and the default.
+   *
+   * `"courier"` — the courier settles it. This is the ordinary case for a COD
+   * order that comes back: the money never reached our till in the first place.
+   * `order_delivered` booked `receivable_courier +cod` because the courier was
+   * holding OUR cash; refunding from the till would pay the customer a second
+   * time out of money we never received, and leave the courier still owing us
+   * the full amount. So the refund reduces what they owe instead, and the net
+   * settles at the batch — which is exactly how the shop already works.
+   *
+   * Requires `courierId`, for the same reason the fee lines do.
+   */
+  refundVia?: "wallet" | "courier";
   /** Revenue being reversed — the original order total, EGP. */
   revenueAmount: number;
   /**
@@ -439,7 +455,7 @@ export interface ReturnConfirmedInput {
    * Omitted → falls back to the movement-keyed default this builder always had,
    * so every existing caller and every pre-026 row keeps its exact accounting.
    */
-  feeBorneBy?: "customer" | "shop";
+  feeBorneBy?: "customer" | "shop" | "courier";
   /** The courier owed the fee. Required when there is one. */
   courierId?: string;
   /** The customer whose LTV must come back down. */
@@ -495,10 +511,21 @@ export function buildReturnConfirmedLines(ret: ReturnConfirmedInput): NewLine[] 
     );
   }
 
-  // Only what is left after the deposit leaves the till.
+  // Only what is left after the deposit is refunded at all — a retained deposit
+  // never moves, whichever way the rest is settled.
   const cashOut = ret.refundAmount - forfeited;
   if (cashOut > 0) {
-    lines.push({ account: "wallet", subjectId: ret.wallet, amount: -cashOut });
+    if ((ret.refundVia ?? "wallet") === "courier") {
+      if (!ret.courierId) {
+        throw new Error("return: a courier-settled refund needs a courier");
+      }
+      // No till movement. What the courier owes us falls by the refund they
+      // are handling on our behalf.
+      lines.push({ account: "receivable_courier", subjectId: ret.courierId, amount: -cashOut });
+    } else {
+      if (!ret.wallet) throw new Error("return: needs a wallet to refund from");
+      lines.push({ account: "wallet", subjectId: ret.wallet, amount: -cashOut });
+    }
   }
 
   // The sale reverses in FULL — no goods were sold.
@@ -530,8 +557,12 @@ export function buildReturnConfirmedLines(ret: ReturnConfirmedInput): NewLine[] 
       // Our mistake, or an unclassified return: the trip is our cost.
       lines.push({ account: "expense", subjectId: "shipping_return", amount: fee });
     } else {
-      // The customer's. The courier collects it on our behalf, so it lands as a
-      // receivable and cancels what we owe them — it is never our cost.
+      // Not ours. Either the CUSTOMER bears it — the courier collects it on our
+      // behalf — or the COURIER does, because the trip failed through their own
+      // fault and they compensate us for it. Both land the same way: a
+      // receivable against that courier which cancels what we owe them, and no
+      // expense, because the shop never bore the cost. Which of the two it was
+      // is on the event's `return_cause`; the money is identical.
       lines.push({ account: "receivable_courier", subjectId: ret.courierId, amount: fee });
     }
   }
@@ -565,7 +596,7 @@ export interface OrderRTOInput {
    * always: a wrong address WE typed produces the same refusal. Omitted keeps
    * the original behaviour, where the shop bore every RTO.
    */
-  feeBorneBy?: "customer" | "shop";
+  feeBorneBy?: "customer" | "shop" | "courier";
   /**
    * The deposit the shop keeps, EGP. Never refunded, by store policy.
    *
@@ -576,6 +607,22 @@ export interface OrderRTOInput {
    * able to say why. This books the reason.
    */
   forfeitedDeposit?: number;
+  /**
+   * The deposit actually HANDED BACK, EGP — the other half of the rule above.
+   *
+   * "Never refunded" is the rule for a customer who walked away, and it was
+   * being applied to every refusal regardless of who caused it: a delivery the
+   * courier never attempted, or one refused because we shipped the wrong item,
+   * still kept the customer's money and booked it as income. That is not the
+   * policy, it is the policy misapplied.
+   *
+   * Unlike the forfeit, this DOES move cash — the money really goes back out of
+   * the till — so it needs a wallet. Mutually exclusive with `forfeitedDeposit`:
+   * the same money cannot be both kept and returned.
+   */
+  refundedDeposit?: number;
+  /** The till a refunded deposit leaves. Required when one is refunded. */
+  wallet?: string;
   /** Whose LTV keeps the forfeited amount. Omit for a guest order. */
   customerId?: string;
 }
@@ -609,8 +656,10 @@ export function buildOrderRTOLines(rto: OrderRTOInput): NewLine[] {
     if ((rto.feeBorneBy ?? "shop") === "shop") {
       lines.push({ account: "expense", subjectId: "shipping_return", amount: fee });
     } else {
-      // The customer refused a delivery they asked for, so the wasted trip is
-      // recovered from them rather than absorbed.
+      // Recovered rather than absorbed — from the CUSTOMER, who refused a
+      // delivery they asked for, or from the COURIER, whose own failure caused
+      // it and who compensates us. Either way it is a receivable against that
+      // courier's account and never the shop's expense.
       lines.push({ account: "receivable_courier", subjectId: rto.courierId, amount: fee });
     }
   }
@@ -619,6 +668,21 @@ export function buildOrderRTOLines(rto: OrderRTOInput): NewLine[] {
   if (forfeited < 0) {
     throw new Error("RTO: forfeited deposit cannot be negative");
   }
+
+  const refunded = rto.refundedDeposit ?? 0;
+  if (refunded < 0) {
+    throw new Error("RTO: refunded deposit cannot be negative");
+  }
+  if (refunded > 0 && forfeited > 0) {
+    throw new Error("RTO: a deposit cannot be both kept and refunded");
+  }
+  if (refunded > 0) {
+    if (!rto.wallet) throw new Error("RTO: needs a wallet to refund the deposit from");
+    // Real cash out. No revenue line and no LTV line: nothing was earned, the
+    // money is simply going back to the person it came from.
+    lines.push({ account: "wallet", subjectId: rto.wallet, amount: -refunded });
+  }
+
   if (forfeited > 0) {
     // No wallet line: the money never left, so nothing moves. This only names
     // what the cash already sitting in the till is FOR.

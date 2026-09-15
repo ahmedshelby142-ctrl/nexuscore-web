@@ -29,7 +29,7 @@ import { printTableAsPdf } from "@/lib/pdfGenerator";
 import { appendEvent } from "@/lib/ledger";
 import { searchOrders } from "@/lib/orderSearch";
 import { ProductSearch } from "@/components/products/ProductSearch";
-import { productPrice, getActualStock } from "@/lib/product";
+import { productPrice, getActualStock, sellableStock } from "@/lib/product";
 import { formatMoney, round } from "@/lib/math";
 import { claimOrder, releaseOrder } from "@/lib/orderLifecycle";
 import { customerIdOf } from "@/lib/customers";
@@ -49,6 +49,7 @@ import {
 import {
   rateFor,
   countsAsWastedTrip,
+  depositForfeitedOn,
   shippingBorneBy,
   RETURN_CAUSES,
   RETURN_CAUSE_LABELS,
@@ -171,6 +172,11 @@ export function Returns() {
       const movement = movementFor(order, orders);
       const cause = confirmCause;
       const feeBorneBy = shippingBorneBy(cause, movement);
+      // One deposit decision for both branches below. Store policy keeps it
+      // when the CUSTOMER walked away; a refusal the courier or the shop caused
+      // gives it back — see `depositForfeitedOn`.
+      const deposit = Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0);
+      const keepsDeposit = depositForfeitedOn(cause, movement);
 
       if (returnType === "rto") {
         await appendEvent({
@@ -190,11 +196,15 @@ export function Returns() {
             // this screen booked no shipping cost at all, so the same return
             // cost the shop money through الطلبات and nothing through here.
             returnFee: rateFor(shippingRates, order.governorate, "return"),
-            // A refusal the customer caused is recovered from them, not absorbed.
+            // A refusal the customer caused is recovered from them; one the
+            // COURIER caused is compensated by them. Never the shop's expense.
             feeBorneBy,
             courierId: courierIdOf(order),
-            // The deposit is never refunded — store policy.
-            forfeitedDeposit: Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0),
+            // Store policy keeps the deposit when the customer walked away —
+            // and only then.
+            ...(keepsDeposit
+              ? { forfeitedDeposit: deposit }
+              : { refundedDeposit: deposit, wallet: "inStoreSafe" }),
           }),
         });
       } else {
@@ -243,8 +253,9 @@ export function Returns() {
             // back to "default", which is the subject every other screen books
             // this courier under. The raw field is often undefined.
             courierId: courierIdOf(order),
-            // The deposit stays with the shop — store policy.
-            forfeitedDeposit: Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0),
+            // The deposit stays with the shop — but only on a return the
+            // customer caused. See `depositForfeitedOn`.
+            forfeitedDeposit: keepsDeposit ? deposit : 0,
             customerId: customerId || undefined,
             channel: "ecommerce",
           }),
@@ -419,9 +430,12 @@ export function Returns() {
       return;
     }
     const exchangeVariantName = undefined; // exchange picker has no variant step yet
-    if (exchangeMode && exchangeQty > getActualStock(exchangeProduct)) {
+    // `sellableStock` is bundle-aware. `getActualStock` returns 0 for a بوكس —
+    // it owns no ledger stock — so choosing one as the replacement was refused
+    // with «أكبر من المخزون (0)» however many were actually buildable.
+    if (exchangeMode && exchangeQty > sellableStock(exchangeProduct, products)) {
       toast.error(
-        `الكمية المطلوبة من "${exchangeProduct?.name ?? ""}" أكبر من المخزون (${getActualStock(exchangeProduct)})`
+        `الكمية المطلوبة من "${exchangeProduct?.name ?? ""}" أكبر من المخزون (${sellableStock(exchangeProduct, products)})`
       );
       return;
     }

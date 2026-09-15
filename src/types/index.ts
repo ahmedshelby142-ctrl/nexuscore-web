@@ -147,12 +147,46 @@ export type Transaction = any;
 export const USER_ROLE_LABELS: Record<string, string> = { ...ROLE_LABELS };
 export type UserRecord = any;
 export type UserRole = string;
-export const WALLET_LABELS: Record<string, string> = { 
-  inStoreSafe: "خزينة المحل", 
-  vodafoneCash: "فودافون كاش", 
-  instapay: "انستا باي", 
-  bankAccount: "حساب بنكي" 
+/**
+ * The four tills, and the ONLY keys a wallet subject may use.
+ *
+ * `instapay` used to be spelled with a lowercase p HERE while every writer —
+ * `useFinancialStore`'s seed, the e-commerce deposit default, and the zod enums
+ * in `financial.server.ts` — wrote `instaPay`. `WalletType` is a bare `string`,
+ * so nothing caught it, and the ledger ended up holding BOTH subjects.
+ *
+ * Measured on QA-STORE, 2026-09-14: `instaPay` held +5,040.00 over 15 lines
+ * and `instapay` held −2,700.00 over 5. Every screen iterates these keys, so
+ * the till showed «انستا باي −٢٬٧٠٠» while 5,040 of real deposits sat in the
+ * other spelling, invisible. The true balance was +2,340.
+ *
+ * The key now matches the writers. `canonicalWallet` folds the historical
+ * spelling in on read, so no ledger history has to be rewritten.
+ */
+export const WALLET_LABELS: Record<string, string> = {
+  inStoreSafe: "خزينة المحل",
+  vodafoneCash: "فودافون كاش",
+  instaPay: "انستا باي",
+  bankAccount: "حساب بنكي",
 };
+
+/**
+ * Any stored wallet subject → the canonical key above.
+ *
+ * Case-insensitive, because that is the only way the two spellings ever
+ * differed. An unknown subject is returned untouched rather than forced onto a
+ * till it does not belong to — a wallet nobody recognises must stay visible as
+ * itself, not be quietly folded into another shop account.
+ */
+export function canonicalWallet(subject: string): string {
+  if (!subject) return subject;
+  if (WALLET_LABELS[subject]) return subject;
+  const lower = subject.toLowerCase();
+  for (const key of Object.keys(WALLET_LABELS)) {
+    if (key.toLowerCase() === lower) return key;
+  }
+  return subject;
+}
 export type Wallet = any;
 export type WalletTransfer = any;
 export type WalletType = string;

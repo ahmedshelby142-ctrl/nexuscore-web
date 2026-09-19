@@ -1,6 +1,7 @@
 import { getSupabaseClient } from "@/lib/supabase";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
-import { balanceOf } from "@/lib/ledger";
+import { balanceOf, events as ledgerEvents } from "@/lib/ledger";
+import { buildableFromRecipe, variantStockFrom } from "@/lib/product";
 
 export const MOBILE_PAGE_SIZE = 25;
 
@@ -41,12 +42,20 @@ async function readPage<T>(
   const page = Math.max(query.page ?? 0, 0);
   const from = page * pageSize;
   const to = from + pageSize - 1;
-  let builder = client.from(table).select("*", { count: "exact" });
+  // Soft-deleted rows are not rows. `mobile_shortages` and every desktop
+  // reader exclude them; this did not, so a deleted order stayed on the phone
+  // — and stayed in the phone's `count` — after the desktop removed it.
+  let builder = client.from(table).select("*", { count: "exact" }).is("deleted_at", null);
   builder = configure(builder).range(from, to);
   const { data, count, error } = await builder;
   if (error) throw new Error(`[${table}] ${error.message}`);
   const rows = (data ?? []).map((row: any) => map(fromRemoteRow(table, row)));
-  return { rows, total: count ?? null, hasMore: rows.length === pageSize };
+  // `rows.length === pageSize` offered "تحميل المزيد" whenever the total was an
+  // exact multiple of the page size, and the next page came back empty. The
+  // exact count already knows whether anything follows, so ask it.
+  const total = count ?? null;
+  const hasMore = total === null ? rows.length === pageSize : from + rows.length < total;
+  return { rows, total, hasMore };
 }
 
 export function readMobileOrders(query: MobileListQuery = {}) {
@@ -66,13 +75,69 @@ export function readMobileOrders(query: MobileListQuery = {}) {
   }, (row) => row);
 }
 
-export function readMobileCustomers(query: MobileListQuery = {}) {
+export async function readMobileCustomers(query: MobileListQuery = {}) {
   const search = escapeLike(query.search ?? "");
-  return readPage("customers", query, (builder) => {
+  const page = await readPage("customers", query, (builder) => {
     let next = builder.order("updated_at", { ascending: false }).order("id", { ascending: false });
     if (search) next = next.or(`name.ilike.%${search}%,phone.ilike.%${search}%,address.ilike.%${search}%`);
     return next;
   }, (row) => row);
+
+  // `orderCount` and `lastOrderAt` are NOT columns on `customers` — the table
+  // holds only id, name, phone, address, tenancy and returned_orders_count.
+  // The view model read them anyway, so every customer rendered
+  // "لا يوجد طلب سابق", including one with 28 orders behind her. The orders
+  // themselves are the authority for how many orders there are, so ask them —
+  // once for the whole page, not once per row.
+  const ids = page.rows.map((c: any) => String(c.id)).filter(Boolean);
+  if (ids.length === 0) return page;
+
+  const { data } = await clientOrThrow()
+    .from("orders")
+    .select("customerId, createdAt")
+    .in("customerId", ids)
+    .is("deleted_at", null);
+
+  const counts = new Map<string, { orderCount: number; lastOrderAt: string | null }>();
+  for (const row of (data ?? []) as any[]) {
+    const id = String(row.customerId ?? "");
+    if (!id) continue;
+    const seen = counts.get(id) ?? { orderCount: 0, lastOrderAt: null };
+    seen.orderCount += 1;
+    if (!seen.lastOrderAt || String(row.createdAt) > seen.lastOrderAt) {
+      seen.lastOrderAt = String(row.createdAt);
+    }
+    counts.set(id, seen);
+  }
+
+  return {
+    ...page,
+    rows: page.rows.map((c: any) => ({
+      ...c,
+      ...(counts.get(String(c.id)) ?? { orderCount: 0, lastOrderAt: null }),
+    })),
+  };
+}
+
+/**
+ * WHO the couriers are — the registry table, the same one desktop's
+ * `useCourierStore` and `CourierSelect` write and read.
+ *
+ * Mobile had no reader for this at all and rendered `order.courierName`, a
+ * free-text field. In QA-STORE that means 8 orders showing a courier that is
+ * not a registry entity (`courierId = "default"`, the legacy bucket) and 3
+ * showing a typed name with no id — three "couriers" whose money can never be
+ * settled against one account. Identity is `courierId`; the name is a label.
+ */
+export async function readMobileCouriers(): Promise<Map<string, { id: string; name: string; phone: string | null }>> {
+  const { data, error } = await clientOrThrow()
+    .from("couriers")
+    .select("id, name, phone")
+    .is("deleted_at", null);
+  if (error) throw new Error(`[couriers] ${error.message}`);
+  return new Map(
+    (data ?? []).map((c: any) => [String(c.id), { id: String(c.id), name: String(c.name ?? ""), phone: c.phone ?? null }]),
+  );
 }
 
 export function readMobileShipments(query: MobileListQuery = {}) {
@@ -98,9 +163,66 @@ export async function readMobileProducts(query: MobileListQuery = {}) {
 
   // Product.quantity is intentionally never read. Each visible product gets
   // its current quantity and weighted cost from the existing ledger authority.
+  //
+  // A بوكس is the exception, and showing it raw was misleading: a bundle owns
+  // no shelf, so `balanceOf("stock", bundleId)` is legitimately 0 and the
+  // screen read "0 in stock" for a box whose components were sitting there.
+  // Availability for a box is how many are BUILDABLE — the same
+  // `buildableFromRecipe` rule desktop uses, fed from the ledger instead of
+  // from hydrated product records.
   const rows = await Promise.all(page.rows.map(async (product: any) => {
     const stockBalance = await balanceOf("stock", String(product.id));
-    return { ...product, mobileStock: stockBalance.qty, mobileCost: stockBalance.amount };
+    const recipe = product?.isBundle ? (product.bundleItems ?? product.metadata?.bundleItems) : null;
+
+    if (!recipe?.length) {
+      return {
+        ...product,
+        // Floored, exactly as `getActualStock` floors it on desktop: a ledger
+        // that has drifted negative is a reconciliation problem, and
+        // "المتاح: ؜-٢" is not a thing an operator may ever be shown. What is
+        // genuinely owed lives in تقرير النواقص, which is signed on purpose.
+        mobileStock: Math.max(0, stockBalance.qty),
+        mobileCost: stockBalance.amount,
+        mobileIsBundle: false,
+      };
+    }
+
+    // A recipe may pin a درجة ("احمر"), and a بوكس that needs the red one
+    // cannot be built out of the blue ones. The ledger keeps ONE quantity per
+    // product — there are no per-درجة lines — so the split can only come from
+    // the product record, clamped to the ledger total. That clamp is
+    // `variantStockFrom`, the same function `getVariantStock` uses on desktop:
+    // one formula, two sources of "how much is there", which is the split the
+    // helper was factored out for.
+    const componentProducts = new Map<string, any>();
+    const componentStock = new Map<string, number>();
+    await Promise.all(
+      recipe.map(async (c: any) => {
+        const id = String(c.productId);
+        if (componentStock.has(id)) return;
+        const [b, row] = await Promise.all([
+          balanceOf("stock", id),
+          readMobileRawProduct(id),
+        ]);
+        componentStock.set(id, Math.max(0, b.qty));
+        componentProducts.set(id, row);
+      }),
+    );
+
+    return {
+      ...product,
+      mobileStock: buildableFromRecipe(recipe, (id, variantName) =>
+        variantStockFrom(
+          componentProducts.get(String(id)),
+          variantName,
+          componentStock.get(String(id)) ?? 0,
+        ),
+      ),
+      // The ledger holds no value for a virtual product; the cost of a box is
+      // its components', derived at the moment of a movement, never stored.
+      mobileCost: 0,
+      mobileIsBundle: true,
+    };
   }));
   return { ...page, rows };
 }
@@ -118,6 +240,37 @@ export async function readMobileProduct(id: string) {
   return (await readMobileProducts({ pageSize: 1, search: undefined, id })).rows[0] ?? null;
 }
 
+/**
+ * One product row, untouched — no ledger attached.
+ *
+ * Deliberately NOT `readMobileProduct`: that one attaches stock, and calling it
+ * for each bundle component would recurse through the bundle resolver. This is
+ * only ever the source of `metadata.variants`, the درجة mirror.
+ *
+ * Cached for the life of the tab. A recipe's components repeat across boxes and
+ * across pages, and the mirror does not move between two renders of one list.
+ */
+const rawProductCache = new Map<string, Promise<any>>();
+export function readMobileRawProduct(id: string): Promise<any> {
+  const hit = rawProductCache.get(id);
+  if (hit) return hit;
+  const request = (async () => {
+    try {
+      const { data } = await clientOrThrow()
+        .from("products")
+        .select("id, name, sku, metadata")
+        .eq("id", id)
+        .is("deleted_at", null)
+        .maybeSingle();
+      return data ? fromRemoteRow("products", data) : null;
+    } catch {
+      return null;
+    }
+  })();
+  rawProductCache.set(id, request);
+  return request;
+}
+
 export interface MobileOrderTimelineEvent {
   id: string;
   labelAr: string;
@@ -127,120 +280,124 @@ export interface MobileOrderTimelineEvent {
   relatedEntity?: { id: string; type: "order" | "shipment" | "courier" | "return" | "payment" };
 }
 
+/**
+ * What each order-scoped ledger kind is called on a timeline, in Arabic.
+ *
+ * The keys are the `EventKind`s that `lib/ledger/orders.ts` and
+ * `lib/ledger/sales.ts` actually append against `ref_type = "ecommerce_order"`
+ * — verified against the live `ledger_events` table, not against a wish list.
+ */
+const TIMELINE_LABELS: Record<string, { labelAr: string; entity: "order" | "shipment" | "courier" | "return" | "payment" }> = {
+  order_placed: { labelAr: "تم إنشاء الطلب", entity: "order" },
+  sale: { labelAr: "تم تسجيل البيع", entity: "order" },
+  order_edited: { labelAr: "تم تعديل الطلب", entity: "order" },
+  order_delivered: { labelAr: "تم التسليم للعميل", entity: "shipment" },
+  order_returned_pending: { labelAr: "مرتجع في الطريق (لم يصل المخزن بعد)", entity: "return" },
+  return_confirmed: { labelAr: "تأكد استلام المرتجع في المخزن", entity: "return" },
+  rto_confirmed: { labelAr: "رفض الاستلام (مرتجع شحن)", entity: "return" },
+  order_cancelled: { labelAr: "تم إلغاء الطلب", entity: "order" },
+  courier_settlement: { labelAr: "توريد المندوب (استلمنا الكاش)", entity: "courier" },
+  client_payment: { labelAr: "دفعة من العميل", entity: "payment" },
+};
+
+/**
+ * One order's history, read from the LEDGER — the same authority Desktop uses.
+ *
+ * ## What this replaced, and why it was a 400 on every order
+ *
+ * This used to `select` `shippedAt, deliveredAt, returnedAt, cancelledAt` off
+ * `orders`. None of those four columns exist on the deployed table — verified
+ * against the live schema — so PostgREST refused the entire request with
+ * `42703 column orders.shippedAt does not exist`, and the detail screen
+ * printed that error string where the timeline should have been. Every order,
+ * every time.
+ *
+ * The facts they were reaching for are not missing; they were never on the
+ * order row. "Delivered" is an `order_delivered` event, "returned" is
+ * `order_returned_pending` / `rto_confirmed`, "settled with the courier" is
+ * `courier_settlement`. The ledger is append-only and stamps `occurred_at`, so
+ * it is both the authority for WHETHER something happened and the only honest
+ * answer for WHEN — a mutable column on the order can be overwritten, an event
+ * cannot.
+ *
+ * `codSettledAt` and `returnConfirmedAt` ARE real columns; the detail screen
+ * reads them for current state and this does not re-derive them.
+ */
 export async function readMobileOrderTimeline(orderId: string): Promise<MobileOrderTimelineEvent[]> {
   const client = clientOrThrow();
-  
+
   const { data: order, error: orderError } = await client
     .from("orders")
-    .select("id, orderNumber, status, createdAt, updatedAt, shippedAt, deliveredAt, returnedAt, cancelledAt, returnConfirmedAt, courierName, courierId, depositAmount, expectedCod, revenueLogged, codSettledAt, returnType, isExchange")
+    .select("id, orderNumber, createdAt, courierId, depositAmount")
     .eq("id", orderId)
-    .single();
-  
+    .maybeSingle();
+
   if (orderError) throw new Error(`[orders] ${orderError.message}`);
   if (!order) return [];
-  
-  const events: MobileOrderTimelineEvent[] = [];
-  
-  if (order.createdAt) {
-    events.push({
-      id: `created-${order.id}`,
-      labelAr: "تم إنشاء الطلب",
-      timestamp: order.createdAt,
-      status: "created",
-      source: "orders",
-      relatedEntity: { id: order.id, type: "order" },
+
+  // The ledger's `ref_id` for an order is its ORDER NUMBER, not its uuid —
+  // every writer in `OrdersPage`, `ecommerce-orders` and `returns` stamps
+  // `refId: order.orderNumber`. Verified against `ledger_events` in the live
+  // database, where the order rows read `ECO-…`, never a uuid. Asking with the
+  // uuid returns nothing at all, which looks exactly like "this order has no
+  // history" and is the quietest possible way to be wrong.
+  const events = order.orderNumber ? await ledgerEventsFor(String(order.orderNumber)) : [];
+
+  const timeline: MobileOrderTimelineEvent[] = [];
+
+  for (const event of events) {
+    const mapped = TIMELINE_LABELS[event.kind];
+    if (!mapped) continue;
+    timeline.push({
+      id: event.id,
+      labelAr: mapped.labelAr,
+      timestamp: event.occurredAt,
+      status: event.kind,
+      source: "ledger_events",
+      relatedEntity: {
+        id: mapped.entity === "courier" ? String(order.courierId ?? order.id) : String(order.id),
+        type: mapped.entity,
+      },
     });
   }
-  
-  if (order.shippedAt) {
-    events.push({
-      id: `shipped-${order.id}`,
-      labelAr: "سُلِّم للمندوب",
-      timestamp: order.shippedAt,
-      status: "shipped",
-      source: "orders",
-      relatedEntity: { id: order.courierId ?? order.id, type: "courier" },
-    });
-  }
-  
-  if (order.deliveredAt) {
-    events.push({
-      id: `delivered-${order.id}`,
-      labelAr: "تم التسليم للعميل",
-      timestamp: order.deliveredAt,
-      status: "delivered",
-      source: "orders",
-      relatedEntity: { id: order.id, type: "shipment" },
-    });
-  }
-  
-  if (order.returnedAt) {
-    events.push({
-      id: `returned-${order.id}`,
-      labelAr: order.returnType === "rto" ? "رفض الاستلام (مرتجع شحن)" : "مرتجع من العميل",
-      timestamp: order.returnedAt,
-      status: "returned",
-      source: "orders",
-      relatedEntity: { id: order.id, type: "return" },
-    });
-  }
-  
-  if (order.returnConfirmedAt) {
-    events.push({
-      id: `return-confirmed-${order.id}`,
-      labelAr: "تأكد استلام المرتجع في المخزن",
-      timestamp: order.returnConfirmedAt,
-      status: "return_confirmed",
-      source: "orders",
-      relatedEntity: { id: order.id, type: "return" },
-    });
-  }
-  
-  if (order.cancelledAt) {
-    events.push({
-      id: `cancelled-${order.id}`,
-      labelAr: "تم إلغاء الطلب",
-      timestamp: order.cancelledAt,
-      status: "cancelled",
-      source: "orders",
-      relatedEntity: { id: order.id, type: "order" },
-    });
-  }
-  
-  if (order.depositAmount && order.depositAmount > 0) {
-    events.push({
+
+  // The عربون is a fact about the DOCUMENT, taken at creation; it has no event
+  // of its own because `order_placed` carries it inside its lines. Shown from
+  // the column, which is where it actually lives.
+  if (Number(order.depositAmount ?? 0) > 0 && order.createdAt) {
+    timeline.push({
       id: `deposit-${order.id}`,
       labelAr: `عربون مدفوع: ${Number(order.depositAmount).toLocaleString("ar-EG")} ج.م.`,
       timestamp: order.createdAt,
       status: "deposit",
       source: "orders",
-      relatedEntity: { id: order.id, type: "payment" },
+      relatedEntity: { id: String(order.id), type: "payment" },
     });
   }
-  
-  if (order.codSettledAt) {
-    events.push({
-      id: `cod-settled-${order.id}`,
-      labelAr: "توريد المندوب (استلمنا الكاش)",
-      timestamp: order.codSettledAt,
-      status: "cod_settled",
+
+  // An order with no ledger event yet is not an error — it is a document that
+  // has moved nothing. Show its creation rather than an empty panel.
+  if (timeline.length === 0 && order.createdAt) {
+    timeline.push({
+      id: `created-${order.id}`,
+      labelAr: "تم إنشاء الطلب",
+      timestamp: order.createdAt,
+      status: "created",
       source: "orders",
-      relatedEntity: { id: order.courierId ?? order.id, type: "courier" },
+      relatedEntity: { id: String(order.id), type: "order" },
     });
   }
-  
-  if (order.revenueLogged && order.deliveredAt) {
-    events.push({
-      id: `revenue-${order.id}`,
-      labelAr: "سُجِّل الإيراد وتكلفة البضاعة",
-      timestamp: order.deliveredAt,
-      status: "revenue_logged",
-      source: "orders",
-      relatedEntity: { id: order.id, type: "order" },
-    });
+
+  return timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+}
+
+/** This order's ledger events, by order NUMBER. An unreachable ledger costs the timeline, not the screen. */
+async function ledgerEventsFor(orderNumber: string) {
+  try {
+    return await ledgerEvents({ refType: "ecommerce_order", refId: orderNumber, limit: 200 });
+  } catch {
+    return [];
   }
-  
-  return events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 }
 
 export interface MobileProductWaitingOrder {
@@ -296,48 +453,72 @@ export interface MobileCustomerFinancialSummary {
   wastedTrips: number;
 }
 
+/**
+ * A customer's standing, read from the SAME authorities Desktop uses.
+ *
+ * ## What this replaced, and why it was wrong
+ *
+ * This reader used to add up `order.totalAmount` itself and count
+ * `returnType === 'rto'` rows. Both contradicted the verified Core:
+ *
+ *   * **Lifetime value** is the `customer_ltv` ledger account. A confirmed
+ *     return writes `customer_ltv −`, so a PARTIAL return — which leaves the
+ *     order `delivered` with its full `totalAmount` intact — was counted in
+ *     full by the old loop while the ledger had already taken it off.
+ *
+ *   * **Wasted trips** are `customers.returned_orders_count`, which is a DEBT,
+ *     not a history. It only rises when `countsAsWastedTrip(cause, movement)`
+ *     holds — the customer caused it and it was not an exchange — and it FALLS
+ *     when a penalised delivery settles it. Counting `rto` rows ignored the
+ *     cause entirely and never decreased, so after a paydown Desktop read 0
+ *     while mobile still read 1.
+ *
+ * Order counts stay derived from the orders themselves: those are document
+ * facts, not money, and the documents are their own authority.
+ */
 export async function readMobileCustomerFinancialSummary(customerId: string): Promise<MobileCustomerFinancialSummary> {
   const client = clientOrThrow();
-  
-  const { data: orders, error } = await client
-    .from("orders")
-    .select("id, status, totalAmount, expectedCod, depositAmount, revenueLogged, returnType, customerId, customerPhone, createdAt")
-    .or(`customerId.eq.${customerId},customerPhone.eq.${customerId}`);
-  
+
+  const [{ data: orders, error }, ltv, customer] = await Promise.all([
+    client
+      .from("orders")
+      .select("id, status, expectedCod, customerId, customerPhone")
+      .or(`customerId.eq.${customerId},customerPhone.eq.${customerId}`),
+    // The ledger's own answer. Returns have already been deducted from it.
+    balanceOf("customer_ltv", customerId).catch(() => ({ qty: 0, amount: 0 })),
+    client
+      .from("customers")
+      .select("returned_orders_count")
+      .eq("id", customerId)
+      .maybeSingle()
+      .then((r: any) => r?.data ?? null, () => null),
+  ]);
+
   if (error) throw new Error(`[orders] ${error.message}`);
-  if (!orders?.length) {
-    return { totalOrders: 0, openOrders: 0, deliveredOrders: 0, returnedOrders: 0, cancelledOrders: 0, deliveredRevenue: 0, openExposure: 0, wastedTrips: 0 };
-  }
-  
-  let deliveredRevenue = 0;
+
+  const statusCounts: Record<string, number> = {
+    pending: 0, processing: 0, shipped: 0, delivered: 0, returned: 0, cancelled: 0,
+  };
   let openExposure = 0;
-  let wastedTrips = 0;
-  const statusCounts: Record<string, number> = { pending: 0, processing: 0, shipped: 0, delivered: 0, returned: 0, cancelled: 0 };
-  
-  for (const order of orders) {
-    const status = order.status;
-    if (statusCounts[status] !== undefined) statusCounts[status]++;
-    
-    if (status === "delivered" && order.revenueLogged) {
-      deliveredRevenue += Number(order.totalAmount ?? 0);
-    }
-    if (["pending", "processing", "shipped"].includes(status)) {
+
+  for (const order of orders ?? []) {
+    if (statusCounts[order.status] !== undefined) statusCounts[order.status]++;
+    if (["pending", "processing", "shipped"].includes(order.status)) {
       openExposure += Number(order.expectedCod ?? 0);
     }
-    if (order.returnType === "rto") {
-      wastedTrips++;
-    }
   }
-  
+
   return {
-    totalOrders: orders.length,
-    openOrders: (statusCounts.pending ?? 0) + (statusCounts.processing ?? 0) + (statusCounts.shipped ?? 0),
-    deliveredOrders: statusCounts.delivered ?? 0,
-    returnedOrders: statusCounts.returned ?? 0,
-    cancelledOrders: statusCounts.cancelled ?? 0,
-    deliveredRevenue,
+    totalOrders: orders?.length ?? 0,
+    openOrders: statusCounts.pending + statusCounts.processing + statusCounts.shipped,
+    deliveredOrders: statusCounts.delivered,
+    returnedOrders: statusCounts.returned,
+    cancelledOrders: statusCounts.cancelled,
+    // `customer_ltv`, net of every confirmed return — the Desktop authority.
+    deliveredRevenue: Math.max(0, Number(ltv?.amount ?? 0)),
     openExposure,
-    wastedTrips,
+    // The shipping DEBT, which settles back down. Never a count of returns.
+    wastedTrips: Math.max(0, Number(customer?.returned_orders_count ?? 0)),
   };
 }
 
@@ -365,7 +546,7 @@ export async function readMobileProductsForRestock(query: MobileListQuery = {}):
   // Attach current stock from ledger for each product
   const rows = await Promise.all(page.rows.map(async (product: any) => {
     const stockBalance = await balanceOf("stock", String(product.id));
-    return { ...product, mobileStock: stockBalance.qty, mobileCost: stockBalance.amount };
+    return { ...product, mobileStock: Math.max(0, stockBalance.qty), mobileCost: stockBalance.amount };
   }));
   return { ...page, rows };
 }

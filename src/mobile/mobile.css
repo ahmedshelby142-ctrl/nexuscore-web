@@ -784,3 +784,118 @@ select {
   font-size: 0.82rem;
   font-weight: 700;
 }
+
+/* ── تقرير النواقص ─────────────────────────────────────────────────────────
+   A shortage is a decision, not a row in a table, so the card leads with the
+   number that forces the decision (كام ناقص), shows the arithmetic behind it
+   (مطلوب − متاح) so it can be checked rather than trusted, names the customers
+   who are waiting, and ends with the two things you would actually do. No
+   horizontal scrolling at any width: the three figures wrap into a grid that
+   collapses, and the waiting list is rows, never a table.
+   ────────────────────────────────────────────────────────────────────────── */
+.mobile-shortage-summary { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-block-size: 48px; padding-inline: 0.9rem; border: 1px solid color-mix(in oklab, var(--destructive) 35%, var(--border)); border-radius: 0.875rem; background: color-mix(in oklab, var(--destructive) 8%, var(--card)); color: var(--foreground); font-size: 0.85rem; font-weight: 700; }
+.mobile-shortage-summary strong { font-size: 1.05rem; color: var(--destructive); }
+
+.mobile-shortage-card { display: grid; gap: 0.7rem; padding: 0.85rem; border: 1px solid var(--border); border-radius: 0.9rem; background: var(--card); color: var(--foreground); }
+.mobile-shortage-card-head { display: flex; align-items: flex-start; gap: 0.7rem; }
+.mobile-shortage-card-title { display: grid; flex: 1; min-inline-size: 0; gap: 0.15rem; }
+.mobile-shortage-card-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.92rem; }
+.mobile-shortage-card-title span { font-size: 0.72rem; color: var(--muted-foreground); }
+.mobile-shortage-deficit { display: grid; flex: 0 0 auto; gap: 0.1rem; justify-items: center; padding: 0.3rem 0.6rem; border-radius: 0.7rem; background: color-mix(in oklab, var(--destructive) 12%, transparent); }
+.mobile-shortage-deficit span { font-size: 0.65rem; color: var(--muted-foreground); font-weight: 700; }
+.mobile-shortage-deficit strong { font-size: 1.1rem; line-height: 1.1; color: var(--destructive); }
+
+.mobile-shortage-figures { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.4rem; margin: 0; padding: 0.55rem; border-radius: 0.7rem; background: var(--muted); }
+.mobile-shortage-figures > div { display: grid; gap: 0.15rem; justify-items: center; min-inline-size: 0; text-align: center; }
+.mobile-shortage-figures dt { font-size: 0.66rem; color: var(--muted-foreground); font-weight: 700; }
+.mobile-shortage-figures dd { margin: 0; font-size: 0.9rem; font-weight: 800; }
+
+.mobile-shortage-waiting h3 { margin: 0 0 0.35rem; font-size: 0.72rem; font-weight: 800; color: var(--muted-foreground); }
+.mobile-shortage-waiting ul { display: grid; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
+.mobile-shortage-waiting-row { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; min-block-size: 44px; padding-inline: 0.6rem; border: 1px solid var(--border); border-radius: 0.65rem; background: transparent; color: var(--foreground); text-align: start; font-size: 0.8rem; }
+.mobile-shortage-waiting-customer { flex: 1; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.mobile-shortage-waiting-order { flex: 0 0 auto; font-size: 0.7rem; color: var(--muted-foreground); }
+
+.mobile-shortage-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
+
+.mobile-secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; min-block-size: 44px; padding-inline: 0.9rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--card); color: var(--foreground); font-weight: 800; font-size: 0.82rem; cursor: pointer; }
+.mobile-secondary-button svg { inline-size: 1.05rem; block-size: 1.05rem; }
+.mobile-shortage-actions .mobile-primary-button { font-size: 0.82rem; }
+
+.mobile-inline-link { min-block-size: 44px; margin-inline-start: auto; padding-inline: 0.6rem; border: 0; background: transparent; color: var(--primary); font-size: 0.8rem; font-weight: 800; cursor: pointer; }
+.mobile-detail-note { margin: 0.35rem 0 0; font-size: 0.72rem; line-height: 1.55; color: var(--muted-foreground); }
+
+/* ── Touch targets ─────────────────────────────────────────────────────────
+   shadcn's control defaults are desktop sizes — `h-9` is 36px — and they were
+   reaching the phone unchanged on the restock form: two number inputs, the
+   supplier picker, the wallet picker and both footer buttons all measured
+   36px at 360x800. 44px is the smallest target that is reliably hittable with
+   a thumb (WCAG 2.5.8 AAA / iOS HIG), and entering a quantity and a cost is
+   exactly the kind of task where a missed tap costs a wrong number.
+
+   Scoped to `.mobile-screen` so it cannot reach the desktop entry, and set as
+   a MINIMUM so anything already larger keeps its size. `.mobile-search`'s
+   nested icon button is excluded: it sits inside a 48px row that is itself the
+   target.
+   ────────────────────────────────────────────────────────────────────────── */
+.mobile-screen input:not([type="hidden"]),
+.mobile-screen textarea,
+.mobile-screen select,
+.mobile-screen [role="combobox"],
+.mobile-screen button,
+.mobile-screen a[href],
+.mobile-home button,
+.mobile-home a[href] {
+  min-block-size: 44px;
+}
+/* The search row is itself a 48px target; its nested clear icon is not a
+   second one. */
+.mobile-screen .mobile-search button {
+  min-block-size: 36px;
+}
+/* An inline "عرض الكل" is a link in a heading, so it gets its height from the
+   line box — 18px. It is still a thing a thumb has to hit. Centred rather than
+   simply grown, so the section header does not gain a ragged baseline. */
+.mobile-home .mobile-section-heading a[href],
+.mobile-home a[href].mobile-section-link {
+  display: inline-flex;
+  align-items: center;
+  padding-inline: 0.4rem;
+}
+
+/* ── A screen's pinned primary action ──────────────────────────────────────
+   The restock footer was `sticky bottom-0` with no z-index, straight from
+   Tailwind utilities. `.mobile-bottom-nav` is `position: fixed; z-index: 20`
+   pinned to the same edge, so the nav painted over the footer and swallowed
+   every tap meant for it.
+
+   Measured, not guessed: `document.elementFromPoint` across the full width of
+   "تسجيل التوريد" returned المزيد / المخزون / الطلبات at every single sample.
+   The primary action of the receiving screen was 100% un-tappable on a phone.
+   A real operator could never record a receipt with their thumb.
+
+   It went unnoticed because every automated check so far drove the button with
+   `element.click()`, which dispatches straight at the node and skips hit
+   testing entirely. Only a real coordinate tap finds this.
+
+   So the bar is lifted clear of the nav rather than merely stacked over it —
+   no overlap at all, instead of two fixed things fighting. The z-index is
+   still raised as a second line of defence: if a future safe-area or rounding
+   change ever makes them touch, the ACTION wins the tap, which is the safer of
+   the two ways to be wrong.
+   ────────────────────────────────────────────────────────────────────────── */
+.mobile-sticky-actions {
+  position: sticky;
+  z-index: 21;
+  inset-block-end: calc(68px + env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-block-start: 1px solid var(--border);
+  background: color-mix(in oklab, var(--background) 95%, transparent);
+  backdrop-filter: blur(8px);
+}
+.mobile-sticky-actions > * { min-block-size: 44px; }
+.mobile-sticky-actions .mobile-actions-primary { flex: 1; }
+

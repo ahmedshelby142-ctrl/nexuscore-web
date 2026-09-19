@@ -117,8 +117,19 @@ test("nothing in src/ imports Tauri or opens an IndexedDB", () => {
 test("the ledger driver reads and writes Supabase, not a local file", () => {
   assert.match(driver, /from\("ledger_events"\)/, "events must come from Supabase");
   assert.match(driver, /from\("ledger_lines"\)/, "lines must come from Supabase");
-  // `ledger_append` was the Rust command behind the SQLite write path.
-  assert.ok(!code(driver).includes("ledger_append"), "the Tauri append command is gone");
+
+  // This used to assert that the string "ledger_append" was absent, because
+  // `ledger_append` was the name of the Rust command behind the SQLite write
+  // path. That was a proxy for the real rule, and the proxy has since become
+  // wrong: `ledger_append` is now the name of the POSTGRES function that
+  // replaced the two-call client write (migration 032). Keeping the string ban
+  // would have meant the test firing on the fix.
+  //
+  // The rule it stood for is asserted directly, here and in the banned-import
+  // test above: nothing invokes Tauri, and the write goes to Postgres.
+  assert.ok(!code(driver).includes("@tauri-apps"), "no Tauri bridge");
+  assert.ok(!/\binvoke\s*\(/.test(code(driver)), "no Tauri command invocation");
+  assert.match(driver, /rpc\("ledger_append"/, "the write goes through the Postgres function");
 });
 
 test("the ledger uses the column names the DEPLOYED table actually has", () => {
@@ -132,19 +143,35 @@ test("the ledger uses the column names the DEPLOYED table actually has", () => {
   // swallowed by a catch. Stock and money silently stopped agreeing across
   // devices. If someone "fixes" these names back to match the schema file,
   // that breaks again with no test to catch it — so this is the test.
-  // Scoped to `append`, because that is the block whose keys become column
-  // names on the wire. Elsewhere in the file `qty:` is a legitimate field of
-  // the Balance shape this module returns.
-  const append = code(driver).slice(
-    code(driver).indexOf("async append("),
-    code(driver).indexOf("async balances("),
+  // The names used to be spelled inside `async append(`, which built the row
+  // object by hand. It no longer builds one: it passes the wire shape straight
+  // to `ledger_append`, so the keys that become column names now live in the
+  // `WireLine` interface the driver sends and in the INSERT inside migration
+  // 032. The guarantee did not weaken — it moved, so the test moves with it,
+  // and it now also covers the SQL, which is where the column names actually
+  // meet the table.
+  const wireLine = code(driver).slice(
+    code(driver).indexOf("export interface WireLine"),
+    code(driver).indexOf("export interface WireEvent"),
   );
   for (const real of ["qty_delta:", "amount_delta:", "unit_cost:"]) {
-    assert.ok(append.includes(real), `append must write ${real}`);
+    assert.ok(wireLine.includes(real), `the wire shape must carry ${real}`);
   }
   for (const wrong of ["qty:", "amount:"]) {
-    assert.ok(!append.includes(wrong), `${wrong} is not a column on ledger_lines`);
+    assert.ok(!wireLine.includes(wrong), `${wrong} is not a column on ledger_lines`);
   }
+
+  const migration = readFileSync(
+    new URL("../docs/migrations/032_ledger_append_atomic.sql", import.meta.url),
+    "utf8",
+  );
+  for (const real of ["qty_delta", "amount_delta", "unit_cost"]) {
+    assert.ok(migration.includes(real), `ledger_append must insert ${real}`);
+  }
+  assert.ok(
+    !/INSERT INTO public\.ledger_lines[\s\S]{0,400}?\bqty\b\s*,/.test(migration),
+    "`qty` is not a column on ledger_lines",
+  );
 
   // And the read side must sum the same columns it wrote.
   const balances = code(driver).slice(code(driver).indexOf("async balances("));

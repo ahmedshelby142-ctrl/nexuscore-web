@@ -34,10 +34,10 @@
  * `appendEvent`, NOT from caller-supplied input.
  */
 
-import { appendEvent } from "@/lib/ledger";
-import { buildPurchaseLines, purchaseTotal, type PurchaseLineItem } from "@/lib/ledger/purchases";
 import { useBusinessStore } from "@/store/useBusinessStore";
-import type { Supplier, PurchaseInvoice, Product, WalletType } from "@/types";
+import { commitReceipt } from "./commitReceipt";
+import { readSupplierById } from "./suppliers";
+import type { Supplier, WalletType } from "@/types";
 
 export interface QuickRestockLineInput {
   productId: string;
@@ -112,142 +112,78 @@ export async function executeQuickRestock(input: QuickRestockInput): Promise<Qui
     }
   }
 
-  const { suppliers, addSupplier, addPurchaseInvoice, purchaseInvoices } = useBusinessStore.getState();
+  // ── 1. Resolve or create the supplier ──────────────────────────────────
+  //
+  // Resolved SERVER-SIDE, not from `useBusinessStore.suppliers`. That array is
+  // populated by `hydrateAll`, which mobile deliberately never calls — so on
+  // mobile it was always empty, every existing supplier looked missing, and the
+  // operator was pushed down the "register new" branch on every single receipt.
+  // The result was a fresh duplicate supplier each time, with that supplier's
+  // payable fragmented across all of them.
+  const supplier = await resolveReceiptSupplier(input.supplier);
 
-  // ── 1. Resolve or create supplier ──────────────────────────────────────
-  let supplier: Supplier;
-  const { supplierId, newSupplierName, newSupplierPhone } = input.supplier;
-  const registeringNew = supplierId === NEW_SUPPLIER;
-
-  if (registeringNew) {
-    const name = newSupplierName?.trim();
-    if (!name) {
-      throw new Error("اسم المورد مطلوب عند إضافة مورد جديد");
-    }
-    supplier = await addSupplier({
-      companyName: name,
-      contactPerson: "",
-      phone: newSupplierPhone?.trim() ?? "",
-    });
-    if (!supplier?.id) {
-      throw new Error("فشل إنشاء المورد — لم يُرجع معرفًا");
-    }
-  } else {
-    supplier = suppliers.find((s) => s.id === supplierId);
-    if (!supplier?.id) {
-      throw new Error("المورد المحدد غير موجود");
-    }
-  }
-
-  // ── 2. Build ledger lines and total ────────────────────────────────────
-  const total = purchaseTotal(
-    validLines.map((l) => ({
-      productId: l.productId,
-      quantity: l.quantity,
-      unitCost: l.unitCost,
-    }))
-  );
-
-  // Same numbering as the invoice screen, off the same list, so the
-  // sequence stays continuous however the receipt was entered.
-  const invoiceNumber = "FM-" + String(purchaseInvoices.length + 1).padStart(4, "0");
-
-  // ONE event. Same builder as the invoice screen: stock + (qty AND value,
-  // which is what keeps the weighted-average cost derivable) and the cash
-  // leaving the chosen wallet. Paid in full, so no supplier debt is booked.
-  const ledgerLines = buildPurchaseLines({
+  // ── 2. Write it, through the one safe path ─────────────────────────────
+  const result = await commitReceipt({
+    supplierId: supplier.id,
+    supplierName: supplier.companyName,
     items: validLines.map((l) => ({
       productId: l.productId,
+      productName: l.productName,
+      sku: l.sku,
       quantity: l.quantity,
       unitCost: l.unitCost,
       variantName: l.variantName,
     })),
     wallet: input.wallet,
-    supplierId: supplier.id,
-    paidAmount: total,
+    // Deliberately cash-paid in full: the credit split, due date and terms
+    // belong to the full invoice form, and this command says so rather than
+    // silently dropping the option.
+    paidAmount: Number.POSITIVE_INFINITY,
+    notes: input.notes ?? "توريد سريع من شاشة المنتجات",
+    actor: "توريد",
+    via: "quick_restock",
+    payloadExtra: { idempotencyKey: input.idempotencyKey },
   });
 
-  // ── 3. Append ledger event (atomic: stock + wallet + payable) ──────────
-  let ledgerWritten = false;
-  let eventId: string;
-  try {
-    eventId = await appendEvent({
-      kind: "purchase",
-      actor: "توريد",
-      refType: "supplier_invoice",
-      refId: invoiceNumber,
-      payload: {
-        invoiceNumber,
-        supplierName: supplier.companyName,
-        itemCount: validLines.length,
-        wallet: input.wallet,
-        via: "quick_restock",
-        idempotencyKey: input.idempotencyKey,
-      },
-      lines: ledgerLines,
-    });
-    ledgerWritten = true;
-  } catch (e) {
-    throw new Error(`فشل تسجيل التوريد في دفتر الحسابات: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  // ── 4. Apply stock moves to local mirror (instant UI feedback) ─────────
-  // This mirrors what the ledger event will eventually aggregate to.
-  // The ledger remains the source of truth; this is for immediate UI.
-  useBusinessStore.getState().applyStockMoves(
-    validLines.map((line) => ({
-      productId: line.productId,
-      delta: line.quantity,
-      variantName: line.variantName,
-    }))
-  );
-
-  // ── 5. Write purchase invoice document ─────────────────────────────────
-  // A supplier invoice with no stock behind it is the drift we delete
-  // everywhere else. This is what makes the receipt show up in that
-  // supplier's totals and history.
-  //
-  // Awaited and caught SEPARATELY: by this point the stock and the money
-  // are already in the ledger, so telling the user "nothing was saved"
-  // would be a lie that makes them enter the receipt twice.
-  try {
-    await addPurchaseInvoice({
-      invoiceNumber,
-      supplierId: supplier.id,
-      supplierName: supplier.companyName,
-      items: validLines.map((l) => ({
-        id: crypto.randomUUID(),
-        productId: l.productId,
-        productName: l.productName,
-        sku: l.sku,
-        quantity: l.quantity,
-        unitCost: l.unitCost,
-        total: l.quantity * l.unitCost,
-      })),
-      totalAmount: total,
-      paidAmount: total,
-      remainingAmount: 0,
-      dueDate: new Date().toISOString().slice(0, 10),
-      status: "paid",
-      notes: input.notes ?? "توريد سريع من شاشة المنتجات",
-    });
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    // The ledger event SUCCEEDED — stock and cash HAVE moved.
-    // Re-entering the receipt would double it.
-    throw new Error(
-      `المخزون والفلوس اتسجّلوا، لكن فاتورة المورد متسجّلتش. ` +
-        `متعملش التوريد تاني — سجّل الفاتورة من شاشة المشتريات. ${detail}`
-    );
-  }
-
   return {
-    eventId,
-    invoiceNumber,
+    eventId: result.eventId,
+    invoiceNumber: result.invoiceNumber,
     supplier,
-    total,
-    itemCount: validLines.length,
+    total: result.total,
+    itemCount: result.itemCount,
   };
+}
+
+/**
+ * The supplier this receipt belongs to, from the database.
+ *
+ * An existing id is verified against the server rather than against whatever
+ * the local store happens to hold, so the same call works on desktop (hydrated)
+ * and mobile (not hydrated). A new supplier is only ever created when the
+ * caller explicitly asked for one.
+ */
+async function resolveReceiptSupplier(
+  selection: QuickRestockSupplierInput,
+): Promise<Supplier> {
+  const { supplierId, newSupplierName, newSupplierPhone } = selection;
+
+  if (supplierId === NEW_SUPPLIER) {
+    const name = newSupplierName?.trim();
+    if (!name) throw new Error("اسم المورد مطلوب عند إضافة مورد جديد");
+    const created = await useBusinessStore.getState().addSupplier({
+      companyName: name,
+      contactPerson: "",
+      phone: newSupplierPhone?.trim() ?? "",
+    });
+    if (!created?.id) throw new Error("فشل إنشاء المورد — لم يُرجع معرفًا");
+    return created;
+  }
+
+  if (!supplierId) throw new Error("المورد المحدد غير موجود");
+
+  const found = await readSupplierById(supplierId);
+  if (!found?.id) throw new Error("المورد المحدد غير موجود");
+  return found as Supplier;
 }
 
 /**

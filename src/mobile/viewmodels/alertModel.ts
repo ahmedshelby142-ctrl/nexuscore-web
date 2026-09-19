@@ -27,14 +27,21 @@ import { ALERT_LEVEL_TAXONOMY } from "./statusTaxonomies";
 export interface AlertModelInput {
   /** Open orders (pending/processing) with at least one shortage shortfall > 0. */
   ordersWithStockout: number;
-  /** Open orders that have been pending for more than the stale threshold. */
-  agingPendingOrders: number;
-  /** Orders in shipped status that have been in transit beyond a threshold. */
-  longInTransitOrders: number;
+  /**
+   * Open orders pending longer than the stale threshold.
+   *
+   * OPTIONAL, and the distinction matters: `undefined` means "no reader can
+   * answer this yet" and the category is omitted, while `0` means "asked, and
+   * there are none". These used to be passed as a hardcoded `0`, which
+   * rendered an all-clear for a question nobody had asked.
+   */
+  agingPendingOrders?: number;
+  /** Orders in shipped status in transit beyond a threshold. Optional — see above. */
+  longInTransitOrders?: number;
   /** Products at zero stock that have waiting open orders. */
   stockoutWithWaitingOrders: number;
-  /** Number of shipped orders ready to collect (delivered but unsettled COD). */
-  unsettledCodOrders: number;
+  /** Delivered orders with COD not yet settled. Optional — see above. */
+  unsettledCodOrders?: number;
   /** Whether the current store license is in a risk/unverified state. */
   licenseAtRisk: boolean;
   /** Products at or below min stock level (not necessarily zero). */
@@ -61,7 +68,8 @@ interface AlertDefinition {
   clearConditionAr: string;
   href: string;
   /** Extracts the count from the input. Return 0 to suppress. */
-  getCount: (input: AlertModelInput) => number;
+  /** `undefined` = no reader can answer this yet, so omit the category. */
+  getCount: (input: AlertModelInput) => number | undefined;
 }
 
 const ALERT_DEFINITIONS: readonly AlertDefinition[] = [
@@ -164,7 +172,9 @@ export function deriveAlerts(
     if (!capabilities.has(def.capability)) continue;
 
     const count = def.getCount(input);
-    if (count <= 0) continue;
+    // `undefined` is not zero: it means this signal has no authoritative reader
+    // yet, so the category is omitted rather than shown as an all-clear.
+    if (count === undefined || count === null || count <= 0) continue;
 
     alerts.push({
       id: def.id,

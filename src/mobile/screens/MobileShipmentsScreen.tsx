@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, RefreshCw, Truck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
@@ -8,7 +8,8 @@ import { QueueRow } from "@/mobile/components/QueueRow";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { toMobileShipmentQueue } from "@/mobile/viewmodels/shipmentViewModel";
 import { toMobileOrderQueue } from "@/mobile/viewmodels/orderViewModel";
-import { readMobileShipments } from "@/mobile/data/mobileReaders";
+import { readMobileShipments, readMobileCouriers } from "@/mobile/data/mobileReaders";
+import type { CourierRegistry } from "@/mobile/viewmodels/shipmentViewModel";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
 
 const PIPELINE = [{ id: "ready", label: "جاهز للشحن" }, { id: "shipped", label: "في الطريق" }, { id: "delivered", label: "تم التسليم" }] as const;
@@ -18,15 +19,27 @@ export function MobileShipmentsScreen() {
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState("ready");
   const page = useMobilePagedQuery(readMobileShipments, { search: query, status: stage });
+
+  // WHO the couriers are — one read, the same registry table desktop writes.
+  // Orders carry a `courierId`; the name on the order is only a frozen label.
+  const [couriers, setCouriers] = useState<CourierRegistry>(() => new Map());
+  useEffect(() => {
+    let cancelled = false;
+    void readMobileCouriers()
+      .then((registry) => { if (!cancelled) setCouriers(registry); })
+      .catch(() => { /* no registry: rows fall back to their frozen label */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const pipelineRows = useMemo(() => {
-    const shipmentRows = toMobileShipmentQueue(page.rows);
+    const shipmentRows = toMobileShipmentQueue(page.rows, couriers);
     const readyRows = toMobileOrderQueue(page.rows.filter((order: any) => String(order.status) === "processing")).map((row) => ({ ...row, statusLabelAr: "جاهز للشحن", statusTone: "warning" as const }));
     return [...readyRows, ...shipmentRows].filter((row) => {
       const matchesSearch = !query || `${row.title} ${row.subtitle ?? ""}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
       const matchesStage = stage === "ready" ? row.statusKey === "processing" : row.statusKey === stage;
       return matchesSearch && matchesStage;
     });
-  }, [page.rows, query, stage]);
+  }, [page.rows, query, stage, couriers]);
 
   return <section className="mobile-screen">
     <MobileAppBar title="الشحنات" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} trailingAction={<button type="button" className="mobile-icon-button" aria-label="تحديث"><RefreshCw aria-hidden="true" /></button>} />

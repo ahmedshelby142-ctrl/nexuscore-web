@@ -69,11 +69,21 @@ export function MobileCustomerDetails() {
     }
   };
 
+  // EVERY hook runs before the first conditional return.
+  //
+  // This `useMemo` used to sit BELOW the three early returns. On the first
+  // render `loading` was true, the component returned at the skeleton and the
+  // hook never ran — 21 hooks. On the next render `loading` was false, control
+  // reached the `useMemo` — 22 hooks. React saw the count change, threw
+  // "Rendered more hooks than during the previous render", and the error
+  // boundary swallowed the whole screen. `/customers/:id` crashed one hundred
+  // percent of the time, for every customer, and the crash had nothing to do
+  // with the customer's data.
+  const history = useMemo(() => toMobileOrderQueue(ordersPage.rows), [ordersPage.rows]);
+
   if (loading) return <><MobileAppBar title="تفاصيل العميل" /><div className="mobile-screen-body"><SkeletonState /></div></>;
   if (error) return <><MobileAppBar title="تفاصيل العميل" /><ErrorState messageAr="تعذّر تحميل العميل." /></>;
   if (!customer) return <><MobileAppBar title="تفاصيل العميل" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} /><EmptyState titleAr="العميل غير موجود" messageAr="تعذّر العثور على هذا العميل." /></>;
-
-  const history = useMemo(() => toMobileOrderQueue(ordersPage.rows), [ordersPage.rows]);
 
   const warnings: string[] = [];
   if (financials) {

@@ -82,7 +82,31 @@ const DESKTOP_RESOURCE_FOR_CAPABILITY: Record<
  * All other capabilities are resolved via `canAccess()` against the
  * existing desktop access map — no new permission logic is introduced.
  */
+/**
+ * One Set per role, for the life of the tab.
+ *
+ * ## Why this is a cache and not just a function
+ *
+ * `getMobileCapabilities` is called during render by `MobileHomePlaceholder`
+ * and by `useAlertBadges` — which the bottom nav mounts on EVERY screen.
+ * Building a fresh `Set` each time gave every render a new object identity, so
+ * `useMobileHomeData`'s `useCallback([capabilities, …])` was rebuilt on every
+ * render, its `useEffect([reload])` re-fired, `setState` re-rendered, and the
+ * loop closed. React gave up after 50 nested updates and logged "Maximum
+ * update depth exceeded" ~900 times in seconds; the restock screen stopped
+ * answering taps entirely.
+ *
+ * The answer is a pure function of the role and there are exactly four roles,
+ * so this is four entries that never need invalidating. Fixing it HERE rather
+ * than wrapping each call site in `useMemo` is what makes it impossible for
+ * the next caller to reintroduce the loop.
+ */
+const CAPABILITIES_BY_ROLE = new Map<AppRole, ReadonlySet<MobileCapability>>();
+
 export function getMobileCapabilities(role: AppRole): ReadonlySet<MobileCapability> {
+  const cached = CAPABILITIES_BY_ROLE.get(role);
+  if (cached) return cached;
+
   const capabilities = new Set<MobileCapability>(["home", "more"]);
 
   for (const [capability, desktopPath] of Object.entries(
@@ -93,6 +117,7 @@ export function getMobileCapabilities(role: AppRole): ReadonlySet<MobileCapabili
     }
   }
 
+  CAPABILITIES_BY_ROLE.set(role, capabilities);
   return capabilities;
 }
 

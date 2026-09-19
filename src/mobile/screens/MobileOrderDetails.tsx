@@ -7,7 +7,7 @@ import { StatusPill } from "@/mobile/components/StatusPill";
 import { EmptyState, ErrorState, SkeletonState } from "@/mobile/components/States";
 import { resolveOrderStatus, resolveShipmentStatus } from "@/mobile/viewmodels/statusTaxonomies";
 import { formatArabicCurrency, formatArabicDate, formatArabicRelativeTime, formatArabicQuantity } from "@/mobile/viewmodels/formatters";
-import { readMobileOrder, readMobileOrderTimeline } from "@/mobile/data/mobileReaders";
+import { readMobileOrder, readMobileOrderTimeline, readMobileCouriers } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
 
 export function MobileOrderDetails() {
@@ -18,6 +18,17 @@ export function MobileOrderDetails() {
   const [timeline, setTimeline] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(true);
   const [timelineError, setTimelineError] = useState<string | null>(null);
+  const [couriers, setCouriers] = useState<Map<string, { id: string; name: string; phone: string | null }>>(() => new Map());
+
+  // WHO the courier is — the registry, the same table desktop's CourierSelect
+  // writes. A failure here costs the registry name, never the screen.
+  useEffect(() => {
+    let active = true;
+    void readMobileCouriers()
+      .then((registry) => { if (active) setCouriers(registry as Map<string, { id: string; name: string; phone: string | null }>); })
+      .catch(() => { /* fall back to the label frozen on the order */ });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -55,8 +66,13 @@ export function MobileOrderDetails() {
   const customerPhone = order.customerPhone ?? "—";
   const address = order.address ?? "لا يوجد عنوان مسجل";
   const governorate = order.governorate ?? "—";
-  const courierName = order.courierName ?? "غير محدد";
+  // Identity is the id; `courierName` on the order is a label frozen at write
+  // time. A registry hit wins over it, so «أرامكس» typed twice still resolves
+  // to the one account its money is settled against.
   const courierId = order.courierId ?? null;
+  const registryCourier = courierId && courierId !== "default" ? couriers.get(String(courierId)) : undefined;
+  const courierName = registryCourier?.name ?? order.courierName ?? "غير محدد";
+  const courierIsLegacy = Boolean(order.courierName || courierId) && !registryCourier;
 
   return <section className="mobile-screen">
     <MobileAppBar title="تفاصيل الطلب" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} />
@@ -154,7 +170,13 @@ export function MobileOrderDetails() {
 
       <MobileSection titleAr="الشحن والمندوب">
         <div className="mobile-detail-line"><span>المندوب</span><strong>{courierName}</strong></div>
+        {registryCourier?.phone && <div className="mobile-detail-line"><span>تليفون المندوب</span><strong dir="ltr">{registryCourier.phone}</strong></div>}
         {courierId && <div className="mobile-detail-line"><span>معرف المندوب</span><strong dir="ltr">{courierId}</strong></div>}
+        {courierIsLegacy && (
+          <p className="mobile-detail-note">
+            المندوب ده مش مسجّل في سجل شركات الشحن — الاسم متسجّل على الطلب نفسه من قبل ما السجل يتعمل.
+          </p>
+        )}
         <div className="mobile-detail-line"><span>حالة الشحنة</span><StatusPill labelAr={resolveShipmentStatus(order.status).labelAr} tone={resolveShipmentStatus(order.status).tone} /></div>
         {order.trackingNumber && <div className="mobile-detail-line"><span>رقم التتبع</span><strong dir="ltr">{order.trackingNumber}</strong></div>}
         {expectedCod > 0 && <div className="mobile-detail-line"><span>المبلغ المستحق تحصيله (COD)</span><strong>{formatArabicCurrency(expectedCod)}</strong></div>}
@@ -173,12 +195,15 @@ export function MobileOrderDetails() {
             <div className="mobile-timeline-event" key={event.id}>
               <div className="mobile-timeline-event-main">
                 <div className="mobile-timeline-event-header">
+                  {/* No status pill. `event.status` is now a LEDGER KIND
+                      (`order_delivered`, `return_confirmed`), not an order
+                      status, so `resolveOrderStatus` had nothing to say about
+                      it and every row rendered a "غير معروف" chip next to a
+                      label that already said exactly what happened. */}
                   <span className="mobile-timeline-event-label">{event.labelAr}</span>
-                  <StatusPill labelAr={resolveOrderStatus(event.status)?.labelAr ?? event.status} tone={resolveOrderStatus(event.status)?.tone ?? "neutral"} />
                 </div>
                 <div className="mobile-timeline-event-meta">
                   <span dir="ltr">{formatArabicDate(event.timestamp)} · {formatArabicRelativeTime(event.timestamp)}</span>
-                  <span className="mobile-muted">مصدر: {event.source}</span>
                 </div>
               </div>
             </div>

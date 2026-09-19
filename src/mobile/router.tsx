@@ -7,6 +7,7 @@ import { MobileHomePlaceholder } from "./screens/MobileHomePlaceholder";
 import { MobileRouteGuard } from "./navigation/MobileRouteGuard";
 import { MobileDeferredScreen } from "./screens/MobileDeferredScreen";
 import { MobileStockScreen } from "./screens/MobileStockScreen";
+import { MobileShortagesScreen } from "./screens/MobileShortagesScreen";
 import { MobileOrdersScreen } from "./screens/MobileOrdersScreen";
 import { MobileShipmentsScreen } from "./screens/MobileShipmentsScreen";
 import { MobileCustomersScreen } from "./screens/MobileCustomersScreen";
@@ -33,7 +34,7 @@ export function MobileRouter({
           <Route element={<MobileRouteGuard capability="orders" />}><Route path="orders" element={<MobileOrdersScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="orders" />}><Route path="orders/:orderId" element={<MobileOrderDetails />} /></Route>
           <Route element={<MobileRouteGuard capability="stock" />}><Route path="inventory" element={<MobileStockScreen />} /></Route>
-          <Route element={<MobileRouteGuard capability="stock" />}><Route path="inventory/shortages" element={<MobileStockScreen />} /></Route>
+          <Route element={<MobileRouteGuard capability="stock" />}><Route path="inventory/shortages" element={<MobileShortagesScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="stock" />}><Route path="inventory/:productId" element={<MobileProductDetails />} /></Route>
           <Route element={<MobileRouteGuard capability="shipments" />}><Route path="shipments" element={<MobileShipmentsScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="customers" />}><Route path="customers" element={<MobileCustomersScreen />} /></Route>

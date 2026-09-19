@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
-import { executeQuickRestock, formatQuickRestockSuccess, NEW_SUPPLIER, type QuickRestockLineInput, type QuickRestockSupplierInput } from "@/lib/receiving";
+import { executeQuickRestock, formatQuickRestockSuccess, NEW_SUPPLIER, readSuppliers, type QuickRestockLineInput, type QuickRestockSupplierInput, type SupplierOption } from "@/lib/receiving";
 import { readMobileProductsForRestock } from "@/mobile/data/mobileReaders";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
@@ -46,24 +46,51 @@ export function MobileQuickRestock() {
   const [saving, setSaving] = useState(false);
   const [showProductPicker, setShowProductPicker] = useState(false);
   const gate = useSubmitGate();
-  const ledgerWritten = useRef(false);
+  // The picked product RECORDS, keyed by id.
+  //
+  // The screen used to look products up in `page.rows`, the current search
+  // page. Picking one cleared the query, the page reloaded to the first 25 by
+  // name, and the product just picked was usually not among them — so it could
+  // not be found, could not be rendered, and could not be received. Holding the
+  // record the moment it is chosen makes the draft independent of whatever the
+  // search box happens to be showing.
+  const [picked, setPicked] = useState<Record<string, any>>({});
 
-  // Get suppliers from store for the select dropdown
-  const suppliers = useBusinessStore((s) => s.suppliers);
+  // Suppliers come from the SERVER, not from `useBusinessStore.suppliers`:
+  // mobile never calls `hydrateAll`, so that array is permanently empty and the
+  // picker showed nothing at all.
+  const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
+  const [suppliersError, setSuppliersError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void readSuppliers({ limit: 200 })
+      .then((rows) => { if (!cancelled) { setSuppliers(rows); setSuppliersError(null); } })
+      .catch((e) => { if (!cancelled) setSuppliersError(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, []);
 
   // Search products for the picker
   const page = useMobilePagedQuery(readMobileProductsForRestock, { search: query });
 
-  // Initialize lines for pre-selected products (from stock screen deep-link)
+  // Deep link from المخزون (`/restock?products=a,b`) hands over ids only, so
+  // the records behind them have to be fetched before anything can render.
   useEffect(() => {
-    if (selectedProductIds.length > 0 && Object.keys(lines).length === 0) {
-      const initialLines: Record<string, LineDraft> = {};
-      selectedProductIds.forEach((id) => {
-        initialLines[id] = { quantity: "", unitCost: "" };
-      });
-      setLines(initialLines);
-    }
-  }, [selectedProductIds, lines]);
+    const missing = selectedProductIds.filter((id) => !picked[id]);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    void Promise.all(missing.map((id) => readMobileProductsForRestock({ id, pageSize: 1 })))
+      .then((pages) => {
+        if (cancelled) return;
+        const found: Record<string, any> = {};
+        pages.forEach((page, i) => {
+          const row = page.rows[0];
+          if (row) found[missing[i]] = row;
+        });
+        if (Object.keys(found).length > 0) setPicked((prev) => ({ ...prev, ...found }));
+      })
+      .catch(() => { /* a product that cannot be read simply cannot be drafted */ });
+    return () => { cancelled = true; };
+  }, [selectedProductIds, picked]);
 
   const draftOf = (id: string) => lines[id] ?? { quantity: "", unitCost: "" };
   const setDraft = (id: string, patch: Partial<LineDraft>) =>
@@ -78,32 +105,53 @@ export function MobileQuickRestock() {
     setSelectedProductIds((prev) => prev.filter((pid) => pid !== id));
   };
 
-  const received = Object.entries(lines)
-    .map(([id, draft]) => {
+  // ── Draft rows: what the operator SEES ───────────────────────────────────
+  //
+  // Everything picked, whatever its quantity. This list and `received` used to
+  // be the same list, and that was the whole bug: `received` drops any line
+  // with quantity <= 0, a freshly picked product has quantity "", so it was
+  // dropped before it could be rendered — and the quantity input that would
+  // have lifted it above zero only existed INSIDE the row that was being
+  // dropped. The screen showed "لا توجد أصناف محددة" forever and no receipt
+  // could ever be recorded from the phone.
+  //
+  // Desktop never had this: `QuickRestockDialog` renders `rows` and submits
+  // `received`. Same split, restored here.
+  const draftRows = selectedProductIds
+    .map((id) => {
+      const product = picked[id];
+      if (!product) return null;
+      const draft = draftOf(id);
       const quantity = parseFloat(draft.quantity) || 0;
       const unitCost = parseFloat(draft.unitCost) || 0;
-      if (quantity <= 0) return null;
-      // Find product from page rows
-      const product = page.rows.find((p: any) => String(p.id) === id);
-      if (!product) return null;
-      return {
-        productId: id,
-        productName: product.name,
-        sku: product.sku,
-        quantity,
-        unitCost,
-        variantName: draft.variantName,
-      };
+      const variants: { name: string }[] = product?.metadata?.variants ?? product?.variants ?? [];
+      return { id, product, draft, quantity, unitCost, variants, subtotal: quantity * unitCost };
     })
-    .filter((l): l is NonNullable<typeof l> => l !== null);
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  // ── Received lines: what is SUBMITTED ────────────────────────────────────
+  const received: QuickRestockLineInput[] = draftRows
+    .filter((r) => r.quantity > 0)
+    .map((r) => ({
+      productId: r.id,
+      productName: String(r.product.name ?? ""),
+      sku: String(r.product.sku ?? ""),
+      quantity: r.quantity,
+      unitCost: r.unitCost,
+      variantName: r.draft.variantName,
+    }));
 
   const total = received.reduce((sum, l) => sum + l.quantity * l.unitCost, 0);
   const registeringNew = supplierId === NEW_SUPPLIER;
   const supplierReady = registeringNew ? newSupplierName.trim().length > 0 : supplierId !== "";
-  const canSave = received.length > 0 && supplierReady && !saving;
+  // A درجة-bearing product must say WHICH درجة arrived, or a later return off
+  // this receipt cannot name it. Mirrors the desktop dialog's same guard.
+  const variantsResolved = draftRows.every((r) => r.quantity <= 0 || r.variants.length === 0 || Boolean(r.draft.variantName));
+  const canSave = received.length > 0 && supplierReady && variantsResolved && !saving;
 
   function reset() {
     setLines({});
+    setPicked({});
     setSelectedProductIds([]);
     setSupplierId("");
     setNewSupplierName("");
@@ -120,56 +168,33 @@ export function MobileQuickRestock() {
     if (!canSave || !gate.enter()) return;
     setSaving(true);
 
-    const { suppliers, addSupplier, purchaseInvoices } = useBusinessStore.getState();
-    
-    let supplier: Supplier | undefined;
+    // Supplier resolution, numbering and the write ordering all live in
+    // `executeQuickRestock` now. This handler used to resolve the supplier out
+    // of `useBusinessStore.suppliers` — an array mobile never hydrates, so it
+    // was always empty and every receipt minted a duplicate supplier — and to
+    // compute its own `FM-` number from `purchaseInvoices.length`, which on
+    // mobile is always 0 and therefore always collided with FM-0001.
     try {
-      supplier = registeringNew
-        ? await addSupplier({
-            companyName: newSupplierName.trim(),
-            contactPerson: "",
-            phone: newSupplierPhone.trim(),
-          })
-        : suppliers.find((s) => s.id === supplierId);
-
-      if (!supplier?.id) throw new Error("المورد مش موجود");
-    } catch (e) {
-      toast.error(
-        `المورد متسجّلش، وبالتالي التوريد مااتسجّلش. المخزون زي ما هو. ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-      setSaving(false);
-      gate.exit();
-      return;
-    }
-
-    try {
-      const invoiceNumber = "FM-" + String(purchaseInvoices.length + 1).padStart(4, "0");
-
       const result = await executeQuickRestock({
         lines: received,
-        supplier: { supplierId: registeringNew ? NEW_SUPPLIER : supplierId, newSupplierName, newSupplierPhone },
+        supplier: {
+          supplierId: registeringNew ? NEW_SUPPLIER : supplierId,
+          newSupplierName,
+          newSupplierPhone,
+        },
         wallet,
         notes: "توريد سريع من تطبيق الموبايل",
         idempotencyKey: crypto.randomUUID(),
       });
 
-      ledgerWritten.current = true;
-
       toast.success(formatQuickRestockSuccess(result));
       close();
     } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
-
-      if (ledgerWritten.current) {
-        toast.error(detail);
-        close();
-      } else {
-        toast.error(`التوريد متسجّلش، والمخزون زي ما هو. ${detail}`);
-      }
+      // `commitReceipt` writes the document first and takes it back if the
+      // ledger refuses, so a throw means the receipt does not exist and nothing
+      // moved. Its message already names which failure shape happened.
+      toast.error(e instanceof Error ? e.message : String(e));
     } finally {
-      ledgerWritten.current = false;
       setSaving(false);
       gate.exit();
     }
@@ -209,7 +234,13 @@ export function MobileQuickRestock() {
       <div className="mobile-screen-body">
         <MobileSearch value={query} onChange={setQuery} placeholder="ابحث عن منتج لإضافته" />
 
-        {received.length === 0 ? (
+        {/* A deep link hands over ids; the records behind them take a round
+            trip. Saying "لا توجد أصناف محددة" while they are in flight tells
+            the operator their link did nothing, which is both wrong and the
+            exact moment they would give up on the screen. */}
+        {draftRows.length === 0 && selectedProductIds.length > 0 ? (
+          <SkeletonState count={1} />
+        ) : draftRows.length === 0 ? (
           <EmptyState
             titleAr="لا توجد أصناف محددة"
             messageAr="اضغط على '+' لإضافة أصناف للتوريد. يمكنك البحث بالاسم، الكود، أو الباركود."
@@ -217,50 +248,76 @@ export function MobileQuickRestock() {
         ) : (
           <>
             <div className="mobile-entity-list">
-              {received.map((line) => (
-                <div
-                  key={line.productId}
-                  className="mobile-stock-card"
-                >
+              {draftRows.map((row) => (
+                <div key={row.id} className="mobile-stock-card">
                   <div className="mobile-stock-card-main flex-1 min-w-0">
-                    <strong className="truncate block">{line.productName}</strong>
-                    <span className="text-xs text-muted-foreground" dir="ltr">{line.sku}</span>
+                    <strong className="truncate block">{String(row.product.name ?? "—")}</strong>
+                    <span className="text-xs text-muted-foreground" dir="ltr">{String(row.product.sku ?? "")}</span>
+
+                    {row.variants.length > 0 && (
+                      <div className="space-y-1 mt-2">
+                        <Label htmlFor={`restock-variant-${row.id}`} className="text-xs">الدرجة</Label>
+                        <Select
+                          value={row.draft.variantName ?? ""}
+                          onValueChange={(v) => setDraft(row.id, { variantName: v })}
+                        >
+                          <SelectTrigger id={`restock-variant-${row.id}`} className="h-9">
+                            <SelectValue placeholder="اختر الدرجة…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {row.variants.map((v: any) => (
+                              <SelectItem key={String(v.name)} value={String(v.name)}>
+                                {String(v.name)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-2 gap-2 mt-2">
                       <div className="space-y-1">
-                        <Label htmlFor={`restock-qty-${line.productId}`} className="text-xs">الكمية</Label>
+                        <Label htmlFor={`restock-qty-${row.id}`} className="text-xs">الكمية</Label>
                         <Input
-                          id={`restock-qty-${line.productId}`}
+                          id={`restock-qty-${row.id}`}
                           type="number"
                           min="0"
                           step="1"
                           inputMode="decimal"
-                          value={draftOf(line.productId).quantity}
-                          onChange={(e) => setDraft(line.productId, { quantity: e.target.value })}
-                          className="h-8 text-sm"
+                          value={row.draft.quantity}
+                          onChange={(e) => setDraft(row.id, { quantity: e.target.value })}
+                          className="h-9 text-sm"
                         />
                       </div>
                       <div className="space-y-1">
-                        <Label htmlFor={`restock-cost-${line.productId}`} className="text-xs">تكلفة الوحدة</Label>
+                        <Label htmlFor={`restock-cost-${row.id}`} className="text-xs">تكلفة الوحدة</Label>
                         <Input
-                          id={`restock-cost-${line.productId}`}
+                          id={`restock-cost-${row.id}`}
                           type="number"
                           min="0"
                           step="0.01"
                           inputMode="decimal"
-                          value={draftOf(line.productId).unitCost}
-                          onChange={(e) => setDraft(line.productId, { unitCost: e.target.value })}
-                          className="h-8 text-sm"
+                          value={row.draft.unitCost}
+                          onChange={(e) => setDraft(row.id, { unitCost: e.target.value })}
+                          className="h-9 text-sm"
                         />
                       </div>
                     </div>
+
                     <div className="flex items-center justify-between mt-2 text-sm">
                       <span className="text-muted-foreground">
-                        متاح: {(page.rows.find((p: any) => String(p.id) === line.productId)?.mobileStock ?? 0).toLocaleString("ar-EG")}
+                        متاح: {Number(row.product.mobileStock ?? 0).toLocaleString("ar-EG")}
                       </span>
+                      <span className="font-semibold">
+                        {row.subtotal > 0 ? formatMoney(row.subtotal) : "—"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-end mt-1">
                       <button
                         type="button"
-                        className="text-destructive hover:underline text-sm"
-                        onClick={() => removeLine(line.productId)}
+                        className="text-destructive hover:underline text-sm min-h-[44px] px-2"
+                        onClick={() => removeLine(row.id)}
                         disabled={saving}
                       >
                         إزالة
@@ -279,7 +336,6 @@ export function MobileQuickRestock() {
                     <SelectValue placeholder="اختر المورد…" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">اختر المورد…</SelectItem>
                     {suppliers.map((s) => (
                       <SelectItem key={s.id} value={s.id}>
                         {s.companyName}
@@ -349,20 +405,13 @@ export function MobileQuickRestock() {
           </>
         )}
 
-        {page.hasMore && !showProductPicker && (
-          <button
-            type="button"
-            className="mobile-primary-button mobile-load-more"
-            onClick={page.loadMore}
-            disabled={page.loadingMore}
-          >
-            {page.loadingMore ? "جارٍ التحميل…" : "تحميل المزيد"}
-          </button>
-        )}
       </div>
 
-      <div className="sticky bottom-0 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 p-4">
-        <div className="flex justify-end gap-2">
+      {/* Lifted clear of the fixed bottom nav — see `.mobile-sticky-actions`.
+          With plain `sticky bottom-0` the nav sat on top of this bar and ate
+          every tap aimed at تسجيل التوريد. */}
+      <div className="mobile-sticky-actions">
+        <div className="flex justify-end gap-2 w-full">
           <Button variant="outline" onClick={close} disabled={saving}>
             إلغاء
           </Button>
@@ -409,7 +458,10 @@ export function MobileQuickRestock() {
                         type="button"
                         className="mobile-stock-card"
                         onClick={() => {
-                          setSelectedProductIds((prev) => [...prev, String(product.id)]);
+                          const id = String(product.id);
+                          setPicked((prev) => ({ ...prev, [id]: product }));
+                          setSelectedProductIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+                          setLines((prev) => (prev[id] ? prev : { ...prev, [id]: { quantity: "", unitCost: "" } }));
                           setShowProductPicker(false);
                           setQuery("");
                         }}

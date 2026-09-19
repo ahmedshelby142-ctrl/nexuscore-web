@@ -1,4 +1,5 @@
 import { getSupabaseClient } from "@/lib/supabase";
+import { getActiveStoreId } from "@/services/api/storeContext";
 import { deriveAlerts } from "@/mobile/viewmodels/alertModel";
 import { getMetricDefinition } from "@/mobile/viewmodels/metricDefinitions";
 import { formatArabicCount } from "@/mobile/viewmodels/formatters";
@@ -37,8 +38,17 @@ function clientOrThrow() {
   return client;
 }
 
+/**
+ * Products that open orders demand more of than the ledger holds.
+ *
+ * The store is passed explicitly from `getActiveStoreId()` — the same authority
+ * every other write uses — rather than left for the RPC to guess with a
+ * `LIMIT 1` over the caller's memberships. The database validates it.
+ */
 export async function readMobileShortages(): Promise<MobileShortageRow[]> {
-  const { data, error } = await clientOrThrow().rpc("mobile_shortages");
+  const storeId = await getActiveStoreId();
+  if (!storeId) return [];
+  const { data, error } = await clientOrThrow().rpc("mobile_shortages", { p_store: storeId });
   if (error) throw new Error(`[mobile_shortages] ${error.message}`);
   return (data ?? []) as MobileShortageRow[];
 }
@@ -60,12 +70,14 @@ export function composeMobileHomeSnapshot(
   licenseAtRisk: boolean,
 ): ComposedMobileHomeSnapshot {
   const shortageOrderCount = snapshot.shortages.reduce((sum, row) => sum + Number(row.order_count || 0), 0);
+  // `agingPendingOrders`, `longInTransitOrders` and `unsettledCodOrders` are
+  // NOT passed. They were hardcoded `0`, which is not "no aging orders" — it is
+  // "nobody looked", rendered as an all-clear. No authoritative reader exists
+  // for them yet, so the categories are omitted rather than faked; they come
+  // back when something real can answer them.
   const alerts = deriveAlerts({
     ordersWithStockout: shortageOrderCount,
-    agingPendingOrders: 0,
-    longInTransitOrders: 0,
     stockoutWithWaitingOrders: shortageOrderCount,
-    unsettledCodOrders: 0,
     licenseAtRisk,
     lowStockProducts: snapshot.shortages.length,
   }, capabilities);

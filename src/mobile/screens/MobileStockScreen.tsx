@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ArrowRight, Package, RefreshCw, Plus } from "lucide-react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
@@ -13,20 +13,22 @@ import { readMobileProducts } from "@/mobile/data/mobileReaders";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
 import { Fragment } from "react";
 
-const FILTERS = [{ id: "all", label: "الكل" }, { id: "low", label: "منخفض" }, { id: "out", label: "نافد" }, { id: "shortage", label: "نواقص" }] as const;
+// "نواقص" is gone from here on purpose. It was a filter that passed every row
+// and an empty state apologising that the aggregate did not exist — it did, and
+// it now has a screen of its own at /inventory/shortages, which this links to.
+const FILTERS = [{ id: "all", label: "الكل" }, { id: "low", label: "منخفض" }, { id: "out", label: "نافد" }] as const;
 
 export function MobileStockScreen() {
   const navigate = useNavigate();
-  const [params] = useSearchParams();
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState(params.get("filter") === "shortage" ? "shortage" : "all");
+  const [filter, setFilter] = useState("all");
   const page = useMobilePagedQuery(readMobileProducts, { search: query });
   const rows = useMemo(() => page.rows.map((product: any) => {
     const quantity = Number(product.mobileStock ?? 0);
     const statusKey = deriveStockStatusKey(quantity, Number(product.minStockLevel ?? 0));
     const status = resolveStockStatus(statusKey);
     return { id: String(product.id), name: String(product.name ?? "—"), sku: String(product.sku ?? "—"), quantityFormatted: formatArabicQuantity(quantity), statusKey, statusLabelAr: status.labelAr, statusTone: status.tone };
-  }).filter((row) => filter === "all" || (filter === "low" && row.statusKey === "low_stock") || (filter === "out" && row.statusKey === "out_of_stock") || filter === "shortage"), [filter, page.rows]);
+  }).filter((row) => filter === "all" || (filter === "low" && row.statusKey === "low_stock") || (filter === "out" && row.statusKey === "out_of_stock")), [filter, page.rows]);
 
   return (
     <section className="mobile-screen">
@@ -52,6 +54,9 @@ export function MobileStockScreen() {
         <MobileSearch value={query} onChange={setQuery} placeholder="ابحث عن منتج أو رمز" />
         <div className="mobile-filter-row">
           <FilterSheet label="حالة المخزون" options={FILTERS as readonly { id: string; label: string }[]} value={filter} onChange={setFilter} />
+          <button type="button" className="mobile-inline-link" onClick={() => navigate("/inventory/shortages")}>
+            تقرير النواقص
+          </button>
         </div>
         {typeof navigator !== "undefined" && !navigator.onLine ? (
           <OfflineState />
@@ -60,7 +65,7 @@ export function MobileStockScreen() {
         ) : page.error ? (
           <ErrorState messageAr="تعذّر تحميل المخزون." onRetry={page.reload} />
         ) : rows.length === 0 ? (
-          <EmptyState titleAr="لا توجد أصناف" messageAr={filter === "shortage" ? "حالة النواقص تحتاج إلى مصدر تجميعي من دفتر الحسابات." : "لا توجد أصناف مطابقة لهذا الاختيار."} />
+          <EmptyState titleAr="لا توجد أصناف" messageAr="لا توجد أصناف مطابقة لهذا الاختيار." />
         ) : (
           <Fragment>
             <div className="mobile-entity-list">

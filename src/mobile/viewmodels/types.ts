@@ -131,11 +131,21 @@ export interface MobileStockRow {
 // ── Shipment Row ──────────────────────────────────────────────────────────────
 
 export interface MobileShipmentRow extends MobileQueueItem {
-  /** ISO date string when the order was shipped. */
-  shippedAt?: string;
-  /** Courier name if available. */
+  /**
+   * ISO date of the order's last movement (`orders.updatedAt`).
+   *
+   * Deliberately NOT called `shippedAt`: there is no such column on `orders`,
+   * and naming it that is what let a reader select a field that does not
+   * exist and 400 the whole request.
+   */
+  lastMovedAt?: string;
+  /** Registry identity (`orders.courierId`). The name is a label; this is who. */
+  courierId?: string;
+  /** Registry name where resolvable, else the label frozen on the order. */
   courierName?: string;
-  /** Pre-formatted COD amount. */
+  /** True when no registry entity backs this courier — a pre-registry order. */
+  courierIsLegacy?: boolean;
+  /** Pre-formatted COD amount, from `orders.expectedCod`. */
   codFormatted?: string;
 }
 

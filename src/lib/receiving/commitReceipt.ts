@@ -188,6 +188,18 @@ export async function commitReceipt(input: ReceiptCommitInput): Promise<ReceiptC
     // The money never moved, so the receipt must not stand. Deterministic
     // compensation — and if the delete itself fails the user is told, because
     // an invoice with no ledger effect overstates what we owe the supplier.
+    //
+    // "Never moved" is now a guarantee from Postgres, not an inference.
+    // `appendEvent` goes through `ledger_append` (migration 032), which writes
+    // the event header and every line inside ONE transaction — so a throw here
+    // means the ledger is untouched, header included. Before that function
+    // existed this path was subtly weaker than it reads: balances were indeed
+    // unchanged, but a line-less `ledger_events` header could survive the
+    // failure, because the client's compensating delete ran against an
+    // append-only table and silently did nothing.
+    //
+    // The invoice IS deletable, so compensating it here is real work, not
+    // theatre — `purchase_invoices` carries no append-only policy.
     let undone = true;
     try {
       await useBusinessStore.getState().removePurchaseInvoice(invoice.id);

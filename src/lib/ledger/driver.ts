@@ -105,83 +105,61 @@ interface JoinedLine {
 
 const supabaseDriver: LedgerDriver = {
   /**
-   * Insert the event, then its lines.
+   * Append one event and all its lines, atomically.
    *
-   * Not one transaction: PostgREST has no multi-table transaction, and adding a
-   * Postgres function would put a migration between this code and a working
-   * app. Instead the event is deleted again when its lines fail, so the ledger
-   * never keeps a header that moved no stock and no money.
+   * ## What this replaced, and why it had to be the database
    *
-   * ponytail: compensating delete rather than an RPC. If a crash between the
-   * two writes ever leaves an orphan header, move both inserts into a
-   * `ledger_append(event jsonb)` SQL function — this method is the only caller.
+   * This used to be two PostgREST calls — insert the header, then insert the
+   * lines — with a compensating delete when the second failed:
+   *
+   *     await sb.from("ledger_events").delete().eq("id", event.id);
+   *
+   * That delete could never once have worked. `no_delete_ledger_events` is
+   * `USING (false)`, so Postgres matched zero rows, PostgREST answered 204,
+   * and nobody inspected the result. The code read as if it cleaned up and did
+   * nothing at all — and the failure it was pretending to handle is the one
+   * that actually happens, because `ledger_lines` is the table with the
+   * not-null columns and the licence check on it.
+   *
+   * Forcing that exact failure against QA-STORE left `ledger_events` row
+   * `382e5914…` (`purchase`, ref `FM-0006`) standing with no lines behind it.
+   * Migration 011 is the same disease an earlier round: at that point EVERY
+   * event in the database was a line-less header.
+   *
+   * No amount of client-side care fixes this, because the client is the wrong
+   * place to hold a transaction — between the two calls the tab can be closed,
+   * the network can drop, the process can die. `ledger_append` (migration 032)
+   * puts both inserts inside one plpgsql function, so any failure anywhere in
+   * it aborts the statement and Postgres rolls the header back with the lines.
+   *
+   * The function is SECURITY **INVOKER** on purpose: it supplies atomicity and
+   * nothing else. `insert_ledger_events` (membership + the role gate switched
+   * on `kind`) and `insert_ledger_lines` (membership + licence) still do the
+   * authorising, as the caller, unchanged. A forged `store_id` in this payload
+   * is not a bypass — the policy resolves membership from `auth.uid()`.
+   *
+   * The `ledger_lines.event_id -> ledger_events.id` foreign key already made
+   * the mirror case impossible, so with the header closed there is no longer
+   * any partial shape a failed append can leave behind.
    */
   async append(event) {
     const sb = requireClient();
-    const { lines, payload, ...header } = event;
 
-    // `payload` is a TEXT column (default `'{}'::text`), not jsonb — again
-    // verified against the live schema rather than the migration file. Sending
-    // the parsed object made Postgres reject the row.
-    const { error: evErr } = await sb.from("ledger_events").insert({
-      ...header,
-      payload,
-      sync_status: "synced",
-    });
-    if (evErr) throw new Error(`[ledger_events] ${evErr.message}`);
+    // The wire shape IS the function's argument shape — same keys, same
+    // casing, `payload` already the TEXT the column wants, lines carrying
+    // `qty_delta` / `amount_delta` / `unit_cost`. Nothing is re-mapped here,
+    // so there is no second place for a column name to drift.
+    //
+    // `store_id`, `device_id` and `event_id` on each line are filled in by the
+    // function from the HEADER and are deliberately not sent per-line: a line
+    // is never given the chance to name a different tenant than its event.
+    const { error } = await sb.rpc("ledger_append", { p_event: event });
 
-    if (lines.length > 0) {
-      const { error: lnErr } = await sb.from("ledger_lines").insert(
-        lines.map((l) => ({
-          id: l.id,
-          event_id: event.id,
-          store_id: event.store_id,
-          // `ledger_lines.device_id` is `uuid NOT NULL` with NO default —
-          // verified against the live schema. Omitting it made EVERY line
-          // insert fail on the not-null constraint, which took the whole
-          // event down with it (the compensating delete below then removed
-          // the header too). No purchase, sale or stock movement could be
-          // written at all.
-          device_id: event.device_id,
-          account: l.account,
-          subject_id: l.subject_id,
-          // The deployed columns are `qty_delta` / `amount_delta` — the same
-          // names as the wire shape. The sync layer this replaces sent `qty`
-          // and `amount`, which are not columns on this table, so every line it
-          // ever pushed was rejected. Verified against the live schema, not
-          // against docs/migrations/000_master_schema.sql, which has drifted.
-          qty_delta: l.qty_delta,
-          // Piastres. No float ever crosses this.
-          amount_delta: l.amount_delta,
-          unit_cost: l.unit_cost,
-          sync_status: "synced",
-        })),
-      );
-
-      if (lnErr) {
-        // NO compensating delete. There used to be one here —
-        // `sb.from("ledger_events").delete().eq("id", event.id)` — and it
-        // could never once have worked: `no_delete_ledger_events` is
-        // `USING (false)`, so Postgres matches zero rows, PostgREST answers
-        // 204, and the call resolves without an error to check. Proven by
-        // forcing this exact failure against the live QA store: the header
-        // survived, and it was the only line-less `purchase` event in the
-        // database.
-        //
-        // Removing it is not giving up on cleanliness — it is deleting a line
-        // that made the code LOOK safe while doing nothing, which is worse
-        // than an honest gap. The gap itself is inert: every balance is
-        // `SUM(ledger_lines)`, so a header with no lines moves no stock and no
-        // money, and `appendEvent` already treats a line-less header as a
-        // legitimate state for `order_returned_pending`.
-        //
-        // The real fix is to stop needing compensation: one
-        // `ledger_append(event jsonb)` SQL function writing header and lines
-        // in a single transaction. That is a migration against the certified
-        // core, so it is written up rather than slipped in here; this method
-        // is still the only caller, so it stays a contained change.
-        throw new Error(`[ledger_lines] ${lnErr.message}`);
-      }
+    if (error) {
+      // A throw here means NOTHING was written — that is now a guarantee from
+      // Postgres rather than a hope. Callers such as `commitReceipt` rely on
+      // it to decide whether their document has to be taken back.
+      throw new Error(`[ledger_append] ${error.message}`);
     }
   },
 

@@ -300,3 +300,58 @@ test("a screen's pinned action bar clears the fixed bottom nav", () => {
   assert.ok(Number.isFinite(navZ) && Number.isFinite(barZ), "both need an explicit z-index");
   assert.ok(barZ > navZ, `action bar (${barZ}) must outrank the nav (${navZ})`);
 });
+
+// ── M2.2: cash / partial / credit are ONE command with three inputs ─────────
+
+test("M2.2: mobile forwards paidAmount instead of hardcoding paid-in-full", () => {
+  // `buildPurchaseLines` has always split a receipt:
+  //     paid > 0  →  wallet −paid
+  //     owed > 0  →  payable_supplier +owed
+  // Quick restock hardcoded `Number.POSITIVE_INFINITY`, which made the آجل
+  // half unreachable from mobile even though the ledger supported it. The fix
+  // is a forwarded number, NOT a second accounting path.
+  const command = readFileSync(new URL("../src/lib/receiving/command.ts", import.meta.url), "utf8");
+  assert.match(command, /paidAmount\?: number/, "the command must accept it");
+  assert.match(
+    command,
+    /paidAmount: input\.paidAmount \?\? Number\.POSITIVE_INFINITY/,
+    "forwarded, with paid-in-full as the default",
+  );
+  // Still no mobile-side accounting.
+  assert.match(restock, /executeQuickRestock\(/);
+  assert.doesNotMatch(restock, /payable_supplier/, "mobile must not name ledger accounts");
+  assert.doesNotMatch(restock, /buildPurchaseLines/, "nor build ledger lines");
+  assert.doesNotMatch(restock, /appendEvent\(/, "nor append events");
+});
+
+test("M2.2: the paid field means the same thing on mobile as on desktop", () => {
+  // One expression, copied deliberately, so "paid" cannot drift between the
+  // two screens that both write `purchase_invoices`.
+  const desktop = readFileSync(
+    new URL("../src/components/purchasing/PurchasingPage.tsx", import.meta.url),
+    "utf8",
+  );
+  const shape = /paidInput\.trim\(\) === "" \? total : Math\.min\(Math\.max\(0, Number\(paidInput\) \|\| 0\), total\)/;
+  assert.match(desktop, shape, "desktop's definition");
+  assert.match(restock, shape, "and mobile's, character for character");
+});
+
+test("M2.2: a fully unpaid receipt is not labelled 'partial'", () => {
+  // `owed > 0 ? "آجل جزئي" : "نقدي"` calls a receipt with NOTHING paid
+  // "partially on credit", and that note is what shows on the supplier's
+  // account later. Three states need three labels.
+  assert.match(restock, /آجل بالكامل/, "paid = 0 is fully on credit");
+  assert.match(restock, /آجل جزئي/, "0 < paid < total is partial");
+  assert.match(restock, /دفع نقدي/, "paid = total is cash");
+  assert.match(
+    restock,
+    /paidAmount <= 0\s*\r?\n?\s*\?\s*"توريد سريع من تطبيق الموبايل \(آجل بالكامل\)"/,
+    "and the full-credit case must be keyed on paidAmount, not on owed",
+  );
+});
+
+test("M2.2: an آجل figure is shown only when there IS a debt", () => {
+  // A permanent "المتبقي آجل: ٠" is a financial zero that means nothing —
+  // the same rule `alertModel` applies to alerts.
+  assert.match(restock, /\{owedAmount > 0 && \(/, "the debt line is conditional");
+});

@@ -40,6 +40,11 @@ export function MobileQuickRestock() {
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>(params.get("products")?.split(",").filter(Boolean) ?? []);
   const [lines, setLines] = useState<Record<string, LineDraft>>({});
   const [wallet, setWallet] = useState<WalletType>("inStoreSafe");
+  // Empty means "paid in full", exactly as the desktop invoice form reads it.
+  // Any smaller number becomes آجل on the supplier. Deliberately NOT a
+  // three-way mode switch: cash / partial / credit are one number, and a
+  // switch would have invented a second way to say the same thing.
+  const [paidInput, setPaidInput] = useState("");
   const [supplierId, setSupplierId] = useState("");
   const [newSupplierName, setNewSupplierName] = useState("");
   const [newSupplierPhone, setNewSupplierPhone] = useState("");
@@ -142,6 +147,10 @@ export function MobileQuickRestock() {
     }));
 
   const total = received.reduce((sum, l) => sum + l.quantity * l.unitCost, 0);
+  // Same expression the desktop purchasing screen uses, so the two screens
+  // cannot drift on what "paid" means.
+  const paidAmount = paidInput.trim() === "" ? total : Math.min(Math.max(0, Number(paidInput) || 0), total);
+  const owedAmount = Math.max(0, total - paidAmount);
   const registeringNew = supplierId === NEW_SUPPLIER;
   const supplierReady = registeringNew ? newSupplierName.trim().length > 0 : supplierId !== "";
   // A درجة-bearing product must say WHICH درجة arrived, or a later return off
@@ -156,6 +165,7 @@ export function MobileQuickRestock() {
     setSupplierId("");
     setNewSupplierName("");
     setNewSupplierPhone("");
+    setPaidInput("");
     setSaving(false);
   }
 
@@ -183,7 +193,17 @@ export function MobileQuickRestock() {
           newSupplierPhone,
         },
         wallet,
-        notes: "توريد سريع من تطبيق الموبايل",
+        paidAmount,
+        // Three states, three labels. `owedAmount > 0 ? "آجل جزئي" : …` —
+        // which is what the desktop invoice form still says — calls a receipt
+        // with NOTHING paid "partially on credit", and that note is what the
+        // supplier's account shows later.
+        notes:
+          owedAmount <= 0
+            ? "توريد سريع من تطبيق الموبايل (دفع نقدي)"
+            : paidAmount <= 0
+              ? "توريد سريع من تطبيق الموبايل (آجل بالكامل)"
+              : "توريد سريع من تطبيق الموبايل (آجل جزئي)",
         idempotencyKey: crypto.randomUUID(),
       });
 
@@ -388,6 +408,23 @@ export function MobileQuickRestock() {
                 </Select>
               </div>
 
+              <div className="space-y-1.5">
+                <Label htmlFor="restock-paid">المدفوع الآن</Label>
+                <Input
+                  id="restock-paid"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={paidInput}
+                  onChange={(e) => setPaidInput(e.target.value)}
+                  placeholder={formatMoney(total)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  سيبها فاضية يعني مدفوعة بالكامل. أي مبلغ أقل هيتسجّل آجل على المورد.
+                </p>
+              </div>
+
               <div className="rounded-lg bg-muted/50 p-3 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">
@@ -396,9 +433,23 @@ export function MobileQuickRestock() {
                   </span>
                   <span className="font-bold">{formatMoney(total)}</span>
                 </div>
+                <div className="flex items-center justify-between mt-1.5">
+                  <span className="text-muted-foreground">المدفوع الآن</span>
+                  <span className="font-semibold">{formatMoney(paidAmount)}</span>
+                </div>
+                {/* Shown only when there IS a debt. A permanent "آجل: ٠" would
+                    be a financial zero that means nothing — see the same rule
+                    in `alertModel`. */}
+                {owedAmount > 0 && (
+                  <div className="flex items-center justify-between mt-1.5 text-amber-600 dark:text-amber-400">
+                    <span>المتبقي آجل على المورد</span>
+                    <span className="font-bold">{formatMoney(owedAmount)}</span>
+                  </div>
+                )}
                 <p className="text-xs text-muted-foreground mt-2">
-                  التوريد ده بيتسجّل مدفوع كاش، وبيتسجّل فاتورة واحدة باسم المورد تظهر في حسابه في
-                  شاشة المشتريات. لو التوريد على الحساب (آجل)، سجّله من شاشة المشتريات.
+                  {owedAmount > 0
+                    ? "بيتسجّل فاتورة واحدة باسم المورد، المدفوع بيخرج من الخزينة والمتبقي بيتسجّل دين عليه في شاشة المشتريات."
+                    : "التوريد ده بيتسجّل مدفوع كاش، وبيتسجّل فاتورة واحدة باسم المورد تظهر في حسابه في شاشة المشتريات."}
                 </p>
               </div>
             </div>

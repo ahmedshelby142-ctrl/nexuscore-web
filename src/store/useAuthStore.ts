@@ -44,6 +44,13 @@ interface AuthError {
     | "revoked"
     | "machine_mismatch"
     | "rate_limited"
+    // The two codes `sessionWorkflow` actually returns. They were missing, so
+    // `setError({ code: result.code })` on the login page did not type-check —
+    // TS2322, twice, standing in the codebase. Which means the one failure at
+    // the centre of the System Owner bug, `membership_missing`, could not be
+    // recorded in the store even as the login page displayed it.
+    | "session_unavailable"
+    | "membership_missing"
     | "unknown";
   message: string;
 }
@@ -66,6 +73,20 @@ interface AuthState {
   bootstrapped: boolean;
   /** The server session token, used by server fns to verify identity. */
   sessionToken: string | null;
+  /**
+   * NexusCore System Owner — a GLOBAL identity, not a store role.
+   *
+   * Deliberately a separate field from `userRole`. The System Owner is
+   * recognised by `is_system_owner()`, which matches the signed-in email
+   * against an allowlist in `auth.users` and never looks at `store_members`.
+   * Folding it into `userRole` would have re-coupled it to a store, which is
+   * the bug this field exists to keep fixed.
+   *
+   * It grants nothing on its own. Every `/system-admin` RPC re-checks
+   * ownership in Postgres, so this only decides what the UI draws and where it
+   * routes — see `SystemOwnerGate`.
+   */
+  isSystemOwner: boolean;
 
   // ── Legacy actions (kept for backward compat) ─────────────────
   setUserRole: (role: UserRole) => void;
@@ -75,6 +96,7 @@ interface AuthState {
 
   // ── New real-auth actions ─────────────────────────────────────
   setStatus: (s: AuthStatus) => void;
+  setSystemOwner: (isSystemOwner: boolean) => void;
   setSession: (s: PublicSession | null) => void;
   setError: (e: AuthError | null) => void;
   setBootstrapped: (v: boolean) => void;
@@ -120,6 +142,7 @@ export const useAuthStore = create<AuthState>()(
       lastError: null,
       bootstrapped: false,
       sessionToken: null,
+      isSystemOwner: false,
 
       setUserRole: (role) => set({ userRole: role }),
       setBusinessType: (type) => set({ businessType: type }),
@@ -131,6 +154,7 @@ export const useAuthStore = create<AuthState>()(
         }),
 
       setStatus: (status) => set({ status }),
+      setSystemOwner: (isSystemOwner) => set({ isSystemOwner }),
       /**
        * Set the real session. Also updates the legacy fields so the
        * rest of the app keeps working without modification.
@@ -170,6 +194,9 @@ export const useAuthStore = create<AuthState>()(
           status: "idle",
           lastError: null,
           username: "",
+          // Cleared on the way out: the next person at this machine is not the
+          // System Owner until the server says so again.
+          isSystemOwner: false,
         }),
     }),
     {

@@ -28,6 +28,7 @@ import logoLight from "@/assets/logo-light.png";
 import logoDark from "@/assets/logo-dark.png";
 import { useAuthStore } from "@/store/useAuthStore";
 import { getOperationMode } from "@/lib/supabase";
+import { getActiveStoreId } from "@/services/api/storeContext";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import {
   BUSINESS_PROFILE_LABELS,
@@ -240,6 +241,9 @@ export function Login() {
           username: username.trim(),
           businessProfile: selectedProfile,
           missingMembership: "claim",
+          // Desktop hosts the licence manager, so a System Owner may sign in here
+          // without a store. See `systemOwnerNeedsNoStore`.
+          systemOwnerNeedsNoStore: true,
           hydrateCloudData: true,
         });
         if (!result.success) {
@@ -253,6 +257,9 @@ export function Login() {
           password,
           businessProfile: selectedProfile,
           missingMembership: "claim",
+          // Desktop hosts the licence manager, so a System Owner may sign in here
+          // without a store. See `systemOwnerNeedsNoStore`.
+          systemOwnerNeedsNoStore: true,
           hydrateCloudData: true,
         });
         if (!result.success) {
@@ -262,7 +269,19 @@ export function Login() {
         }
       }
 
-      navigate("/", { replace: true });
+      // A System Owner who belongs to no store must not be sent to "/".
+      // Every business screen sits behind `LicenseGate`, which asks
+      // `store_licenses` for a row the owner has no membership to see — so it
+      // resolves "unverified" and bounces them to /license-expired, i.e. the
+      // global administrator gets locked out by a store licence they do not
+      // hold. `/system-admin/licenses` is deliberately mounted OUTSIDE that
+      // gate, so it is both reachable and the screen they actually came for.
+      //
+      // An owner who DOES hold a membership still lands on "/" as before:
+      // their store works, and the admin screen stays one click away.
+      const { isSystemOwner } = useAuthStore.getState();
+      const hasStore = Boolean(await getActiveStoreId().catch(() => null));
+      navigate(isSystemOwner && !hasStore ? "/system-admin/licenses" : "/", { replace: true });
     } catch (e) {
       setLocalError(e instanceof Error ? e.message : "خطأ غير متوقع");
       setError({ code: "unknown", message: String(e) });

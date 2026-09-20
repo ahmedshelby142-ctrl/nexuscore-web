@@ -102,11 +102,15 @@ async function resolve(): Promise<SyncIdentity | null> {
     const uid = auth?.user?.id;
     if (!uid) return null;
 
+    // No `.limit(1)`: `store_members_one_store_per_user` is a UNIQUE index on
+    // user_id, so there is exactly one row to find. `limit(1)` would not be
+    // picking the right one — it would be hiding the day that invariant breaks
+    // behind an arbitrary answer. Without it a second membership fails loudly
+    // here instead of silently pointing the whole session at the wrong shop.
     const { data, error } = await sb
       .from("store_members")
       .select("store_id")
       .eq("user_id", uid)
-      .limit(1)
       .maybeSingle();
 
     if (error || !data?.store_id) {

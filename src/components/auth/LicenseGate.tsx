@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Navigate, Outlet } from "react-router-dom";
 import { useStoreLicense } from "@/store/useStoreLicense";
+import { useAuthStore } from "@/store/useAuthStore";
 import { isUsable } from "@/lib/license/evaluate";
 
 /**
@@ -16,6 +17,7 @@ import { isUsable } from "@/lib/license/evaluate";
  */
 export function LicenseGate() {
   const { decision, resolved, hydrate, refresh } = useStoreLicense();
+  const isSystemOwner = useAuthStore((s) => s.isSystemOwner);
 
   useEffect(() => {
     hydrate();
@@ -45,6 +47,19 @@ export function LicenseGate() {
   // `decision === null` means licensing is not enforced in this build (no
   // Supabase configured) — a local-only install has no cloud licence to check.
   if (decision && !isUsable(decision.verdict)) {
+    // The System Owner is a GLOBAL identity and must never be locked out by a
+    // STORE's licence — least of all out of the screen that issues licences.
+    //
+    // /license-expired is a dead end by design: it tells a shop to renew. For
+    // the person whose job is to renew it, it is a locked door with the key on
+    // the other side. Sending them to the manager instead is the difference
+    // between "your licence lapsed" and "and now nobody can fix it".
+    //
+    // This is not a privilege grant. `/system-admin/licenses` sits behind
+    // `SystemOwnerGate`, which asks the server, and every RPC behind it
+    // re-checks `is_system_owner()` in Postgres. A non-owner who reaches this
+    // branch with a tampered flag arrives at a screen that bounces them home.
+    if (isSystemOwner) return <Navigate to="/system-admin/licenses" replace />;
     return <Navigate to="/license-expired" replace />;
   }
 

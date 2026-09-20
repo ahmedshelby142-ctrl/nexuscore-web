@@ -24,7 +24,39 @@ export async function reconcileSupabaseSession(): Promise<SessionReconciliationS
       console.warn("[Auth] local session flag with no Supabase session — signing out");
       useAuthStore.getState().logout();
     }
+    // No session, no global identity. `logout()` clears it too, but this path
+    // is also reached when there was never a local flag to clear.
+    useAuthStore.getState().setSystemOwner(false);
     return "unauthenticated";
+  }
+
+  // ── The global identity, re-asked on every boot ───────────────────────────
+  //
+  // `isSystemOwner` is deliberately NOT persisted: a flag in localStorage that
+  // decides what the UI unlocks is a flag an attacker edits. The cost of that
+  // choice is that it does not survive a reload, and it is resolved on LOGIN
+  // only — so a refresh left a genuine owner with `false`.
+  //
+  // That is not cosmetic. A store-less System Owner sees no `store_licenses`
+  // row (RLS: `is_store_member` is false everywhere for them), so
+  // `evaluateLicense(null)` returns `unlicensed`, and `LicenseGate` sends
+  // anyone without the flag to /license-expired — a screen telling the person
+  // whose job is to issue licences that their licence has lapsed. Pressing F5
+  // reproduced the exact bug the login path was fixed to remove.
+  //
+  // So the question is asked here too: this is the one step that runs on every
+  // boot and already answers "who is this". Same RPC, same fail-closed
+  // default — a transport failure denies rather than promotes.
+  //
+  // It widens nothing. Mobile mounts this hook and reads `isSystemOwner`
+  // nowhere; `MobileSessionGate` does not consult it, and mobile has no
+  // System Owner surface to reach. On desktop it only restores what a login
+  // had already established.
+  try {
+    const { data: owner, error } = await supabase.rpc("is_system_owner");
+    useAuthStore.getState().setSystemOwner(!error && owner === true);
+  } catch {
+    useAuthStore.getState().setSystemOwner(false);
   }
 
   if (!useAuthStore.getState().isAuthenticated) {

@@ -39,6 +39,22 @@ interface EstablishSessionInput {
   username: string;
   businessProfile: BusinessProfile;
   missingMembership: MissingMembershipPolicy;
+  /**
+   * May a System Owner hold a session here with NO store membership?
+   *
+   * True on desktop, which hosts `/system-admin/licenses` — refusing the owner
+   * there locks the only account that can issue a licence out of the only
+   * screen that issues one.
+   *
+   * False everywhere else, and mobile leaves it false deliberately: mobile has
+   * no System Owner surface, so a store-less owner would land in a shell with
+   * nothing in it and a licence screen explaining a store they do not have.
+   * Its existing "الحساب غير مربوط بأي متجر" is the more useful answer.
+   *
+   * Note this gates only the SESSION, never the identity: `isSystemOwner` is
+   * resolved and recorded on every surface regardless.
+   */
+  systemOwnerNeedsNoStore?: boolean;
   /** Desktop keeps its established post-login cloud refresh. Mobile Phase 1 has no data screens. */
   hydrateCloudData: boolean;
 }
@@ -85,7 +101,41 @@ export async function establishSupabaseSession(
     .eq("user_id", input.userId)
     .maybeSingle();
 
-  if (!membership && input.missingMembership === "claim") {
+  // ── The System Owner is a GLOBAL identity, asked about first ──────────────
+  //
+  // `is_system_owner()` matches the signed-in email against an allowlist in
+  // `auth.users`. It does not read `store_members`, does not take a store id,
+  // and does not consult `has_role` or `store_licensed` — so it can be
+  // answered before any store context exists, which is exactly the point.
+  //
+  // Everything below used to run before anyone asked this question, and a
+  // System Owner who happened to hold no membership was therefore treated as a
+  // stranger: `reject` refused the sign-in outright, and `claim` MINTED THEM A
+  // STORE as a side effect of logging in. Neither is right for an identity
+  // that exists above stores. The reported symptom — signing out and back in
+  // and finding License Management gone — is the `reject`/no-membership arm of
+  // exactly this.
+  //
+  // A transport failure must not silently promote a stranger, so the answer on
+  // failure is `false`. That costs a genuine owner only the redirect shortcut:
+  // `SystemOwnerGate` asks the server again when they navigate to the screen.
+  let isSystemOwner = false;
+  try {
+    const { data, error } = await supabase.rpc("is_system_owner");
+    isSystemOwner = !error && data === true;
+  } catch {
+    isSystemOwner = false;
+  }
+  useAuthStore.getState().setSystemOwner(isSystemOwner);
+
+  // Identity is global; the store-less SESSION is a surface decision. Declared
+  // here because both membership branches below consult it.
+  const systemOwnerExempt = isSystemOwner && input.systemOwnerNeedsNoStore === true;
+
+  // A global identity must never acquire a tenant by signing in. Claiming here
+  // would hand the System Owner a store they did not ask for and did not need,
+  // and then that store's licence would start deciding what they can see.
+  if (!membership && input.missingMembership === "claim" && !systemOwnerExempt) {
     const { data: claimed, error: claimError } = await supabase.rpc("claim_store", {
       local_store_id: crypto.randomUUID(),
     });
@@ -111,7 +161,11 @@ export async function establishSupabaseSession(
   // response from older RPC deployments. Its historical behavior continued
   // with the least-privileged canonical role in that edge case. Keep that
   // desktop compatibility; mobile always supplies `reject` and fails closed.
-  if (!membership && input.missingMembership === "reject") {
+  //
+  // The System Owner is exempt: refusing the session would lock the one
+  // account that can issue licences out of the one screen that issues them,
+  // which is a bootstrap the product cannot recover from on its own.
+  if (!membership && input.missingMembership === "reject" && !systemOwnerExempt) {
     return {
       success: false,
       code: "membership_missing",
@@ -119,7 +173,19 @@ export async function establishSupabaseSession(
     };
   }
 
-  const role = toAppRole(membership.role);
+  // `membership` is legitimately null for a System Owner who belongs to no
+  // store, and was ALSO reachable as null on desktop's `claim` path when an
+  // older `claim_store` returned an empty response. This line used to be
+  // `membership.role` — TypeScript had been flagging it (TS18047) and it was a
+  // real crash, not a false positive.
+  //
+  // `toAppRole(null)` resolves to the least-privileged role, which is the
+  // honest answer for a session with no membership: the System Owner holds NO
+  // store rights, and RLS enforces that independently — `is_store_member` is
+  // false for them everywhere, so every store-scoped read and write is refused
+  // by Postgres no matter what this client-side role says. Global authority
+  // travels in `isSystemOwner`, not in here.
+  const role = toAppRole(membership?.role ?? null);
   useAuthStore.getState().setSession({
     token: input.accessToken,
     expires_at: new Date(input.expiresAt ? input.expiresAt * 1000 : Date.now() + 3600000) as never,
@@ -157,6 +223,8 @@ export async function signInWithPassword(input: {
   password: string;
   businessProfile: BusinessProfile;
   missingMembership: MissingMembershipPolicy;
+  /** See `EstablishSessionInput.systemOwnerNeedsNoStore`. Forwarded, not decided here. */
+  systemOwnerNeedsNoStore?: boolean;
   hydrateCloudData: boolean;
 }): Promise<SessionWorkflowResult> {
   if (getOperationMode() === "offline_local") {
@@ -194,6 +262,7 @@ export async function signInWithPassword(input: {
     username: input.email.trim(),
     businessProfile: input.businessProfile,
     missingMembership: input.missingMembership,
+    systemOwnerNeedsNoStore: input.systemOwnerNeedsNoStore,
     hydrateCloudData: input.hydrateCloudData,
   });
 }

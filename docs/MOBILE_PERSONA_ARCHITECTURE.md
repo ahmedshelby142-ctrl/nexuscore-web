@@ -149,6 +149,33 @@ settled but Mobile has no reader; build the reader, never a formula.
 | wholesale · discounts | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | settings · users · branches | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
+### The ledger `kind` gate is deliberately broader than the route map
+
+Certified in M3.3, written down because it looks like a leak and is not.
+
+`insert_ledger_events` gates by EVENT KIND, not by screen:
+
+| kind | roles |
+|---|---|
+| `stock_adjustment` · `purchase` · `supplier_payment` | ADMIN · ACCOUNTANT |
+| `expense` · `payroll` · `owner_draw` · `wallet_transfer` | ADMIN · ACCOUNTANT |
+| everything else — incl. `sale`, `courier_settlement` | all four writing roles |
+
+So `POS_ECOMMERCE` and `ECOMMERCE_ONLY` can append a `courier_settlement`
+even though `/courier-ledger` is ADMIN-only, and `ACCOUNTANT` can append a
+`sale` even though it has no orders screen. Both are REQUIRED:
+
+- `OrdersPage` writes `courier_settlement` when the courier hands the COD over
+  at delivery (`deliverMode === "settle"`). That is the selling roles' screen.
+  `/courier-ledger` is the ADMIN *batch* view over the same event kind, not the
+  only writer of it.
+- Wholesale sales write `kind: "sale"` with `ref_type: "wholesale_invoice"`,
+  and `canSellWholesale` is ADMIN + ACCOUNTANT.
+
+Narrowing the ELSE branch to match `ROUTE_ACCESS` would break COD settlement
+for the till and wholesale invoicing for the accountant. `MODERATOR` is absent
+from every branch, which is what makes it read-only.
+
 ### Implemented matrix — MOBILE capability by role
 
 Desktop access is unchanged by M3.1: `MODERATOR` is absent from every

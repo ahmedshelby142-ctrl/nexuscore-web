@@ -16,7 +16,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { summarise, totalAssetsOf, netWorthOf } from "../src/lib/dashboard.ts";
+import { readFileSync } from "node:fs";
+
+import {
+  summarise,
+  totalAssetsOf,
+  netWorthOf,
+  PERIOD_LABELS,
+  periodLabel,
+  windowFor,
+  trendDays,
+} from "../src/lib/dashboard.ts";
 import { buildSaleLines } from "../src/lib/ledger/sales.ts";
 import { buildReturnConfirmedLines } from "../src/lib/ledger/orders.ts";
 import { buildPurchaseLines, averageCost } from "../src/lib/ledger/purchases.ts";
@@ -37,6 +47,136 @@ const aggregate = (lines, account) => {
 const sumOf = (rows) => rows.reduce((s, r) => s + r.amount, 0);
 
 // ── §2 net profit ───────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLAN item 21 — نظرة عامة, the extended date filter (شهر / سنة)
+//
+// The last task of the PHASE 3 pass, and last on purpose: the dashboard
+// aggregates every other screen, so its periods could not be pinned until
+// those screens had settled their numbers. These are the assertions that keep
+// the two added periods honest.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Frozen "now": a Tuesday in mid-March, so month and year both have a middle. */
+const NOW = new Date(2026, 2, 17, 13, 45, 0); // 17 March 2026, local time
+
+test("the filter offers شهر and سنة alongside the three that already shipped", () => {
+  assert.deepEqual(Object.keys(PERIOD_LABELS), [
+    "today",
+    "week",
+    "month",
+    "thisMonth",
+    "thisYear",
+  ]);
+  // Arabic only — these reach the user.
+  for (const [key, label] of Object.entries(PERIOD_LABELS)) {
+    assert.ok(!/[A-Za-z]/.test(label), `${key} renders as "${label}"`);
+  }
+  assert.equal(PERIOD_LABELS.thisMonth, "هذا الشهر");
+  assert.equal(PERIOD_LABELS.thisYear, "هذه السنة");
+  assert.equal(periodLabel("thisMonth"), "هذا الشهر");
+  assert.equal(periodLabel("thisYear"), "هذه السنة");
+});
+
+test("هذا الشهر starts at the 1st, not 30 days ago", () => {
+  const { from, to } = windowFor("thisMonth", NOW);
+  assert.equal(from.getFullYear(), 2026);
+  assert.equal(from.getMonth(), 2, "March");
+  assert.equal(from.getDate(), 1, "the calendar month, not a rolling window");
+  assert.equal(from.getHours(), 0, "from midnight");
+  assert.equal(to.getTime(), NOW.getTime(), "to is now — the month is not over");
+  // The distinction that makes the period worth having: on the 17th, «آخر ٣٠
+  // يوم» reaches back into February and «هذا الشهر» does not.
+  assert.ok(windowFor("month", NOW).from < from, "the rolling window starts earlier");
+});
+
+test("هذه السنة starts on 1 January", () => {
+  const { from, to } = windowFor("thisYear", NOW);
+  assert.equal(from.getFullYear(), 2026);
+  assert.equal(from.getMonth(), 0, "January");
+  assert.equal(from.getDate(), 1);
+  assert.equal(from.getHours(), 0);
+  assert.equal(to.getTime(), NOW.getTime());
+});
+
+test("the trend line buckets a month by DAY and a year by MONTH", () => {
+  // A year charted in 365 daily points is unreadable, and it is 365 queries.
+  const month = trendDays("thisMonth", NOW);
+  assert.equal(month.length, 17, "the 1st up to and including today");
+  assert.equal(month[0].from.getDate(), 1);
+  assert.equal(month.at(-1).from.getDate(), 17);
+  for (const bucket of month) {
+    assert.equal((bucket.to - bucket.from) / 86400000, 1, "one day per bucket");
+  }
+
+  const year = trendDays("thisYear", NOW);
+  assert.equal(year.length, 3, "January, February, March — months elapsed, not 12");
+  assert.equal(year[0].from.getMonth(), 0);
+  assert.equal(year.at(-1).from.getMonth(), 2);
+  for (const bucket of year) {
+    assert.equal(bucket.from.getDate(), 1, "each bucket starts on the 1st");
+    assert.equal(bucket.to.getDate(), 1, "and ends on the next 1st");
+  }
+});
+
+test("every bucket sits inside the window its card sums", () => {
+  // The line and the cards must not be able to disagree: both are the same
+  // `balances()` query, so the buckets must tile the card's own window.
+  for (const period of ["today", "week", "month", "thisMonth", "thisYear"]) {
+    const { from, to } = windowFor(period, NOW);
+    const buckets = trendDays(period, NOW);
+    assert.ok(buckets.length > 0, `${period} must chart something`);
+    for (const b of buckets) {
+      assert.ok(b.from < b.to, `${period}: a bucket must move forwards`);
+    }
+    if (period === "thisMonth" || period === "thisYear") {
+      assert.equal(+buckets[0].from, +from, `${period}: the first bucket opens the window`);
+      assert.ok(buckets.at(-1).to >= to, `${period}: the last bucket reaches now`);
+    }
+  }
+});
+
+test("the first of the month and the first of January are not special-cased away", () => {
+  const newYear = new Date(2026, 0, 1, 0, 30, 0);
+  assert.equal(trendDays("thisMonth", newYear).length, 1, "one day in, one bucket");
+  assert.equal(trendDays("thisYear", newYear).length, 1, "one month in, one bucket");
+  assert.equal(windowFor("thisMonth", newYear).from.getDate(), 1);
+  assert.equal(windowFor("thisYear", newYear).from.getMonth(), 0);
+});
+
+test("a leap February is charted by its real length", () => {
+  const leap = new Date(2028, 1, 29, 12, 0, 0); // 29 Feb 2028
+  assert.equal(trendDays("thisMonth", leap).length, 29);
+  assert.equal(windowFor("thisMonth", leap).from.getMonth(), 1);
+});
+
+test("the period filter compares INSTANTS, on both halves of the query", () => {
+  // The dashboard drives its window through `balances()` AND `events()`.
+  // `occurred_at` is a `text` column, so a string comparison silently
+  // mis-buckets: measured per day against the live database, the text compare
+  // put 14 events on 2026-09-11 — a day with none — and lost nine from the
+  // 13th, while 44 of 167 rows sorted out of place. Migration 034 fixed
+  // `balances`; 035 fixed `events`, which is why this item could not be
+  // certified before them.
+  const driver = readFileSync(new URL("../src/lib/ledger/driver.ts", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(new RegExp("//[^\n]*", "g"), "");
+  assert.ok(!/\.gte\(\s*["']occurred_at["']/.test(driver), "no lexical lower bound");
+  assert.ok(!/\.lt\(\s*["']occurred_at["']/.test(driver), "no lexical upper bound");
+  assert.ok(!/\.order\(\s*["']occurred_at["']/.test(driver), "no lexical ordering");
+  assert.match(driver, /rpc\("ledger_balances"/);
+  assert.match(driver, /rpc\("ledger_events_page"/);
+
+  const migration = readFileSync(
+    new URL("../docs/migrations/035_ledger_events_window.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(migration, /e\.occurred_at::timestamptz >= p_from/);
+  assert.match(migration, /e\.occurred_at::timestamptz <\s+p_to/);
+  assert.match(migration, /ORDER BY e\.occurred_at::timestamptz DESC/);
+  assert.match(migration, /SECURITY INVOKER/, "RLS still decides what is visible");
+  assert.match(migration, /FROM anon/, "and anon holds no EXECUTE");
+});
 
 test("صافي الربح is revenue minus cost minus expenses", () => {
   const f = summarise({

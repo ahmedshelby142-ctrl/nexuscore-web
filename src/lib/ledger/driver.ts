@@ -269,23 +269,43 @@ const supabaseDriver: LedgerDriver = {
     }));
   },
 
+  /**
+   * Event headers, newest first.
+   *
+   * ## Why this is an RPC, like `balances`
+   *
+   * It had the defect 034 fixed there, and was not fixed with it.
+   * `occurred_at` is a `text` column, so filtering it with
+   * `.gte(from.toISOString())` and sorting it with `.order("occurred_at")`
+   * compares two spellings of the same instant as STRINGS —
+   * `2026-09-12T14:18:07.675Z` against `2026-09-12 14:18:07.675957+00`, where
+   * `' ' < 'T'`.
+   *
+   * Measured per day against the live database: 14 events attributed to
+   * 2026-09-11, which had NONE, and nine missing from the 13th. Separately, 44
+   * of 167 rows sorted out of place — and a `.limit()` on a wrong order
+   * returns the wrong rows, which is what «آخر ٥٠ تسوية» and the POS return
+   * picker are built on.
+   *
+   * `ledger_events_page` (migration 035) casts once, in SQL, for both the
+   * window and the sort. SECURITY INVOKER, so `select_ledger_events` still
+   * decides what this caller may see.
+   */
   async events(query) {
     const sb = requireClient();
     const storeId = await requireStoreId();
 
-    let q = sb.from("ledger_events").select("*").eq("store_id", storeId);
+    const { data, error } = await sb.rpc("ledger_events_page", {
+      p_store: storeId,
+      p_kind: query.kind ?? null,
+      p_ref_type: query.refType ?? null,
+      p_ref_id: query.refId ?? null,
+      p_from: query.from ? query.from.toISOString() : null,
+      p_to: query.to ? query.to.toISOString() : null,
+      p_limit: Number(query.limit ?? 200),
+    });
 
-    if (query.kind) q = q.eq("kind", query.kind);
-    if (query.refType) q = q.eq("ref_type", query.refType);
-    if (query.refId) q = q.eq("ref_id", query.refId);
-    if (query.from) q = q.gte("occurred_at", query.from.toISOString());
-    if (query.to) q = q.lt("occurred_at", query.to.toISOString());
-
-    const { data, error } = await q
-      .order("occurred_at", { ascending: false })
-      .limit(Number(query.limit ?? 200));
-
-    if (error) throw new Error(`[ledger_events] ${error.message}`);
+    if (error) throw new Error(`[ledger_events_page] ${error.message}`);
     return (data ?? []).map(rowToEvent);
   },
 

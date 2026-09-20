@@ -8,7 +8,13 @@ Detailed spec for any screen is in `NEXUSCORE_DEV_BRIEF.md`. Rules are in
 Legend: `[x]` done · `[ ]` todo · `(opt)` optional, only after core is done · 🚪 = gate
 (stop and get approval before continuing).
 
-**Progress marker (update this line every time):** `DONE 30 / 48 (~62%)` — screens 1–9 of the pass
+**Progress marker (update this line every time):** `DONE 48 / 55 (~87%)` — item 21, the last task
+of the PHASE 3 pass, closed 2026-09-20, which **closes PHASE 3**. The seven still open are the
+PHASE 2 sync block, which this file already defers ("The rest of PHASE 2 (sync) stays deferred
+until multi-device is real"). The previous marker read `DONE 30 / 48 (~62%)` and was stale: this
+file's own rule is that the denominator is live (`grep -c "^- \["` = 55, `grep -c "^- \[x\]"` = 48),
+so the count is restated from the grep rather than incremented from a number that had drifted. —
+screens 1–9 of the pass
 (نظرة عامة, المنتجات, نقاط البيع, المخازن, الجرد, المشتريات والموردين) closed 2026-08-18; 7–10 (الشركاء والمالية, قاعدة العملاء, إدارة الطلبات, حسابات الشحن) on 2026-08-19. The denominator moved 47 → 48 when the نقطة البيع regression was logged as its own line — a fix that took the whole app down is worth a line of its own, not a footnote on the screen that caused it. It moved 46 → 47 earlier when the deferred dashboard
 date filter was logged as task 21, the final item of the pass. The 16/46 baseline below was recomputed honestly the same day, when
 PHASE 3 was reorganised into a top-to-bottom screen pass. It reads LOWER than the
@@ -734,12 +740,41 @@ list is empty.
       ✔ Backup payload correctly writes all stores, verified by SHA-256 checksum during both Verify and Restore.
       ✔ Restore securely shows warning dialog before safely reloading window on confirmation.
       ← open: nothing.
-- [ ] **21. نظرة عامة — extended date filter (شهر / سنة)** ← THE LAST TASK OF THE PASS.
-      Runs only after screens 1–20 are all confirmed correct and stable. Adds شهر and سنة to the
-      dashboard's period filter (today / 7 days / 30 days already ship). It is last on purpose:
-      the dashboard aggregates every other screen, so every earlier screen must have settled its
-      numbers first — otherwise this gets revisited after each one. The pass is not complete
-      until this is ticked.
+- [x] **21. نظرة عامة — extended date filter (شهر / سنة)** ← THE LAST TASK OF THE PASS.
+      **DONE 2026-09-20.** Runs only after screens 1–20 are all confirmed correct and stable. Adds
+      شهر and سنة to the dashboard's period filter (today / 7 days / 30 days already ship). It is
+      last on purpose: the dashboard aggregates every other screen, so every earlier screen must
+      have settled its numbers first — otherwise this gets revisited after each one.
+
+      **What was already there:** `هذا الشهر` and `هذه السنة` were in `PERIOD_LABELS`, `windowFor`,
+      `trendDays` and `periodLabel` in `src/lib/dashboard.ts`, and the screen renders a chip per
+      key — so the periods shipped but were never pinned or ticked. `هذا الشهر` starts at the 1st
+      (not 30 days back) and charts by DAY; `هذه السنة` starts 1 January and charts by MONTH,
+      because a year in 365 daily points is unreadable and 365 queries.
+
+      **What was actually missing, and why the item could not be ticked before now:**
+
+      1. **Half the filter compared timestamps as text.** `ledger_events.occurred_at` is a `text`
+         column and the dashboard drives its window through BOTH `balances()` and
+         `events({ from, to })`. Migration 034 fixed `balances`; `driver.events` still used
+         `.gte/.lt/.order("occurred_at")`, i.e. string comparison across two spellings of the same
+         instant (`…T14:18:07.675Z` vs `… 14:18:07.675957+00`, and `' ' < 'T'`). Measured per day
+         against the live database: **14 events attributed to 2026-09-11, a day with none**, nine
+         lost from the 13th, and **44 of 167 rows sorted out of place** — so `.limit()` returned
+         the wrong rows. Migration 035 adds `ledger_events_page`, which casts once in SQL for both
+         the window and the sort; `driver.events` now calls it. SECURITY INVOKER, so
+         `select_ledger_events` still decides visibility and `anon` holds no EXECUTE.
+      2. **No test coverage at all** for the period model. `check_dashboard.mjs` had no assertion
+         on `PERIOD_LABELS`, `windowFor`, `trendDays` or `periodLabel`. Seven added: the five
+         chips and their Arabic labels, `هذا الشهر` starting at the 1st vs the rolling 30-day
+         window, `هذه السنة` starting 1 January, day-vs-month bucketing, buckets tiling the card's
+         own window (so the line and the cards cannot disagree), the 1st-of-month / 1st-of-January
+         edges, a leap February, and a guard that no lexical `occurred_at` comparison returns.
+
+      **Verified live** as ADMIN of QA-STORE: هذا الشهر and هذه السنة both render; هذه السنة charts
+      9 monthly buckets (Jan–Sep); صافي الربح ١٩٨٫٩٣ ج.م matches `owner_financial_summary`'s
+      19,893 piastres to the piastre, and عدد العمليات ٦٠ matches SQL exactly (22 `sale` +
+      38 `order_placed`) through the repaired event path.
 
 ## PHASE 4 — Global polish
 - [x] PDF export works on every screen that has the button — ~~the button does something at all~~

@@ -363,6 +363,7 @@ const emptyPnl: Pnl = {
   salesByChannel: [],
   netSales: 0,
   cogs: 0,
+  grossProfit: 0,
   shipping: 0,
   opex: 0,
   expenses: 0,

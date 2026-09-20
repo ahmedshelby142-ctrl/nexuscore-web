@@ -10,6 +10,9 @@
  *
  *   **`SUM(revenue)` and `SUM(cogs)` are ALREADY NET of returns.**
  *
+ * `grossProfit` (`netSales − cogs`) and `netProfit` (`… − expenses`) are both
+ * defined once, here, and are the only definitions in the app.
+ *
  * A `return_confirmed` writes `revenue −` and `cogs −` (docs/LEDGER_SCHEMA.md
  * §8), so subtracting returns a second time understates profit by the value of
  * every return. Same for shipping: the courier return fee is an `expense` line,
@@ -237,6 +240,17 @@ export interface Pnl {
   /** `SUM(revenue)` — net of returns. */
   netSales: number;
   cogs: number;
+  /**
+   * `netSales − cogs`. The ONLY definition of gross profit in the app.
+   *
+   * Stated here rather than left to each caller for the same reason
+   * `netProfit` is: two screens that each subtract their own idea of cost
+   * disagree the first time one of them forgets that `cogs` is already net of
+   * returns. Mobile and any future Owner cockpit read this field; they do not
+   * recompute it. The SQL reader `owner_financial_summary` returns the same
+   * subtraction over the same two accounts.
+   */
+  grossProfit: number;
   /** `SUM(expense)` on the shipping subjects. A SUBSET of `expenses`. */
   shipping: number;
   /** `SUM(expense)` on everything else: rent, salaries, marketing, جرد… */
@@ -266,6 +280,7 @@ export function pnl(input: PnlInput): Pnl {
       .sort((a, b) => b.amount - a.amount),
     netSales,
     cogs: input.cogs,
+    grossProfit: netSales - input.cogs,
     shipping,
     opex,
     expenses,

@@ -163,42 +163,52 @@ const supabaseDriver: LedgerDriver = {
     }
   },
 
+  /**
+   * One account's balance per subject, aggregated by Postgres.
+   *
+   * ## Why this is an RPC and not a select
+   *
+   * It used to page every matching line into the browser and sum them here,
+   * filtering the window with
+   *
+   *     .gte("ledger_events.occurred_at", from.toISOString())
+   *
+   * `occurred_at` is a `text` column, so that is a STRING comparison. The
+   * table holds two spellings of the same instant — `2026-09-12T14:18:07.675Z`
+   * and `2026-09-12 14:18:07.675957+00` — and `' ' < 'T'`, so every
+   * Postgres-style row sorted below the lower bound of its own day and was
+   * silently dropped. Measured against the live database for 2026-09-12: this
+   * returned 308.00 EGP of revenue where the timestamps mean 3,100.00, and 14
+   * in-period events disappeared. Every dated figure in التقارير المالية was
+   * wrong by that much.
+   *
+   * `ledger_balances` (migration 034) casts `occurred_at::timestamptz` once,
+   * in SQL, so the comparison is between two instants. It is SECURITY INVOKER,
+   * so `select_ledger_lines` still decides what this caller may see and
+   * nothing is granted that a select did not already allow. Lifetime reads —
+   * no `from`, no `to` — are unaffected and return exactly what they did.
+   */
   async balances(query) {
     const sb = requireClient();
     const storeId = await requireStoreId();
 
-    // `!inner` makes the join a filter: a line whose event does not match the
-    // kind or the date window is dropped by Postgres rather than fetched here
-    // and discarded.
-    const rows = await pageAll<JoinedLine>((from, to) => {
-      let q = sb
-        .from("ledger_lines")
-        .select("subject_id, qty_delta, amount_delta, ledger_events!inner(kind, occurred_at)")
-        .eq("store_id", storeId)
-        .eq("account", query.account);
-
-      if (query.subjectId) q = q.eq("subject_id", query.subjectId);
-      if (query.kind) q = q.eq("ledger_events.kind", query.kind);
-      if (query.from) q = q.gte("ledger_events.occurred_at", query.from.toISOString());
-      if (query.to) q = q.lt("ledger_events.occurred_at", query.to.toISOString());
-
-      return q.range(from, to);
+    const { data, error } = await sb.rpc("ledger_balances", {
+      p_store: storeId,
+      p_account: query.account,
+      p_kind: query.kind ?? null,
+      p_subject_id: query.subjectId ?? null,
+      p_from: query.from ? query.from.toISOString() : null,
+      p_to: query.to ? query.to.toISOString() : null,
     });
 
-    const totals = new Map<string, { qty: number; amount: number }>();
-    for (const r of rows) {
-      const t = totals.get(r.subject_id) ?? { qty: 0, amount: 0 };
-      t.qty += Number(r.qty_delta) || 0;
-      t.amount += Number(r.amount_delta) || 0;
-      totals.set(r.subject_id, t);
-    }
+    if (error) throw new Error(`[ledger_balances] ${error.message}`);
 
-    return [...totals].map(([subjectId, t]) => ({
+    return (data ?? []).map((r: { subject_id: string; qty: number | string; amount: number | string }) => ({
       account: query.account as Balance["account"],
-      subjectId,
-      qty: t.qty,
+      subjectId: r.subject_id,
+      qty: Number(r.qty) || 0,
       // Piastres in the column, EGP at the boundary.
-      amount: fromPiastres(t.amount),
+      amount: fromPiastres(Number(r.amount) || 0),
     }));
   },
 

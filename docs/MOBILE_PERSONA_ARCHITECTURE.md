@@ -105,16 +105,16 @@ settled but Mobile has no reader; build the reader, never a formula.
 
 | Owner metric | Authority | Mobile reader |
 |---|---|---|
-| Sales / revenue | `revenue` ledger account | ➖ |
-| COGS | `cogs` ledger account | ➖ |
-| Expenses | `expense` events | ➖ |
-| Net profit | revenue − COGS − expenses, over the ledger | ➖ |
-| Cash / wallet | `wallet` account per `WalletType` | ➖ |
-| Courier receivable | `receivable_courier`, by `courierId` | ➖ |
-| Courier payable | `payable_courier` | ➖ |
-| Supplier payable | `payable_supplier`, by supplier id | ➖ |
-| Wholesale receivable | `receivable_trader` | ➖ |
-| Inventory value | `SUM(stock.amount_delta)` | ➖ |
+| Sales / revenue | `revenue` ledger account | ✅ `owner_financial_summary` |
+| COGS | `cogs` ledger account | ✅ `owner_financial_summary` |
+| Expenses | `expense` ACCOUNT (not the `expenses` table) | ✅ `owner_financial_summary` |
+| Net profit | revenue − COGS − expenses, over the ledger | ✅ `owner_financial_summary` |
+| Cash / wallet | `wallet` account per `WalletType` | ✅ `owner_financial_summary` |
+| Courier receivable | `receivable_courier`, by `courierId` | ✅ `owner_financial_summary` |
+| Courier payable | `payable_courier` | ✅ `owner_financial_summary` |
+| Supplier payable | `payable_supplier`, by supplier id | ✅ `owner_financial_summary` |
+| Wholesale receivable | `receivable_client` | ✅ `owner_financial_summary` |
+| Inventory value | `SUM(stock.amount_delta)` | ✅ `owner_financial_summary` |
 | Low stock | ledger qty vs `minStockLevel` | ✅ |
 | Shortages | `mobile_shortages` RPC | ✅ |
 | Returns / exchanges | `return_confirmed` / `rto_confirmed` events | ✅ (per order) |
@@ -250,6 +250,61 @@ Bottom nav: الرئيسية · الطلبات · المخزون · المزيد
 redirects to home, and the توريد buttons on المخزون and النواقص are not drawn
 for a role that cannot buy.
 
+### M3.2.1 — the secure financial foundation (implemented)
+
+The Owner cockpit UI is still unbuilt. What exists is the foundation under it.
+
+**One dated aggregation, and it casts.** `ledger_events.occurred_at` is a `text`
+column and `driver.balances` compared it as text with `from.toISOString()`. The
+table holds two spellings of one instant — `2026-09-12T14:18:07.675Z` and
+`2026-09-12 14:18:07.675957+00` — and `' ' < 'T'`, so a Postgres-style row sorts
+below the `...T00:00:00Z` bound of its own day. It was therefore dropped from
+its own day AND pulled into the previous one. Live, for 2026-09-12: 308.00 EGP
+of revenue where the timestamps mean 3,100.00, and 14 events in the wrong
+bucket. `ledger_balances` (migration 034) casts `occurred_at::timestamptz` once
+in SQL and every dated read goes through it. No timezone convention was
+invented: all rows carry an explicit offset, the database is UTC, and the
+bounds already arrive as instants. Lifetime reads are byte-identical to before.
+
+**Owner money is ADMIN-gated at the reader, not at the table.** Every financial
+SELECT policy is `is_store_member(store_id)`; a MODERATOR reads every revenue,
+cogs, wallet and payable line in its own store. Those policies are deliberately
+UNCHANGED — `customer_ltv`, stock and shortages run through the same tables for
+the Moderator certified in M3.1. The restricted surface is
+`owner_financial_summary`, which independently verifies an authenticated
+caller, membership of the store it was handed, and the `ADMIN` role there, and
+returns only the audited metrics. `p_store` is checked against the caller's own
+membership, so changing it cannot widen anything. There is no "read every
+ledger row" RPC.
+
+**Store Owner is not System Owner.** The Owner persona is `ADMIN` of one store.
+The System Owner is a global identity from an email allowlist in
+`is_system_owner()`, holds no store membership and no store data rights, and is
+explicitly NOT accepted by this reader.
+
+**ACCOUNTANT is refused here** and keeps every financial screen it already has
+on Desktop, which reads through the unchanged `useBalances` path. Nothing was
+taken away.
+
+**`grossProfit` is `revenue − cogs`, defined once** in `pnl()`
+(`src/lib/ledger/reports.ts`). The SQL reader performs the same subtraction
+over the same two accounts. No screen may re-derive it.
+
+**Lifetime and period are different questions.** Wallet balances, supplier
+payable, courier balances, stock value and `receivable_client` are POSITIONS
+and ignore the window. Revenue, COGS, expenses, returns and sales-by-channel
+are FLOWS and take it. Enforced in SQL.
+
+**Absent, never zero.** Owner draw, capital/equity, wallet transfers and every
+period-over-period comparison are omitted from the payload — `owner_budget`
+holds 0 lines, `owner_draw` and `wallet_transfer` 0 events, and the ledger is
+three weeks old. A `0` would read as "asked, and there are none".
+
+**Sources the P&L must never use:** the `transactions` table (0 rows), the
+`expenses` table (1,050.00 EGP against the `expense` account's 3,831.43 — it
+holds only manually-entered expenses and misses shrinkage, shipping penalties
+and payroll), and the `orders` table.
+
 ---
 
 ## 5. Owner purchasing / supplier cockpit — NOT implemented
@@ -335,7 +390,7 @@ inferred from the code.
 | purchase history | `purchase_invoices` + `purchase` events | ➖ no reader | `purchase_invoices` | `kind='purchase'` | write ✅ / read ➖ |
 | courier receivable | `receivable_courier` | ➖ | `ledger_lines` | — | ➖ |
 | courier payable | `payable_courier` | ➖ | `ledger_lines` | — | ➖ |
-| wholesale receivable | `receivable_trader` | ➖ | `ledger_lines` | — | ➖ |
+| wholesale receivable | `receivable_client` | `owner_financial_summary` | `ledger_lines` | `account='receivable_client'` | ✅ |
 | revenue | `revenue` | ➖ | `ledger_lines` | — | ➖ |
 | COGS | `cogs` | ➖ | `ledger_lines` | — | ➖ |
 | expenses | `expense` events | ➖ | `ledger_events` | — | ➖ |

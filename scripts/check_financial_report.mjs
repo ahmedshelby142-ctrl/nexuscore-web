@@ -102,7 +102,34 @@ test("§1.3: sale + purchase + expense + return in one period nets correctly", (
   assert.equal(report.expenses, 175, "opex + shipping is exactly SUM(expense)");
 
   // The whole point: 300 − 180 − 175.
+  assert.equal(report.grossProfit, 120, "revenue − cogs, before a single expense");
   assert.equal(report.netProfit, -55);
+});
+
+test("grossProfit is revenue − cogs, and nothing else subtracts from it", () => {
+  // One definition, here, because two screens that each subtract their own
+  // idea of cost disagree the first time one forgets `cogs` is already net of
+  // returns. The SQL reader `owner_financial_summary` performs the same
+  // subtraction over the same two accounts.
+  const { all, ret } = scenario();
+  const report = pnl({
+    revenueRows: rowsOf(all, "revenue"),
+    expenseRows: rowsOf(all, "expense"),
+    cogs: totalOf(all, "cogs"),
+    returnsRevenue: totalOf(ret, "revenue"),
+    purchases: 0,
+  });
+
+  assert.equal(report.grossProfit, report.netSales - report.cogs);
+  assert.equal(report.netProfit, report.grossProfit - report.expenses, "net is gross minus expenses");
+  // The two figures returns must NOT be deducted from a second time.
+  assert.equal(report.grossProfit, 120, "the returned unit left BOTH revenue and cogs");
+});
+
+test("grossProfit survives an empty period without inventing a number", () => {
+  const report = pnl({ revenueRows: [], expenseRows: [], cogs: 0, returnsRevenue: 0, purchases: 0 });
+  assert.equal(report.grossProfit, 0, "asked, and there was nothing — a real zero");
+  assert.equal(report.netProfit, 0);
 });
 
 test("returns are never subtracted twice", () => {

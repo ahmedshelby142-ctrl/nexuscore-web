@@ -202,10 +202,21 @@ function bucketLabel(d: Date, g: Granularity): string {
  */
 export const SHIPPING_SUBJECTS = ["shipping", "shipping_return"] as const;
 
+/**
+ * The `revenue` subjects, in Arabic.
+ *
+ * `exchange` and `forfeited_deposit` are real subjects the ledger writes — a
+ * sale through an exchange, and a deposit kept when a customer walks away —
+ * and both were missing here, so every screen that groups revenue by channel
+ * printed the raw snake_case id into an Arabic column. `channelLabel` falls
+ * back to the id for anything genuinely unknown; these two are not unknown.
+ */
 const CHANNEL_LABELS: Record<string, string> = {
   pos: "نقطة البيع",
   ecommerce: "الطلبات الإلكترونية",
   wholesale: "الجملة",
+  exchange: "استبدال",
+  forfeited_deposit: "عربون محتجز",
 };
 
 export function channelLabel(subjectId: string): string {

@@ -22,6 +22,7 @@ import { canAccess, type AppRole } from "@/lib/roles";
  * | customers | /crm | Customer profiles |
  * | purchasing | /purchasing | Supplier purchasing |
  * | preferences | /preferences | User preferences |
+ * | owner | (ADMIN role) | Store Owner financials — see `OWNER_CAPABILITY_ROLE` |
  *
  * ## Role Matrix
  *
@@ -35,6 +36,7 @@ import { canAccess, type AppRole } from "@/lib/roles";
  * | customers | ✅ | ✅ | ❌ | ❌ | ✅ |
  * | purchasing | ✅ | ❌ | ❌ | ✅ | ❌ |
  * | preferences | ✅ | ✅ | ✅ | ✅ | ✅ |
+ * | owner | ✅ | ❌ | ❌ | ❌ | ❌ |
  */
 export type MobileCapability =
   | "home"
@@ -44,7 +46,8 @@ export type MobileCapability =
   | "shipments"
   | "customers"
   | "purchasing"
-  | "preferences";
+  | "preferences"
+  | "owner";
 
 export const ALL_MOBILE_CAPABILITIES: readonly MobileCapability[] = [
   "home",
@@ -55,14 +58,37 @@ export const ALL_MOBILE_CAPABILITIES: readonly MobileCapability[] = [
   "customers",
   "purchasing",
   "preferences",
+  "owner",
 ];
 
 /**
+ * The Store Owner is `ADMIN` of the current store. Nothing else.
+ *
+ * ## Why this capability is keyed on the ROLE and not on a desktop path
+ *
+ * Every other capability projects a desktop screen the role already owns, so
+ * `canAccess` can answer it. `owner` has no desktop screen to project: the
+ * thing it gates is `owner_financial_summary`, whose authorization is
+ * literally "authenticated → member of this store → ADMIN". Deriving the
+ * capability from anything else would let the UI and the database disagree
+ * about who the Owner is, and the database is the one that decides.
+ *
+ * So this mirrors the RPC's gate exactly. If the RPC refuses, the screen was
+ * never drawn; if the screen is drawn, the RPC will answer. It is not a
+ * permission — the RPC refuses a forged client regardless.
+ *
+ * The Store Owner is NOT the System Owner. `is_system_owner()` is a global
+ * email allowlist that holds no store membership and no store data rights, and
+ * `owner_financial_summary` rejects it like any other non-member.
+ */
+export const OWNER_CAPABILITY_ROLE: AppRole = "ADMIN";
+
+/**
  * Desktop path each mobile capability delegates access resolution to.
- * `home` and `more` are unconditional and absent from this map.
+ * `home`, `more` and `owner` are resolved elsewhere and absent from this map.
  */
 const DESKTOP_RESOURCE_FOR_CAPABILITY: Record<
-  Exclude<MobileCapability, "home" | "more">,
+  Exclude<MobileCapability, "home" | "more" | "owner">,
   string
 > = {
   orders: "/orders",
@@ -150,11 +176,13 @@ export function getMobileCapabilities(role: AppRole): ReadonlySet<MobileCapabili
   } else {
     for (const [capability, desktopPath] of Object.entries(
       DESKTOP_RESOURCE_FOR_CAPABILITY,
-    ) as [Exclude<MobileCapability, "home" | "more">, string][]) {
+    ) as [Exclude<MobileCapability, "home" | "more" | "owner">, string][]) {
       if (canAccess(role, desktopPath)) {
         capabilities.add(capability);
       }
     }
+    // The money, and only for the role Postgres will actually answer.
+    if (role === OWNER_CAPABILITY_ROLE) capabilities.add("owner");
   }
 
   CAPABILITIES_BY_ROLE.set(role, capabilities);

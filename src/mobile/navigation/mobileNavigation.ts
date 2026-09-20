@@ -1,4 +1,4 @@
-import { Boxes, ClipboardList, House, Menu, Package, Truck, Users, Settings, type LucideIcon } from "lucide-react";
+import { Boxes, ClipboardList, House, Menu, Package, Truck, Users, Settings, Wallet, type LucideIcon } from "lucide-react";
 import type { MobileCapability } from "./mobileCapabilities";
 import type { AppRole } from "@/lib/roles";
 
@@ -26,6 +26,7 @@ export const ALL_MODULES: Record<MobileCapability, MobileNavigationItem> = {
   customers: { id: "customers", label: "العملاء", icon: Users, path: "/customers", isImplemented: true },
   purchasing: { id: "purchasing", label: "المشتريات", icon: Boxes, path: "/purchasing", isImplemented: false },
   preferences: { id: "preferences", label: "الإعدادات", icon: Settings, path: "/preferences", isImplemented: false },
+  owner: { id: "owner", label: "المالية", icon: Wallet, path: "/owner", isImplemented: true },
   more: { id: "more", label: "المزيد", icon: Menu, isImplemented: true },
 };
 
@@ -35,8 +36,12 @@ export const ALL_MODULES: Record<MobileCapability, MobileNavigationItem> = {
  */
 export function getBottomNavForRole(role: AppRole): MobileNavigationItem[] {
   switch (role) {
+    // Money is the Owner's first question (persona architecture §3), so
+    // المالية takes the slot المخزون used to hold; المخزون is one tap away in
+    // المزيد. The bar is capped at four and the Owner is the only role with a
+    // fifth destination to fit.
     case "ADMIN":
-      return [ALL_MODULES.home, ALL_MODULES.orders, ALL_MODULES.stock, ALL_MODULES.more];
+      return [ALL_MODULES.home, ALL_MODULES.owner, ALL_MODULES.orders, ALL_MODULES.more];
     case "ACCOUNTANT":
       return [ALL_MODULES.home, ALL_MODULES.stock, ALL_MODULES.purchasing, ALL_MODULES.more];
     case "POS_ECOMMERCE":
@@ -66,7 +71,7 @@ export function getMoreModulesForRole(
   
   // Sort capabilities according to the order in ALL_MODULES keys for consistent display
   const orderedCapabilities: MobileCapability[] = [
-    "orders", "stock", "shipments", "customers", "purchasing", "preferences"
+    "owner", "orders", "stock", "shipments", "customers", "purchasing", "preferences"
   ];
   
   for (const cap of orderedCapabilities) {

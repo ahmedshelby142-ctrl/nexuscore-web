@@ -899,3 +899,61 @@ select {
 .mobile-sticky-actions > * { min-block-size: 44px; }
 .mobile-sticky-actions .mobile-actions-primary { flex: 1; }
 
+
+/* ── المالية — the Store Owner cockpit ─────────────────────────────────────
+   One card per question, one row per figure. Values are forced LTR because a
+   currency amount reads left-to-right even inside an RTL sentence, and the
+   hint under each row names the ledger account it came from — the persona
+   architecture's "fact, then why", never a number alone. */
+.mobile-owner-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 0.875rem;
+  background: var(--card);
+  overflow: hidden;
+}
+.mobile-owner-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.mobile-owner-list .mobile-owner-row {
+  border: 1px solid var(--border);
+  border-radius: 0.875rem;
+  background: var(--card);
+}
+.mobile-owner-card > .mobile-owner-row + .mobile-owner-row {
+  border-block-start: 1px solid var(--border);
+}
+.mobile-owner-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  /* 44px minimum tap/read target, even for the shortest row. */
+  min-block-size: 44px;
+  padding: 0.75rem 0.875rem;
+}
+.mobile-owner-row-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.mobile-owner-row-label { font-size: 0.9375rem; }
+.mobile-owner-row-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mobile-owner-row-value.is-positive { color: var(--success); }
+.mobile-owner-row-value.is-negative { color: var(--destructive); }
+.mobile-owner-row-value.is-muted { color: var(--muted-foreground); }
+.mobile-owner-row-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.mobile-owner-subgroup { display: flex; flex-direction: column; gap: 0.5rem; }
+.mobile-owner-subtitle {
+  margin: 0.25rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+}

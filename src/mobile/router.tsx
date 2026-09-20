@@ -15,6 +15,7 @@ import { MobileProductDetails } from "./screens/MobileProductDetails";
 import { MobileOrderDetails } from "./screens/MobileOrderDetails";
 import { MobileCustomerDetails } from "./screens/MobileCustomerDetails";
 import { MobileQuickRestock } from "./screens/MobileQuickRestock";
+import { MobileOwnerScreen } from "./screens/MobileOwnerScreen";
 import { MobileSessionGate } from "./shell/MobileSessionGate";
 import { MobileShell } from "./shell/MobileShell";
 
@@ -40,6 +41,7 @@ export function MobileRouter({
           <Route element={<MobileRouteGuard capability="customers" />}><Route path="customers" element={<MobileCustomersScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="customers" />}><Route path="customers/:customerId" element={<MobileCustomerDetails />} /></Route>
           <Route element={<MobileRouteGuard capability="purchasing" />}><Route path="purchasing" element={<MobileDeferredScreen title="المشتريات" />} /><Route path="restock" element={<MobileQuickRestock />} /></Route>
+          <Route element={<MobileRouteGuard capability="owner" />}><Route path="owner" element={<MobileOwnerScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="preferences" />}><Route path="preferences" element={<MobileDeferredScreen title="الإعدادات" />} /></Route>
         </Route>
       </Route>

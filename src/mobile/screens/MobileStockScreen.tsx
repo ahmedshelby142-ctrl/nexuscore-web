@@ -11,6 +11,7 @@ import { resolveStockStatus } from "@/mobile/viewmodels/statusTaxonomies";
 import { formatArabicQuantity } from "@/mobile/viewmodels/formatters";
 import { readMobileProducts } from "@/mobile/data/mobileReaders";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
+import { useMobileCapabilities } from "@/mobile/navigation/MobileRouteGuard";
 import { Fragment } from "react";
 
 // "نواقص" is gone from here on purpose. It was a filter that passed every row
@@ -20,6 +21,11 @@ const FILTERS = [{ id: "all", label: "الكل" }, { id: "low", label: "منخف
 
 export function MobileStockScreen() {
   const navigate = useNavigate();
+  // توريد سريع is a WRITE (`commitReceipt`), and `/restock` is guarded by the
+  // `purchasing` capability. Drawing the button for a role that does not hold
+  // it — MODERATOR, and ECOMMERCE_ONLY before it — offered an action whose only
+  // possible outcome was a bounce back to the home screen.
+  const canRestock = useMobileCapabilities().has("purchasing");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const page = useMobilePagedQuery(readMobileProducts, { search: query });
@@ -41,9 +47,11 @@ export function MobileStockScreen() {
         }
         trailingAction={
           <Fragment>
-            <button type="button" className="mobile-icon-button" onClick={() => navigate("/restock")} aria-label="توريد سريع">
-              <Plus aria-hidden="true" />
-            </button>
+            {canRestock && (
+              <button type="button" className="mobile-icon-button" onClick={() => navigate("/restock")} aria-label="توريد سريع">
+                <Plus aria-hidden="true" />
+              </button>
+            )}
             <button type="button" className="mobile-icon-button" onClick={page.reload} aria-label="تحديث">
               <RefreshCw aria-hidden="true" />
             </button>

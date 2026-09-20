@@ -1,11 +1,12 @@
 # NEXUS CORE Mobile — Persona Architecture & Data Authority Matrix
 
-Status: **architecture only.** Nothing in the Owner or Moderator sections below is
-implemented. This document exists so that when it is, every number already has an
-owner and nobody has to invent a second formula under deadline.
+Status: **Moderator is implemented (M3.1, migration 033).** The Owner sections
+are still architecture only. This document exists so that when they are built,
+every number already has an owner and nobody has to invent a second formula
+under deadline.
 
 Last verified against the live database (`oczgqpxeixlrufvevitz`, store
-`QA-STORE (disposable)`) on 2026-09-15.
+`QA-STORE (disposable)`) on 2026-09-20.
 
 ---
 
@@ -130,8 +131,8 @@ settled but Mobile has no reader; build the reader, never a formula.
 
 ### Current canonical roles
 
-`ADMIN` · `ACCOUNTANT` · `POS_ECOMMERCE` · `ECOMMERCE_ONLY`
-(`store_members_role_check` enforces exactly these four.)
+`ADMIN` · `ACCOUNTANT` · `POS_ECOMMERCE` · `ECOMMERCE_ONLY` · `MODERATOR`
+(`store_members_role_check` enforces exactly these five since migration 033.)
 
 ### Capability matrix
 
@@ -147,6 +148,23 @@ settled but Mobile has no reader; build the reader, never a formula.
 | courier ledger | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | wholesale · discounts | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | settings · users · branches | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+### Implemented matrix — MOBILE capability by role
+
+Desktop access is unchanged by M3.1: `MODERATOR` is absent from every
+`ROUTE_ACCESS` entry except `/preferences`, and no other role's entry moved.
+
+| Mobile capability | ADMIN | ACCOUNTANT | POS_ECOMMERCE | ECOMMERCE_ONLY | MODERATOR |
+|---|---|---|---|---|---|
+| home · more | ✅ | ✅ | ✅ | ✅ | ✅ |
+| orders (+ details) | ✅ | ❌ | ✅ | ✅ | ✅ |
+| stock (+ product details) | ✅ | ✅ | ❌ | ✅ | ✅ |
+| shortages | ✅ | ✅ | ❌ | ✅ | ✅ |
+| shipments | ✅ | ❌ | ✅ | ✅ | ✅ |
+| customers (+ details) | ✅ | ❌ | ✅ | ❌ | ✅ |
+| purchasing · `/restock` | ✅ | ✅ | ❌ | ❌ | ❌ |
+| preferences | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **any write** | ✅ | ✅ | ✅ | ✅ | **❌ (DB)** |
 
 ### Decision
 
@@ -165,21 +183,72 @@ Widening `ECOMMERCE_ONLY` to reach `/crm` is the tempting one-liner and it is
 wrong: `ROUTE_ACCESS` is shared with Desktop, so it would silently open Desktop
 CRM to every `ECOMMERCE_ONLY` member in every store.
 
-### Smallest change that works — NOT implemented
+### Smallest change that works — IMPLEMENTED (M3.1)
 
-1. Add `"MODERATOR"` to `AppRole` in `src/lib/roles.ts`, with `ROUTE_ACCESS`
-   entries for `/orders`, `/inventory`, `/crm`, `/preferences`, and
-   `ROLE_HOME → "/orders"`.
-2. One migration: extend `store_members_role_check` with `'MODERATOR'`, and add
-   `'MODERATOR'` to the `has_role` array inside `mobile_shortages`.
+Points 3 and 4 held exactly as written. Point 1 did not, and the correction is
+the most important line in this section.
+
+1. `"MODERATOR"` is in `AppRole` / `APP_ROLES` in `src/lib/roles.ts`, but it is
+   **NOT** in `ROUTE_ACCESS` for `/orders`, `/inventory` or `/crm`. Those three
+   entries would have been the same widening this document rules out one
+   paragraph above — `ROUTE_ACCESS` is what the DESKTOP sidebar and router read,
+   so a `/crm` entry opens desktop CRM to the role, whoever it was added for.
+   The Moderator gets `/preferences` and `ROLE_HOME → "/preferences"` on
+   desktop, and its MOBILE surfaces are stated in
+   `src/mobile/navigation/mobileCapabilities.ts` (`MODERATOR_CAPABILITIES`)
+   instead. Mobile capability resolution is therefore split from desktop
+   business-role authorization **for this role only**; the other four still
+   project from `canAccess`.
+2. Migration `033_moderator_role.sql`: `store_members_role_check` gains
+   `'MODERATOR'`, and so does the `has_role` array inside `mobile_shortages`.
 3. **No SELECT policy change.** Every read the Moderator needs — `orders`,
-   `products`, `customers`, `couriers`, `ledger_lines` — is gated on
-   `is_store_member(store_id)`, not on role. Read access comes with membership.
-4. **No write policy change, deliberately.** `write_orders`, `write_products`,
-   `write_customers`, `write_suppliers` and `write_purchase_invoices` are
-   `has_role(...)` lists that will not contain `MODERATOR`. The role is
-   therefore read-only **at the database**, not merely in the UI — which is the
-   property the persona actually requires, and it costs nothing.
+   `products`, `customers`, `couriers`, `ledger_lines`, `ledger_events` — is
+   gated on `is_store_member(store_id)`, not on role. Read access comes with
+   membership. Verified: 34 orders, 7 products, 8 customers, 1 courier, 489
+   ledger lines and 167 ledger events readable in QA-STORE; 0 rows of any of
+   them in the other tenant.
+4. **No write policy change, deliberately** — but five write paths had to be
+   *corrected* first, because they were gated on MEMBERSHIP and not on role, so
+   "absent from every `has_role` list" was not yet enough:
+
+   | Path | was | is |
+   |---|---|---|
+   | `insert_ledger_lines` | `is_store_member AND store_licensed` | `has_role(…four)` |
+   | `update_products` | `is_store_member AND store_licensed` | `has_role(…four)` |
+   | `claim_discount_use` | `is_store_member` | `has_role(…four)` |
+   | `release_discount_use` | `is_store_member` | `has_role(…four)` |
+   | `adjust_discount_total` | `is_store_member` | `has_role(…four)` |
+   | `next_document_number` | `is_store_member` | `has_role(…four)` |
+
+   `insert_ledger_lines` was the sharp one: `ledger_append` is SECURITY INVOKER
+   and writes the header first, so the role gate on `insert_ledger_events`
+   stops the RPC — but not a direct PostgREST insert of lines onto an event
+   that already exists, which moves every balance that sums them.
+
+   Each now lists the four roles that already held the write, so nothing
+   changed for them (verified for all four against QA-STORE). `MODERATOR` is in
+   none of them, and the role is read-only **at the database**, not merely in
+   the UI — which is the property the persona actually requires.
+
+### Verified refusals (QA-STORE, authenticated Moderator, 2026-09-20)
+
+Every one returned `42501` or mutated 0 rows:
+
+receiving (`purchase_invoices`) · `ledger_append` for stock adjustment, supplier
+payment and courier settlement · a bare `ledger_lines` append · `products`
+(stock mirror) · `orders` · `customers` · `suppliers` · `transactions` ·
+`expenses` · `couriers` · `store_members` (insert and self-promotion) ·
+`store_licenses` (insert and extension) · `next_document_number` ·
+`claim_discount_use` · `admin_list_stores` · `admin_extend_license` ·
+every store-B read and write. `is_system_owner()` → `false`.
+
+### Mobile
+
+Bottom nav: الرئيسية · الطلبات · المخزون · المزيد. العملاء، الشحنات and
+الإعدادات live in المزيد. `/restock` and `/purchasing` are behind the
+`purchasing` capability the role does not hold, so a deep link to either
+redirects to home, and the توريد buttons on المخزون and النواقص are not drawn
+for a role that cannot buy.
 
 ---
 

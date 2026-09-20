@@ -102,9 +102,13 @@ test("the membership INSERT runs as the caller, so RLS re-checks it", () => {
   assert.deepEqual(adminUses, ["admin.auth.admin.inviteUserByEmail"]);
 });
 
-test("only the four real roles are accepted", () => {
-  const declared = [...roles.matchAll(/"(ADMIN|POS_ECOMMERCE|ECOMMERCE_ONLY|ACCOUNTANT)"/g)]
-    .map((m) => m[1]);
+test("only the real roles are accepted", () => {
+  // Read the canonical list rather than a hand-kept alternation, so adding a
+  // role to `APP_ROLES` without adding it here fails the comparison instead of
+  // silently narrowing what this test covers.
+  const declared = [...roles
+    .match(/APP_ROLES: readonly AppRole\[\] = \[([\s\S]*?)\]/)[1]
+    .matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
   const allowed = fn.match(/const ROLES = \[([^\]]+)\]/)[1]
     .match(/"([A-Z_]+)"/g)
     .map((s) => s.replaceAll('"', ""));

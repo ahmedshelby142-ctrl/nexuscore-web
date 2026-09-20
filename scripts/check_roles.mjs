@@ -24,10 +24,10 @@ import {
 
 // ── the four, and only the four ─────────────────────────────────────────────
 
-test("there are exactly four roles, all named in Arabic", () => {
+test("there are exactly five roles, all named in Arabic", () => {
   assert.deepEqual(
     [...APP_ROLES],
-    ["ADMIN", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT"],
+    ["ADMIN", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT", "MODERATOR"],
     "no dynamic roles — the set is fixed",
   );
   for (const r of APP_ROLES) {
@@ -81,6 +81,55 @@ test("ACCOUNTANT gets buying and money, not selling", () => {
   }
   for (const path of ["/pos", "/crm", "/settings", "/users", "/"]) {
     assert.equal(canAccess("ACCOUNTANT", path), false, `${path} must be blocked`);
+  }
+});
+
+// ── MODERATOR is a MOBILE persona and must stay off the desktop ─────────────
+
+test("MODERATOR opens no desktop business screen", () => {
+  // The whole point of M3.1's route decision. `ROUTE_ACCESS` is read by the
+  // DESKTOP sidebar and router, so a MODERATOR entry on any of these paths is
+  // a desktop screen full of write affordances handed to a read-only role —
+  // and, for `/crm` and `/inventory`, the exact widening the persona
+  // architecture identified as unsafe. Mobile resolves its surfaces in
+  // `src/mobile/navigation/mobileCapabilities.ts` instead.
+  for (const path of [
+    "/", "/pos", "/orders", "/ecommerce-orders", "/crm", "/returns",
+    "/inventory", "/stock-audit", "/purchasing", "/partners",
+    "/products", "/wholesale", "/discounts", "/courier-ledger",
+    "/settings", "/users", "/branches", "/backups", "/integrations",
+    "/system-admin",
+  ]) {
+    assert.equal(canAccess("MODERATOR", path), false, `${path} must be shut to MODERATOR`);
+  }
+});
+
+test("MODERATOR still lands somewhere it can open, so the desktop cannot loop", () => {
+  assert.ok(canAccess("MODERATOR", "/preferences"), "appearance is a preference, not a permission");
+  assert.equal(homeFor("MODERATOR"), "/preferences");
+  assert.ok(
+    canAccess("MODERATOR", homeFor("MODERATOR")),
+    "a redirect target the role cannot open is an infinite loop",
+  );
+});
+
+test("adding MODERATOR widened nothing for the four roles that came before", () => {
+  // Byte-for-byte the assertions that passed before the fifth role existed.
+  const before = {
+    ADMIN:          ["/", "/pos", "/orders", "/ecommerce-orders", "/crm", "/returns", "/inventory", "/stock-audit", "/purchasing", "/partners", "/preferences", "/settings", "/users", "/branches", "/backups", "/products", "/wholesale"],
+    POS_ECOMMERCE:  ["/pos", "/orders", "/ecommerce-orders", "/crm", "/returns", "/preferences"],
+    ECOMMERCE_ONLY: ["/orders", "/ecommerce-orders", "/returns", "/inventory", "/preferences"],
+    ACCOUNTANT:     ["/inventory", "/stock-audit", "/purchasing", "/partners", "/preferences"],
+  };
+  const everyPath = [...new Set(Object.values(before).flat())];
+  for (const [role, open] of Object.entries(before)) {
+    for (const path of everyPath) {
+      assert.equal(
+        canAccess(role, path),
+        open.includes(path),
+        `${role} → ${path} changed`,
+      );
+    }
   }
 });
 

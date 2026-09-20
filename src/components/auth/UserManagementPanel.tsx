@@ -42,15 +42,17 @@ const ROLE_TONE: Record<AppRole, string> = {
   POS_ECOMMERCE: "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300",
   ECOMMERCE_ONLY: "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
   ACCOUNTANT: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
+  MODERATOR: "bg-slate-100 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300",
 };
 
 /**
- * الصلاحيات والمستخدمين — assign one of FOUR fixed roles. Nothing else.
+ * الصلاحيات والمستخدمين — assign one of the FIXED roles. Nothing else.
  *
- * There is no role builder and no permission checkboxes on purpose: the four
- * roles are hardcoded in `lib/roles.ts` and enforced by RLS. A screen that let
- * an admin invent a fifth would be inventing a role the database has never
- * heard of and will not honour.
+ * There is no role builder and no permission checkboxes on purpose: the roles
+ * are hardcoded in `lib/roles.ts`, enforced by `store_members_role_check`, and
+ * gated by RLS. A screen that let an admin invent one would be inventing a role
+ * the database has never heard of and will not honour. The list here is
+ * `APP_ROLES`, so a role added there appears without another edit.
  */
 export function UserManagementPanel() {
   const {

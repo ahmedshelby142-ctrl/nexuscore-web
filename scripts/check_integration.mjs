@@ -261,7 +261,11 @@ test("shrinkage reaches the same profit figure the dashboard shows", () => {
 // ── access and sync wrap the same data ──────────────────────────────────────
 
 test("every role can reach at least one screen, and only ADMIN reaches all", () => {
-  const screens = ["/", "/pos", "/orders", "/inventory", "/purchasing", "/partners", "/settings"];
+  // `/preferences` is in the list because MODERATOR is a MOBILE persona: the
+  // only desktop path it opens is the appearance screen. Leaving it out would
+  // make "every role has somewhere to work" false for a role that is working
+  // perfectly well, on a phone.
+  const screens = ["/", "/pos", "/orders", "/inventory", "/purchasing", "/partners", "/settings", "/preferences"];
   for (const role of APP_ROLES) {
     const open = screens.filter((p) => canAccess(role, p));
     assert.ok(open.length > 0, `${role} must have somewhere to work`);

@@ -1,5 +1,5 @@
 /**
- * The four roles. Fixed, hardcoded, and the ONLY source of who sees what.
+ * The five roles. Fixed, hardcoded, and the ONLY source of who sees what.
  *
  * ## Why this file exists
  *
@@ -22,14 +22,29 @@
  * guard is a courtesy to honest users; the database is the security boundary.
  */
 
-/** The four fixed roles. No dynamic role-building, by design. */
-export type AppRole = "ADMIN" | "POS_ECOMMERCE" | "ECOMMERCE_ONLY" | "ACCOUNTANT";
+/**
+ * The five fixed roles. No dynamic role-building, by design.
+ *
+ * `MODERATOR` is the read-only operational persona (M3.1). It is a MOBILE
+ * persona: on Desktop it reaches `/preferences` and nothing else, because
+ * `ROUTE_ACCESS` is shared with the Desktop router and adding it to `/orders`,
+ * `/inventory` or `/crm` here would hand it three Desktop screens full of
+ * buttons whose writes the database refuses. Its Mobile surfaces are resolved
+ * in `src/mobile/navigation/mobileCapabilities.ts` instead.
+ */
+export type AppRole =
+  | "ADMIN"
+  | "POS_ECOMMERCE"
+  | "ECOMMERCE_ONLY"
+  | "ACCOUNTANT"
+  | "MODERATOR";
 
 export const APP_ROLES: readonly AppRole[] = [
   "ADMIN",
   "POS_ECOMMERCE",
   "ECOMMERCE_ONLY",
   "ACCOUNTANT",
+  "MODERATOR",
 ] as const;
 
 /** What each role is called on screen. Arabic only — this reaches the user. */
@@ -38,6 +53,7 @@ export const ROLE_LABELS: Record<AppRole, string> = {
   POS_ECOMMERCE: "كاشير وأونلاين",
   ECOMMERCE_ONLY: "أونلاين فقط",
   ACCOUNTANT: "محاسب ومخازن",
+  MODERATOR: "مشرف متابعة",
 };
 
 /** One line describing the access each role gets, for the invite dropdown. */
@@ -46,6 +62,7 @@ export const ROLE_DESCRIPTIONS: Record<AppRole, string> = {
   POS_ECOMMERCE: "نقطة البيع، الطلبات، المتجر الإلكتروني، وقاعدة العملاء",
   ECOMMERCE_ONLY: "الطلبات والمتجر الإلكتروني، والمخزون للعرض فقط",
   ACCOUNTANT: "المشتريات والموردين والمخزون وتقارير الخزنة",
+  MODERATOR: "متابعة فقط من الموبايل: الطلبات والشحنات والمخزون والنواقص والعملاء — بدون أي تعديل",
 };
 
 /**
@@ -53,14 +70,14 @@ export const ROLE_DESCRIPTIONS: Record<AppRole, string> = {
  *
  * `ADMIN` is omitted from every list on purpose: it is granted by
  * `canAccess` before the map is consulted, so a screen added later is closed to
- * the other three by default and open to the admin. Forgetting an entry fails
+ * every other role by default and open to the admin. Forgetting an entry fails
  * SHUT for staff, which is the direction a mistake should fail in.
  */
 const ROUTE_ACCESS: Record<string, readonly AppRole[]> = {
   // ── Open to everyone ──────────────────────────────────────────────────────
   // Appearance is a preference, not a permission. Every role lands here able to
   // set light/dark; nothing that changes the business belongs on this path.
-  "/preferences": ["POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT"],
+  "/preferences": ["POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT", "MODERATOR"],
 
   // ── Selling ───────────────────────────────────────────────────────────────
   "/pos": ["POS_ECOMMERCE"],
@@ -96,9 +113,14 @@ const ROLE_HOME: Record<AppRole, string> = {
   POS_ECOMMERCE: "/pos",
   ECOMMERCE_ONLY: "/orders",
   ACCOUNTANT: "/purchasing",
+  // The Moderator is a Mobile persona with no Desktop screen of its own. This
+  // is the only path `canAccess` opens for it, so it is the only destination a
+  // Desktop redirect can use without looping.
+  MODERATOR: "/preferences",
 };
 
-/** Legacy role strings → the fixed four. */
+/** Legacy role strings → one of the fixed set. None of them maps to MODERATOR:
+ * that role has no predecessor, so it can only arrive by being granted. */
 const LEGACY_ROLE_MAP: Record<string, AppRole> = {
   // The old `UserRole` set.
   owner: "ADMIN",
@@ -121,7 +143,7 @@ const LEGACY_ROLE_MAP: Record<string, AppRole> = {
 };
 
 /**
- * Any stored role string → one of the fixed four.
+ * Any stored role string → one of the fixed roles.
  *
  * Unknown values land on `ECOMMERCE_ONLY`, the least privileged role, rather
  * than throwing or defaulting to admin. A row with a typo in it must not open

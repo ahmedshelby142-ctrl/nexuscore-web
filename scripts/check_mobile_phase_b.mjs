@@ -14,7 +14,7 @@ const badges = read("../src/mobile/shell/useAlertBadges.ts");
 const more = read("../src/mobile/shell/MobileMoreSheet.tsx");
 
 test("each role has at most four bottom destinations and More", () => {
-  for (const role of ["ADMIN", "ACCOUNTANT", "POS_ECOMMERCE", "ECOMMERCE_ONLY"]) {
+  for (const role of ["ADMIN", "ACCOUNTANT", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "MODERATOR"]) {
     const body = navigation.match(new RegExp(`case "${role}"[\\s\\S]*?return \\[(.*?)\\];`))?.[1] ?? "";
     assert.ok(body, `${role} must have a defined mobile navigation model`);
     assert.ok((body.match(/ALL_MODULES\./g) ?? []).length <= 4);
@@ -27,7 +27,14 @@ test("mobile navigation delegates access to canonical capabilities", () => {
   assert.match(bottomNav, /filter\(\(item\) =>[\s\S]*?capabilities\.has\(item\.id\)/);
   assert.match(router, /MobileRouteGuard capability="orders"/);
   assert.match(router, /MobileRouteGuard capability="preferences"/);
-  assert.match(capabilities, /return canAccess\(role, desktopPath\)/);
+  // One resolver, asked once. `hasMobileCapability` used to re-derive the
+  // answer from `canAccess` and would have disagreed with the nav for
+  // MODERATOR, whose set is stated rather than projected from a desktop route.
+  assert.match(capabilities, /if \(canAccess\(role, desktopPath\)\)/);
+  assert.match(
+    capabilities,
+    /export function hasMobileCapability[\s\S]*?return getMobileCapabilities\(role\)\.has\(capability\);/,
+  );
 });
 
 test("home is composed from pure view models and omits unsupported revenue claims", () => {

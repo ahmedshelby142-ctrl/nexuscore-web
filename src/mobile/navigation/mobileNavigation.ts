@@ -7,16 +7,23 @@ export interface MobileNavigationItem {
   label: string;
   icon: LucideIcon;
   path?: string;
-  /** True if this module actually has a mobile screen built. */
+  /**
+   * True if this module actually has a mobile screen built.
+   *
+   * `MobileMoreSheet` renders a `disabled` row with a قريباً badge when this is
+   * false, so a stale `false` is not cosmetic — it is a screen that exists,
+   * routes, and cannot be opened. Keep it in step with `router.tsx`: false
+   * means the path lands on `MobileDeferredScreen`.
+   */
   isImplemented: boolean;
 }
 
 export const ALL_MODULES: Record<MobileCapability, MobileNavigationItem> = {
   home: { id: "home", label: "الرئيسية", icon: House, path: "/", isImplemented: true },
   orders: { id: "orders", label: "الطلبات", icon: ClipboardList, path: "/orders", isImplemented: true },
-  stock: { id: "stock", label: "المخزون", icon: Package, path: "/inventory", isImplemented: false },
-  shipments: { id: "shipments", label: "الشحنات", icon: Truck, path: "/shipments", isImplemented: false },
-  customers: { id: "customers", label: "العملاء", icon: Users, path: "/customers", isImplemented: false },
+  stock: { id: "stock", label: "المخزون", icon: Package, path: "/inventory", isImplemented: true },
+  shipments: { id: "shipments", label: "الشحنات", icon: Truck, path: "/shipments", isImplemented: true },
+  customers: { id: "customers", label: "العملاء", icon: Users, path: "/customers", isImplemented: true },
   purchasing: { id: "purchasing", label: "المشتريات", icon: Boxes, path: "/purchasing", isImplemented: false },
   preferences: { id: "preferences", label: "الإعدادات", icon: Settings, path: "/preferences", isImplemented: false },
   more: { id: "more", label: "المزيد", icon: Menu, isImplemented: true },
@@ -35,6 +42,11 @@ export function getBottomNavForRole(role: AppRole): MobileNavigationItem[] {
     case "POS_ECOMMERCE":
     case "ECOMMERCE_ONLY":
       return [ALL_MODULES.home, ALL_MODULES.orders, ALL_MODULES.shipments, ALL_MODULES.more];
+    // The supervisor's three questions in the order they get asked: what needs
+    // doing, is it in stock, where is it. العملاء and الشحنات live one tap away
+    // in المزيد — a lookup, not a queue (persona architecture §2, Home UX).
+    case "MODERATOR":
+      return [ALL_MODULES.home, ALL_MODULES.orders, ALL_MODULES.stock, ALL_MODULES.more];
     default:
       return [ALL_MODULES.home, ALL_MODULES.more];
   }

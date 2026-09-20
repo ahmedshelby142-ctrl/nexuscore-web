@@ -6,6 +6,7 @@ import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { formatArabicQuantity, formatArabicCount } from "@/mobile/viewmodels/formatters";
 import { readMobileShortages, type MobileShortageRow } from "@/mobile/data/mobileHomeReader";
+import { useMobileCapabilities } from "@/mobile/navigation/MobileRouteGuard";
 
 /**
  * تقرير النواقص — the products open orders demand more of than the shelf holds.
@@ -39,6 +40,10 @@ import { readMobileShortages, type MobileShortageRow } from "@/mobile/data/mobil
  */
 export function MobileShortagesScreen() {
   const navigate = useNavigate();
+  // توريد is a WRITE (`commitReceipt`) behind the `purchasing` capability. A
+  // role that can SEE a shortage is not automatically a role that can fill it —
+  // MODERATOR reads this screen and buys nothing.
+  const canRestock = useMobileCapabilities().has("purchasing");
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<MobileShortageRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -182,14 +187,16 @@ export function MobileShortagesScreen() {
                       <ShoppingCart aria-hidden="true" />
                       فتح الصنف
                     </button>
-                    <button
-                      type="button"
-                      className="mobile-primary-button"
-                      onClick={() => navigate(`/restock?products=${encodeURIComponent(row.product_id)}`)}
-                    >
-                      <Plus aria-hidden="true" />
-                      توريد
-                    </button>
+                    {canRestock && (
+                      <button
+                        type="button"
+                        className="mobile-primary-button"
+                        onClick={() => navigate(`/restock?products=${encodeURIComponent(row.product_id)}`)}
+                      >
+                        <Plus aria-hidden="true" />
+                        توريد
+                      </button>
+                    )}
                   </footer>
                 </article>
               );

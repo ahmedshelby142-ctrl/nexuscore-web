@@ -23,7 +23,7 @@
  *      everything above were bypassed, RLS independently refuses a membership
  *      in a store the caller does not administer.
  *
- * The role is validated against the four the app has, and the column's own
+ * The role is validated against the five the app has, and the column's own
  * CHECK constraint rejects anything else regardless — 'owner', 'superadmin' and
  * friends cannot be written even by a service key.
  *
@@ -43,7 +43,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 /** The only roles that exist. Mirrors `src/lib/roles.ts` and the CHECK constraint. */
-const ROLES = ["ADMIN", "ACCOUNTANT", "POS_ECOMMERCE", "ECOMMERCE_ONLY"] as const;
+const ROLES = ["ADMIN", "ACCOUNTANT", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "MODERATOR"] as const;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",

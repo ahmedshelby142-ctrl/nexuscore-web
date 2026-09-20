@@ -20,6 +20,7 @@ import {
   UserCheck,
   Building2,
   Palette,
+  RefreshCw,
 } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
@@ -37,6 +38,8 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/comp
 import logoLight from "@/assets/logo-light.png";
 import logoDark from "@/assets/logo-dark.png";
 import { logout as serverLogout } from "@/lib/api/authServer";
+import { useOnline } from "@/hooks/useOnline";
+import { useSyncStatus, lastSyncLabel } from "@/store/useSyncStatus";
 
 export interface NavItem {
   label: string;
@@ -299,6 +302,32 @@ export function Sidebar() {
   const navItems = useNavItems();
   const signOut = useSidebarLogout();
 
+  // Real sync status, not a painted-on green dot.
+  const online = useOnline();
+  const lastSyncAt = useSyncStatus((s) => s.lastSyncAt);
+  const syncing = useSyncStatus((s) => s.syncing);
+
+  /**
+   * «مزامنة الآن» — the same `hydrateAll` boot and `online` already call, so
+   * there is one read path and the button cannot drift from the automatic
+   * ones. Imported lazily for the same reason `useRealtimeSync` does it:
+   * hydration pulls the whole cloud schema in behind it.
+   */
+  const syncNow = async () => {
+    if (syncing || !online) return;
+    useSyncStatus.getState().markSyncing(true);
+    try {
+      const { hydrateAll } = await import("@/services/cloudHydrate");
+      await hydrateAll();
+      useSyncStatus.getState().markSynced();
+    } catch (e) {
+      // A failed refresh must not stamp a fresh «آخر مزامنة» — that would
+      // claim a read that did not happen.
+      useSyncStatus.getState().markSyncing(false);
+      console.error("[Sidebar] manual sync failed:", e);
+    }
+  };
+
   return (
     <TooltipProvider delayDuration={0}>
       <aside
@@ -367,6 +396,13 @@ export function Sidebar() {
 
         <div className={collapsed ? "px-2 pb-2" : "px-3 pb-2"}>
           {operationMode === "cloud_sync" ? (
+            /* The dot used to be hardcoded green and the caption hardcoded
+               «متزامن مع الخادم» — it said "connected" with the cable out.
+               Both now come from `navigator.onLine` and from the timestamp
+               `useRealtimeSync` records after a hydration that actually
+               returned. There is no pending count on purpose: every write
+               awaits the server, so the queue that number described no longer
+               exists and it would always read zero. */
             <div
               className={cn(
                 "flex rounded-xl border border-sidebar-border bg-sidebar-accent/30 transition-all duration-300",
@@ -375,16 +411,45 @@ export function Sidebar() {
                   : "items-center gap-2.5 px-3 py-2.5",
               )}
             >
-              <span className="size-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] shrink-0" />
+              <span
+                className={cn(
+                  "size-2 rounded-full shrink-0",
+                  online
+                    ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
+                    : "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.6)]",
+                )}
+              />
               {!collapsed && (
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium text-green-600 dark:text-green-400 leading-tight">
-                    سحابي متصل
+                  <p
+                    className={cn(
+                      "text-xs font-medium leading-tight",
+                      online
+                        ? "text-green-600 dark:text-green-400"
+                        : "text-amber-600 dark:text-amber-400",
+                    )}
+                  >
+                    {online ? "سحابي متصل" : "غير متصل بالإنترنت"}
                   </p>
                   <p className="text-[10px] text-muted-foreground leading-relaxed mt-px truncate">
-                    متزامن مع الخادم
+                    {syncing
+                      ? "جارٍ المزامنة…"
+                      : (lastSyncLabel(lastSyncAt) ??
+                        (online ? "لم تتم مزامنة بعد" : "آخر نسخة محفوظة محلياً"))}
                   </p>
                 </div>
+              )}
+              {!collapsed && (
+                <button
+                  type="button"
+                  onClick={syncNow}
+                  disabled={syncing || !online}
+                  aria-label="مزامنة الآن"
+                  title="مزامنة الآن"
+                  className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  <RefreshCw className={cn("size-3.5", syncing && "animate-spin")} />
+                </button>
               )}
             </div>
           ) : (

@@ -8,7 +8,11 @@ Detailed spec for any screen is in `NEXUSCORE_DEV_BRIEF.md`. Rules are in
 Legend: `[x]` done · `[ ]` todo · `(opt)` optional, only after core is done · 🚪 = gate
 (stop and get approval before continuing).
 
-**Progress marker (update this line every time):** `DONE 48 / 55 (~87%)` — item 21, the last task
+**Progress marker (update this line every time):** `DONE 54 / 55 (~98%)` — the PHASE 2 sync block
+was re-audited on 2026-09-20 against its original wording, now that multi-device is real: six of
+its seven items were already satisfied or were closed that day, and one stays open because its
+acceptance criteria require offline selling, which the architecture no longer has. Before that,
+item 21, the last task
 of the PHASE 3 pass, closed 2026-09-20, which **closes PHASE 3**. The seven still open are the
 PHASE 2 sync block, which this file already defers ("The rest of PHASE 2 (sync) stays deferred
 until multi-device is real"). The previous marker read `DONE 30 / 48 (~62%)` and was stale: this
@@ -153,16 +157,78 @@ route and four dead server functions along with their errors). Ratchet down, nev
       The one reader the compiler could NOT find: `StockSummaryCards` re-declared `reorder_point?`
       in its own local props interface. Deleting a field from the shared type does not reach a
       local structural copy of it — worth remembering next time.
-- [ ] Wire pull: `SyncService.fetchChanges` caller (on boot + on `online` + every 5 min)
-- [ ] Fix echo guard (compare `device_id`, not the missing `_client_id`)
-- [ ] Add `device_id` + `sync_status` + tombstones (`deleted_at`) across synced rows
-      ← `products.deleted_at` is the first one, added with product archiving (type + `schema.sql`
-      + `ALTER … ADD COLUMN IF NOT EXISTS`); the remaining tables and the two other columns are
-      still open
-- [ ] Sidebar status = real (online/offline + pending count + last-sync + "sync now" button)
-- [ ] Supabase: `store_id` on every synced table + `store_members` + RLS scoped by it
-- [ ] Close the `USING(true)` hole on all tables
+**RE-AUDITED 2026-09-20.** This block was deferred "until multi-device is real". Multi-device IS
+real now — Supabase is the authority, and two authenticated clients in one store were proven to
+see each other's writes with no shared local state — so each item was re-checked against its
+ORIGINAL wording rather than left deferred by habit. Six close; the seventh does not, and says why.
+
+- [x] Wire pull: `SyncService.fetchChanges` caller (on boot + on `online` + every 5 min)
+      **CLOSED 2026-09-20 — by the channel, not by a timer.** Boot and `online` are covered:
+      `useRealtimeSync` calls `hydrateAll()` in its mount effect and again on the `online` event.
+      The continuous leg is the Supabase Realtime channel, which beats a 5-minute poll —
+      sub-second, and the same rows either way. `SyncService.fetchChanges` is dead code from the
+      offline-first build and has no caller; it was not wired, because a polling loop beside a
+      working channel is a second read path.
+
+      **What was actually broken, and it was silent.** The channel opens five `postgres_changes`
+      listeners — `products`, `orders`, `transactions`, `expenses`, `ledger_events` — but Postgres
+      only streams a table that is in the `supabase_realtime` publication, and **three of the five
+      were not in it**. The subscriptions existed, the callbacks were wired, and nothing was ever
+      delivered: a second browser only learned of the first one's order after a manual refresh.
+      Migration 036 adds `orders`, `transactions` and `expenses`.
+      **Proven at runtime:** an order inserted by an outside client appeared in a running app's
+      store with no refresh. `check_sync_layer.mjs` asserts subscribed == published, because the
+      mismatch throws nothing in either direction.
+- [x] Fix echo guard (compare `device_id`, not the missing `_client_id`)
+      **CLOSED.** `isOwnEcho` compares `row.device_id === getDeviceId()`. `_client_id` — a field no
+      table ever had, so the guard never matched and every write echoed back into the store it came
+      from — survives only in the comment explaining its removal.
+- [x] Add `device_id` + `sync_status` + tombstones (`deleted_at`) across synced rows
+      **CLOSED.** All three columns are present on every synced table: the fourteen in
+      `cloudSchema` (products, customers, suppliers, couriers, discount_codes, return_records,
+      branches, expenses, transactions, purchase_invoices, shipping_rates, wholesale_clients,
+      wholesale_invoices, orders) plus `ledger_events` and `ledger_lines`. Verified column by
+      column against the live database, not inferred from a migration.
+- [x] Sidebar status = real (online/offline + pending count + last-sync + "sync now" button)
+      **CLOSED 2026-09-20, with one sub-requirement deliberately dropped.** The block used to be a
+      hardcoded green dot over the words «سحابي متصل» — it said "connected" with the cable out. Now the
+      dot and caption come from `navigator.onLine` via `useOnline()`; «آخر مزامنة» reads a
+      timestamp `useRealtimeSync` records only after a hydration that actually returned (a failed
+      catch-up never stamps one, and it is not persisted — a restored time would claim a read that
+      never happened); and «مزامنة الآن» calls the same `hydrateAll` the automatic legs call, so
+      there is one read path.
+
+      **No pending count, on purpose.** That number described the offline-first queue, and the
+      queue is gone: every write awaits the server before the store is updated, which
+      `useRealtimeSync` states outright — "There is nothing to flush first: every write was awaited
+      when it was made." `drainLegacyQueue` survives only to push what the OLD build left on an
+      upgraded device. A badge reading 0 forever is the fabricated number `alertModel` already
+      refuses for counts, so it is omitted and the omission is written down in
+      `src/store/useSyncStatus.ts`.
+- [x] Supabase: `store_id` on every synced table + `store_members` + RLS scoped by it
+      **CLOSED.** Every synced table carries `store_id`; `store_members` is the tenancy authority;
+      RLS is ENABLED on all 25 public tables and the read policies are `is_store_member(store_id)`.
+      Certified end to end in the persona work and re-proven here: a client in store B received
+      none of store A's realtime rows, read none of its data, and was refused `42501` on a
+      cross-store write.
+- [x] Close the `USING(true)` hole on all tables
+      **CLOSED.** Zero policies anywhere in `public` have a bare `true` in `USING` or `WITH CHECK`
+      — checked against `pg_policies` across all 25 tables. Five infra tables (`auth_sessions`,
+      `auth_login_attempts`, `store_alias`, `store_counters`, `users`) carry RLS with NO policy at
+      all, which denies everything and is stronger still.
 - [ ] Multi-device test: two devices, one offline sells + one online sells → stock correct on both
+      ← **STILL OPEN, and the missing half is the OFFLINE one.** The online half is proven: two
+      authenticated clients in one store, A writes an order and a `sale` event, B sees both over
+      the channel and reads them back from the server with none of A's local state; then B updates
+      the order and A sees that. Replaying A's event was refused `23505` and stock stayed −3, so
+      sync cannot duplicate a financial event. Cross-tenant: nothing received, nothing read,
+      `42501` on write.
+
+      The offline half cannot be run, because **offline-capable selling no longer exists**.
+      `offline_local` now means "no Supabase keys configured" — a build with no cloud, no store and
+      no sync — not "sell now, reconcile later". Every write awaits the server. Closing this item
+      as written would need a local write queue re-introduced, which is a product decision and a
+      phase of its own, not a test. It stays unchecked rather than be ticked on half its criteria.
 
 ## PHASE 3 — Screen-by-screen pass (TOP TO BOTTOM, sidebar order = the 19 reference screenshots)
 

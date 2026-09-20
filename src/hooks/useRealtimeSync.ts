@@ -1,4 +1,5 @@
 import { useSessionReconciliation } from "@/lib/auth/useSessionReconciliation";
+import { useSyncStatus } from "@/store/useSyncStatus";
 import { useEffect } from 'react';
 import { useBusinessStore } from '../store/useBusinessStore';
 import { useOrderStore } from '../store/useOrderStore';
@@ -142,7 +143,11 @@ export const useRealtimeSync = () => {
       // Anything the previous offline-first build left unsent goes out BEFORE
       // we read, or hydration would overwrite it with the server's older copy.
       await drainLegacyQueue().catch(() => 0);
+      useSyncStatus.getState().markSyncing(true);
       const { loaded, failed } = await hydrateAll();
+      // Recorded only on a read that actually returned, so «آخر مزامنة» can
+      // never claim a sync that failed. The sidebar reads this.
+      useSyncStatus.getState().markSynced();
       const total = Object.values(loaded).reduce((a, b) => a + b, 0);
       console.info(`[Hydrate] ${total} row(s) from the cloud`, loaded);
       if (Object.keys(failed).length > 0) {
@@ -160,9 +165,14 @@ export const useRealtimeSync = () => {
     // There is nothing to flush first: every write was awaited when it was made.
     const handleOnline = () => {
       if (!isCloudSyncMode()) return;
+      useSyncStatus.getState().markSyncing(true);
       void import("../services/cloudHydrate")
         .then((m) => m.hydrateAll())
-        .catch((e) => console.error('[RealtimeSync] catch-up hydrate failed:', e));
+        .then(() => useSyncStatus.getState().markSynced())
+        .catch((e) => {
+          useSyncStatus.getState().markSyncing(false);
+          console.error('[RealtimeSync] catch-up hydrate failed:', e);
+        });
     };
 
     window.addEventListener('online', handleOnline);

@@ -43,6 +43,7 @@ import { MobileSection } from "@/mobile/components/MobileSection";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
 import { EmptyState, ErrorState, SkeletonState } from "@/mobile/components/States";
 import { useOwnerFinancials } from "@/mobile/data/useOwnerFinancials";
+import { useSubjectNames } from "@/mobile/data/useSubjectNames";
 import { formatArabicCurrency } from "@/mobile/viewmodels/formatters";
 import { channelLabel, periodWindow, type PeriodPreset } from "@/lib/ledger/reports";
 import { WALLET_LABELS } from "@/types";
@@ -91,6 +92,16 @@ function AmountRow({
   );
 }
 
+/**
+ * What a balance says when its subject is not in any registry.
+ *
+ * The id stays on screen as the hint. An orphaned balance is money the owner
+ * still has to chase, and once the name is gone the id is the only handle left
+ * on it — so this labels the row honestly rather than hiding it, and never
+ * substitutes a plausible name for a missing one.
+ */
+const UNRESOLVED_SUBJECT = "غير معروف";
+
 function SubjectList({
   rows,
   emptyAr,
@@ -98,19 +109,24 @@ function SubjectList({
 }: {
   rows: OwnerSubjectAmount[];
   emptyAr: string;
-  labelOf?: (subjectId: string) => string;
+  /** Returns the display name, or `undefined` when the id resolves to nothing. */
+  labelOf?: (subjectId: string) => string | undefined;
 }) {
   if (rows.length === 0) return <EmptyState messageAr={emptyAr} />;
   return (
     <div className="mobile-owner-list">
-      {rows.map((row) => (
-        <AmountRow
-          key={row.subjectId}
-          label={labelOf ? labelOf(row.subjectId) : row.subjectId}
-          amount={row.amount}
-          tone={row.amount < 0 ? "negative" : undefined}
-        />
-      ))}
+      {rows.map((row) => {
+        const resolved = labelOf?.(row.subjectId);
+        return (
+          <AmountRow
+            key={row.subjectId}
+            label={resolved ?? UNRESOLVED_SUBJECT}
+            hint={resolved ? undefined : row.subjectId}
+            amount={row.amount}
+            tone={row.amount < 0 ? "negative" : undefined}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -123,6 +139,11 @@ export function MobileOwnerScreen() {
   // midnight must report the period it is actually in.
   const window = useMemo(() => periodWindow(preset), [preset]);
   const { data, loading, error, denied, reload } = useOwnerFinancials(window);
+
+  // Only after the ledger answered: a refused or failed read has no balances to
+  // label, and asking for registries the caller may not be able to read either
+  // would just be two more failures behind a screen that already said why.
+  const names = useSubjectNames(Boolean(data));
 
   const periodLabel = PERIODS.find((p) => p.id === preset)?.label ?? "";
 
@@ -244,15 +265,27 @@ export function MobileOwnerScreen() {
             </MobileSection>
 
             <MobileSection titleAr="مستحقات الموردين — دلوقتي" headingLevel={3}>
-              <SubjectList rows={data.supplierPayable} emptyAr="لا مستحقات للموردين." />
+              <SubjectList
+                rows={data.supplierPayable}
+                emptyAr="لا مستحقات للموردين."
+                labelOf={(id) => names.suppliers.get(id)}
+              />
             </MobileSection>
 
             <MobileSection titleAr="شركات الشحن — دلوقتي" headingLevel={3}>
               <div className="mobile-owner-subgroup">
                 <h4 className="mobile-owner-subtitle">لك عند المندوبين</h4>
-                <SubjectList rows={data.courierReceivable} emptyAr="لا مستحقات لك." />
+                <SubjectList
+                  rows={data.courierReceivable}
+                  emptyAr="لا مستحقات لك."
+                  labelOf={(id) => names.couriers.get(id)}
+                />
                 <h4 className="mobile-owner-subtitle">عليك للمندوبين</h4>
-                <SubjectList rows={data.courierPayable} emptyAr="لا مستحقات عليك." />
+                <SubjectList
+                  rows={data.courierPayable}
+                  emptyAr="لا مستحقات عليك."
+                  labelOf={(id) => names.couriers.get(id)}
+                />
               </div>
             </MobileSection>
           </>

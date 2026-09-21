@@ -28,7 +28,7 @@ export function MobileStockScreen() {
   const canRestock = useMobileCapabilities().has("purchasing");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const page = useMobilePagedQuery(readMobileProducts, { search: query });
+  const page = useMobilePagedQuery(readMobileProducts, { search: query }, { watch: ["products", "ledger_events"] });
   const rows = useMemo(() => page.rows.map((product: any) => {
     const quantity = Number(product.mobileStock ?? 0);
     const statusKey = deriveStockStatusKey(quantity, Number(product.minStockLevel ?? 0));
@@ -52,8 +52,15 @@ export function MobileStockScreen() {
                 <Plus aria-hidden="true" />
               </button>
             )}
-            <button type="button" className="mobile-icon-button" onClick={page.reload} aria-label="تحديث">
-              <RefreshCw aria-hidden="true" />
+            <button
+              type="button"
+              className="mobile-icon-button"
+              onClick={() => void page.refresh()}
+              disabled={page.refreshing}
+              aria-label="تحديث"
+              aria-busy={page.refreshing}
+            >
+              <RefreshCw aria-hidden="true" className={page.refreshing ? "mobile-spin" : undefined} />
             </button>
           </Fragment>
         }

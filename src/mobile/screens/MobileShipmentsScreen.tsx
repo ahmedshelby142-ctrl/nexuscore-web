@@ -18,7 +18,7 @@ export function MobileShipmentsScreen() {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState("ready");
-  const page = useMobilePagedQuery(readMobileShipments, { search: query, status: stage });
+  const page = useMobilePagedQuery(readMobileShipments, { search: query, status: stage }, { watch: ["orders"] });
 
   // WHO the couriers are — one read, the same registry table desktop writes.
   // Orders carry a `courierId`; the name on the order is only a frozen label.
@@ -42,7 +42,7 @@ export function MobileShipmentsScreen() {
   }, [page.rows, query, stage, couriers]);
 
   return <section className="mobile-screen">
-    <MobileAppBar title="الشحنات" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} trailingAction={<button type="button" className="mobile-icon-button" aria-label="تحديث"><RefreshCw aria-hidden="true" /></button>} />
+    <MobileAppBar title="الشحنات" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} trailingAction={<button type="button" className="mobile-icon-button" onClick={() => void page.refresh()} disabled={page.refreshing} aria-label="تحديث" aria-busy={page.refreshing}><RefreshCw aria-hidden="true" className={page.refreshing ? "mobile-spin" : undefined} /></button>} />
     <div className="mobile-screen-body">
       <MobileSearch value={query} onChange={setQuery} placeholder="ابحث برقم الطلب أو المندوب" />
       <div className="mobile-segmented-control" role="tablist">{PIPELINE.map((item) => <button key={item.id} type="button" role="tab" aria-selected={stage === item.id} className={stage === item.id ? "is-active" : ""} onClick={() => setStage(item.id)}>{item.label}</button>)}</div>

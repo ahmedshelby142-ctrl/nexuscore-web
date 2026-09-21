@@ -18,11 +18,11 @@ export function MobileOrdersScreen() {
   const [query, setQuery] = useState("");
   const [segment, setSegment] = useState("action");
   const [status, setStatus] = useState("all");
-  const page = useMobilePagedQuery(readMobileOrders, { search: query, queue: segment as "action" | "today" | "all", status });
+  const page = useMobilePagedQuery(readMobileOrders, { search: query, queue: segment as "action" | "today" | "all", status }, { watch: ["orders"] });
   const rows = useMemo(() => toMobileOrderQueue(page.rows), [page.rows]);
 
   return <section className="mobile-screen">
-    <MobileAppBar title="الطلبات" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} trailingAction={<button type="button" className="mobile-icon-button" aria-label="تحديث"><RefreshCw aria-hidden="true" /></button>} />
+    <MobileAppBar title="الطلبات" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} trailingAction={<button type="button" className="mobile-icon-button" onClick={() => void page.refresh()} disabled={page.refreshing} aria-label="تحديث" aria-busy={page.refreshing}><RefreshCw aria-hidden="true" className={page.refreshing ? "mobile-spin" : undefined} /></button>} />
     <div className="mobile-screen-body">
       <MobileSearch value={query} onChange={setQuery} placeholder="ابحث برقم الطلب أو العميل" />
       <div className="mobile-segmented-control" role="tablist">{SEGMENTS.map((item) => <button key={item.id} type="button" role="tab" aria-selected={segment === item.id} className={segment === item.id ? "is-active" : ""} onClick={() => setSegment(item.id)}>{item.label}</button>)}</div>

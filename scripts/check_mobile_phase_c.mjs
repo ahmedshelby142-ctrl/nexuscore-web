@@ -51,11 +51,13 @@ test("Orders is a queue with action, today, all, search, and status filter", () 
   assert.match(orders, /toMobileOrderQueue/);
 });
 
-test("Shipments uses the real processing and shipment statuses", () => {
+test("Shipments uses real order and shipment statuses", () => {
   assert.match(shipments, /جاهز للشحن/);
   assert.match(shipments, /في الطريق/);
   assert.match(shipments, /تم التسليم/);
-  assert.match(shipments, /status.*processing/);
+  // `pending` is "ready to ship": `orders_status_check` has no `processing`,
+  // so this stage used to filter on a value no row can ever hold.
+  assert.match(shipments, /status.*pending/);
   assert.match(shipments, /toMobileShipmentQueue/);
   assert.doesNotMatch(shipments, /updateOrderStatus|addOrder/);
 });

@@ -769,7 +769,7 @@ export function WholesalePage() {
         totalAmount: invoiceTotal,
         shippingFee: shippingInfo.customerCharge,
         courierFee: shippingInfo.actualCost,
-        status: "processing",
+        status: "pending",
         source: "wholesale",
         notes: `فاتورة جملة ${invNum} - ${client.companyName}`,
         cogsAmount: invoiceItems.reduce((sum, i) => sum + i.quantity * costOf(i.productId), 0),

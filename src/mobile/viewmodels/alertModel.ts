@@ -25,7 +25,7 @@ import { ALERT_LEVEL_TAXONOMY } from "./statusTaxonomies";
  * data layer (hooks/stores that query Supabase). This function itself is pure.
  */
 export interface AlertModelInput {
-  /** Open orders (pending/processing) with at least one shortage shortfall > 0. */
+  /** Open orders (pending) with at least one shortage shortfall > 0. */
   ordersWithStockout: number;
   /**
    * Open orders pending longer than the stale threshold.

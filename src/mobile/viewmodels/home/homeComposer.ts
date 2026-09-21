@@ -31,7 +31,7 @@ export interface ComposedHome {
   hasOperationalData: boolean;
 }
 
-const OPEN_ORDER_STATUSES = new Set(["pending", "processing"]);
+const OPEN_ORDER_STATUSES = new Set(["pending"]);
 
 function asRecord(value: unknown): Record<string, any> {
   return value && typeof value === "object" ? (value as Record<string, any>) : {};

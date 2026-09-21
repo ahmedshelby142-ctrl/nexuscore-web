@@ -28,7 +28,7 @@ import { useMobileCapabilities } from "@/mobile/navigation/MobileRouteGuard";
  *
  *     deficit = required − COALESCE(SUM(ledger_lines.qty_delta), 0)
  *
- * over open (`pending`/`processing`) order lines, and returns only rows where
+ * over open (`pending`) order lines, and returns only rows where
  * it is positive. It reads the LEDGER for on-hand, never `products.quantity`,
  * and it consults no `shortfall` or `backorder` flag on the order line — a
  * plain order for 3 against a shelf holding 1 is a shortage of 2, whether or

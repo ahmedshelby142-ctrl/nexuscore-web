@@ -11,7 +11,7 @@ import { readMobileOrders } from "@/mobile/data/mobileReaders";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
 
 const SEGMENTS = [{ id: "action", label: "تحتاج إجراء" }, { id: "today", label: "اليوم" }, { id: "all", label: "الكل" }] as const;
-const STATUSES = [{ id: "all", label: "كل الحالات" }, { id: "pending", label: "معلّق" }, { id: "processing", label: "قيد التجهيز" }, { id: "shipped", label: "مع المندوب" }, { id: "delivered", label: "تم التسليم" }] as const;
+const STATUSES = [{ id: "all", label: "كل الحالات" }, { id: "pending", label: "معلّق" }, { id: "shipped", label: "مع المندوب" }, { id: "delivered", label: "تم التسليم" }] as const;
 
 export function MobileOrdersScreen() {
   const navigate = useNavigate();

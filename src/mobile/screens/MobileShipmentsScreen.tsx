@@ -33,10 +33,10 @@ export function MobileShipmentsScreen() {
 
   const pipelineRows = useMemo(() => {
     const shipmentRows = toMobileShipmentQueue(page.rows, couriers);
-    const readyRows = toMobileOrderQueue(page.rows.filter((order: any) => String(order.status) === "processing")).map((row) => ({ ...row, statusLabelAr: "جاهز للشحن", statusTone: "warning" as const }));
+    const readyRows = toMobileOrderQueue(page.rows.filter((order: any) => String(order.status) === "pending")).map((row) => ({ ...row, statusLabelAr: "جاهز للشحن", statusTone: "warning" as const }));
     return [...readyRows, ...shipmentRows].filter((row) => {
       const matchesSearch = !query || `${row.title} ${row.subtitle ?? ""}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
-      const matchesStage = stage === "ready" ? row.statusKey === "processing" : row.statusKey === stage;
+      const matchesStage = stage === "ready" ? row.statusKey === "pending" : row.statusKey === stage;
       return matchesSearch && matchesStage;
     });
   }, [page.rows, query, stage, couriers]);

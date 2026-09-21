@@ -24,7 +24,7 @@
  * 2, receive 10, and the 2 are covered — the reservation for them is already
  * accounted for in the units that were floored away when the order was taken.
  *
- * "Open" means the order is still ours to fulfil: `pending` and `processing`.
+ * "Open" means the order is still ours to fulfil: `pending`.
  * `shipped`/`delivered` have left the building, `returned`/`cancelled` were
  * called off and their goods went back on the shelf.
  *
@@ -36,7 +36,7 @@
 import { getActualStock } from "./product";
 
 /** Order states that still owe the customer goods. */
-const OPEN_STATUSES = new Set(["pending", "processing"]);
+const OPEN_STATUSES = new Set(["pending"]);
 
 export interface ShortageRow {
   productId: string;

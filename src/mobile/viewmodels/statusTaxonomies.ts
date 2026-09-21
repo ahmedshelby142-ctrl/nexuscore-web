@@ -36,30 +36,25 @@ export const ORDER_STATUS_TAXONOMY: Record<string, TaxonomyEntry> = {
     tone: "warning",
     priority: 1,
   },
-  processing: {
-    labelAr: "قيد المعالجة",
-    tone: "info",
-    priority: 2,
-  },
   shipped: {
     labelAr: "مع المندوب",
     tone: "info",
-    priority: 3,
+    priority: 2,
   },
   delivered: {
     labelAr: "تم التسليم",
     tone: "success",
-    priority: 4,
+    priority: 3,
   },
   returned: {
     labelAr: "مرتجع",
     tone: "critical",
-    priority: 5,
+    priority: 4,
   },
   cancelled: {
     labelAr: "ملغي",
     tone: "muted",
-    priority: 6,
+    priority: 5,
   },
 } as const;
 

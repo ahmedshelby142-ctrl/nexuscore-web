@@ -80,7 +80,7 @@ const products = [
 {
   const orders = [
     { id: "o1", status: "pending", stockItems: [{ productId: "a", quantity: 5, shortfall: 2 }] },
-    { id: "o2", status: "processing", stockItems: [{ productId: "a", quantity: 4, shortfall: 4 }] },
+    { id: "o2", status: "pending", stockItems: [{ productId: "a", quantity: 4, shortfall: 4 }] },
     { id: "o3", status: "shipped", stockItems: [{ productId: "a", quantity: 9, shortfall: 9 }] },
     { id: "o4", status: "cancelled", stockItems: [{ productId: "a", quantity: 9, shortfall: 9 }] },
     { id: "o5", status: "delivered", stockItems: [{ productId: "a", quantity: 9, shortfall: 9 }] },

@@ -65,7 +65,7 @@ export function readMobileOrders(query: MobileListQuery = {}) {
     if (query.id) next = next.eq("id", query.id);
     if (query.status && query.status !== "all") next = next.eq("status", query.status);
     if (query.customerId) next = next.eq("customerId", query.customerId);
-    if (query.queue === "action") next = next.in("status", ["pending", "processing"]);
+    if (query.queue === "action") next = next.eq("status", "pending");
     if (query.queue === "today") {
       const start = new Date(); start.setHours(0, 0, 0, 0);
       next = next.gte("createdAt", start.toISOString());
@@ -143,8 +143,8 @@ export async function readMobileCouriers(): Promise<Map<string, { id: string; na
 export function readMobileShipments(query: MobileListQuery = {}) {
   const search = escapeLike(query.search ?? "");
   return readPage("orders", query, (builder) => {
-    let next = builder.in("status", ["processing", "shipped", "delivered"]).order("updatedAt", { ascending: false }).order("id", { ascending: false });
-    if (query.status === "ready") next = next.eq("status", "processing");
+    let next = builder.in("status", ["pending", "shipped", "delivered"]).order("updatedAt", { ascending: false }).order("id", { ascending: false });
+    if (query.status === "ready") next = next.eq("status", "pending");
     if (query.status === "shipped") next = next.eq("status", "shipped");
     if (query.status === "delivered") next = next.eq("status", "delivered");
     if (search) next = next.or(`orderNumber.ilike.%${search}%,customerName.ilike.%${search}%,courierName.ilike.%${search}%`);
@@ -415,7 +415,7 @@ export async function readMobileProductWaitingOrders(productId: string): Promise
   const { data: orders, error } = await client
     .from("orders")
     .select("id, orderNumber, customerName, items, stockItems, status, createdAt")
-    .in("status", ["pending", "processing"])
+    .eq("status", "pending")
     .or(`items.cs.[{"productId":"${productId}"}],stockItems.cs.[{"productId":"${productId}"}]`);
   
   if (error) throw new Error(`[orders] ${error.message}`);
@@ -497,20 +497,20 @@ export async function readMobileCustomerFinancialSummary(customerId: string): Pr
   if (error) throw new Error(`[orders] ${error.message}`);
 
   const statusCounts: Record<string, number> = {
-    pending: 0, processing: 0, shipped: 0, delivered: 0, returned: 0, cancelled: 0,
+    pending: 0, shipped: 0, delivered: 0, returned: 0, cancelled: 0,
   };
   let openExposure = 0;
 
   for (const order of orders ?? []) {
     if (statusCounts[order.status] !== undefined) statusCounts[order.status]++;
-    if (["pending", "processing", "shipped"].includes(order.status)) {
+    if (["pending", "shipped"].includes(order.status)) {
       openExposure += Number(order.expectedCod ?? 0);
     }
   }
 
   return {
     totalOrders: orders?.length ?? 0,
-    openOrders: statusCounts.pending + statusCounts.processing + statusCounts.shipped,
+    openOrders: statusCounts.pending + statusCounts.shipped,
     deliveredOrders: statusCounts.delivered,
     returnedOrders: statusCounts.returned,
     cancelledOrders: statusCounts.cancelled,

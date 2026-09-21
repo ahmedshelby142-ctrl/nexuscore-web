@@ -3,8 +3,8 @@
  *
  * The table. The arithmetic behind it — why the deficit is the measured
  * `shortfall` rather than "ordered minus stock", and why "open" means
- * `pending` and `processing` only — lives in `lib/shortages.ts`, which is
- * pure and has a self-check beside it.
+ * `pending` only — lives in `lib/shortages.ts`, which is pure and has a
+ * self-check beside it.
  */
 
 import { useMemo } from "react";

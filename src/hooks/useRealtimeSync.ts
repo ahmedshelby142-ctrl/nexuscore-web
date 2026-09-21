@@ -1,4 +1,5 @@
 import { useSessionReconciliation } from "@/lib/auth/useSessionReconciliation";
+import type { SessionReconciliationState } from "@/lib/auth/useSessionReconciliation";
 import { useSyncStatus } from "@/store/useSyncStatus";
 import { useEffect } from 'react';
 import { useBusinessStore } from '../store/useBusinessStore';
@@ -127,17 +128,33 @@ const TABLE_HANDLERS: Record<string, {
  * Global Real-Time Sync Hook
  * Mount this once in the root App.tsx
  */
-export const useRealtimeSync = () => {
-  // Shared with the mobile entry. This performs only Supabase-session
-  // reconciliation; the desktop-only hydration and realtime work remains
-  // below, unchanged in scope.
-  useSessionReconciliation();
+export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
+  // Shared with the mobile entry, and now READ rather than discarded.
+  //
+  // The return value used to be thrown away here, which is how the desktop
+  // ended up with two answers to "is this person signed in": the reconciled
+  // server session, and `useAuthStore.isAuthenticated` — a boolean in
+  // localStorage that `ProtectedRoute` gated on. A stale flag painted a full
+  // working app whose every read 401'd. `App` now passes this state to
+  // `ProtectedRoute`, so the guard and the reconciliation are the same fact.
+  //
+  // This hook does not DECIDE anything about auth. It asks, and it reports.
+  // The gate is a route element; realtime is a consumer, not an authority.
+  const sessionState = useSessionReconciliation();
+  const authenticated = sessionState === "authenticated";
 
   // ── 0. Boot hydration ─────────────────────────────────────────────────────
   // The stores start empty and are filled from Supabase, so what a screen shows
-  // is what the database holds. This is the ONE unconditional hydrate.
+  // is what the database holds. This is the ONE automatic hydrate.
+  //
+  // Gated on the reconciled session rather than fired unconditionally: every
+  // table here is behind `is_store_member(store_id)`, so 14 reads issued before
+  // the session is restored come back empty and then CLEAR the stores they
+  // filled — the reads succeed, so nothing is reported, and the user is shown
+  // an empty shop. Waiting for the verdict costs one render and removes it.
   useEffect(() => {
     if (!isCloudSyncMode()) return;
+    if (!authenticated) return;
     void (async () => {
       const { drainLegacyQueue, hydrateAll } = await import("../services/cloudHydrate");
       // Anything the previous offline-first build left unsent goes out BEFORE
@@ -155,7 +172,7 @@ export const useRealtimeSync = () => {
         toast.error("تعذّر تحميل بعض البيانات من السحابة. تحقّق من الاتصال.");
       }
     })();
-  }, []);
+  }, [authenticated]);
 
   useEffect(() => {
     // ── 1. Reconnect ────────────────────────────────────────────────────────
@@ -178,9 +195,18 @@ export const useRealtimeSync = () => {
     window.addEventListener('online', handleOnline);
 
     // ── 2. Supabase Realtime subscription ────────────────────────
+    //
+    // Also gated on the reconciled session. Realtime applies RLS using the
+    // token the socket JOINED with, so a channel opened before the session is
+    // restored joins as `anon` and then silently delivers nothing for the rest
+    // of its life — no error, no reconnect, just a tab that never updates.
+    // Mobile already gates `useMobileRealtime` for this exact reason.
+    //
+    // This is not realtime deciding who you are. It is realtime waiting to be
+    // told.
     let channelCleanup: (() => void) | undefined;
 
-    if (isCloudSyncMode()) {
+    if (isCloudSyncMode() && authenticated) {
       const supabase = getSupabaseClient();
       if (supabase) {
 
@@ -233,7 +259,10 @@ export const useRealtimeSync = () => {
       window.removeEventListener('online', handleOnline);
       channelCleanup?.();
     };
-  }, []);
+  }, [authenticated]);
+
+  // Handed to `ProtectedRoute` by `App`. One fact, one gate.
+  return sessionState;
 };
 
 /**

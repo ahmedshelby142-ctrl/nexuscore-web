@@ -67,7 +67,10 @@ import { useRealtimeSync } from "@/hooks/useRealtimeSync";
 import { Toaster } from "@/components/ui/sonner";
 
 export function App() {
-  useRealtimeSync();
+  // The reconciled server session, passed DOWN to the guard rather than left
+  // for it to guess at from localStorage. `useRealtimeSync` asks; it does not
+  // decide — see `ProtectedRoute`.
+  const sessionState = useRealtimeSync();
 
   return (
     <BrowserRouter>
@@ -91,7 +94,7 @@ export function App() {
             auth store yet — gating it would bounce them to /login, which is the
             one screen they cannot use until they have set a password. */}
         <Route path="/set-password" element={<SetPassword />} />
-        <Route element={<ProtectedRoute />}>
+        <Route element={<ProtectedRoute sessionState={sessionState} />}>
           {/* Outside <LicenseGate> on purpose: the gate redirects here, so a
               locked shop that could not reach this route would bounce forever. */}
           <Route path="/license-expired" element={<LicenseExpired />} />

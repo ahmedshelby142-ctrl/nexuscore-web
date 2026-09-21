@@ -188,7 +188,14 @@ test("an invitation link has somewhere to land", () => {
   // nothing in this app's auth store, and /login is the one screen they cannot
   // use until they have a password.
   const route = app.indexOf('path="/set-password"');
-  const protectedRoute = app.indexOf("<ProtectedRoute />");
+  // Matched on the tag NAME, not on `<ProtectedRoute />` verbatim. The guard
+  // now takes the reconciled session as a prop, and an `indexOf` of the old
+  // self-closing spelling returns -1 — which made `route < -1` fail and read
+  // like the invitation route had moved behind the gate when nothing about it
+  // had changed. The invariant is "which element comes first", so the assertion
+  // asks only that.
+  const protectedRoute = app.search(/<ProtectedRoute[\s/>]/);
+  assert.ok(protectedRoute > -1, "the guard element must still be mounted");
   assert.ok(route < protectedRoute, "/set-password must not sit behind ProtectedRoute");
 });
 

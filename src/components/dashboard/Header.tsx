@@ -1,9 +1,37 @@
-import { Bell, Search, ChevronDown } from "lucide-react";
-import { useState } from "react";
-import { cn } from "@/lib/utils";
+import { SessionIdentity } from "@/components/layout/SessionIdentity";
 
+/**
+ * The dashboard header used by the TanStack file-route in `src/routes/index.tsx`.
+ *
+ * ## Read this before changing it
+ *
+ * **Nothing serves this today.** `src/main.tsx` renders `App` (react-router);
+ * `src/router.tsx`, `routeTree.gen.ts` and everything under `src/routes/*.tsx`
+ * that declares `createFileRoute` are a second, unmounted router stack. The
+ * shipped chrome is `components/layout/Layout.tsx`.
+ *
+ * It is kept correct rather than left to rot because it was not harmless. It
+ * held the two literals `"سارة المصري"` and `"مدير النظام"`, so the day anyone
+ * mounted this router — or copied this file, which is how it got here — the
+ * product would have shown a fictional admin to every signed-in user. Dead code
+ * that would ship a lie is one route change away from shipping it.
+ *
+ * ## What was removed, and why none of it was a feature
+ *
+ * Three more controls here did nothing at all:
+ *
+ * - A search input with no `value`, no `onChange` and no handler.
+ * - A notification bell with no `onClick` and an unread dot rendered
+ *   unconditionally — a permanent badge for a system that does not exist.
+ * - A قطاعي/جملة toggle backed by `useState` that nothing else read.
+ *
+ * Each is a focusable, labelled control that answers a press with nothing,
+ * which is worse than its absence: it teaches the operator the feature is
+ * broken rather than absent. They are deleted rather than wired up, because
+ * global search and notifications are features (see `docs/DESKTOP_PRODUCT_AUDIT.md`
+ * §C-57, §C-67), not omissions to patch in a header.
+ */
 export function Header() {
-  const [mode, setMode] = useState<"قطاعي" | "جملة">("قطاعي");
   return (
     <header className="sticky top-0 z-20 bg-background/80 backdrop-blur-md border-b border-border">
       <div className="flex items-center gap-4 px-8 py-4">
@@ -12,60 +40,8 @@ export function Header() {
           <h2 className="font-display text-2xl font-bold">نظرة عامة</h2>
         </div>
 
-        <div className="flex-1 max-w-sm mr-8 hidden md:block">
-          <div className="relative">
-            <Search className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-            <input
-              placeholder="ابحث عن الطلبات أو المنتجات أو الشركاء…"
-              className="w-full pr-9 pl-4 py-2 text-sm rounded-full bg-muted border border-transparent focus:border-primary/40 focus:bg-card outline-none transition"
-            />
-          </div>
-        </div>
-
         <div className="mr-auto flex items-center gap-4">
-          {/* Mode toggle */}
-          <div className="flex items-center gap-3 px-3 py-1.5 rounded-full bg-muted border border-border">
-            <span className="text-xs font-medium text-muted-foreground hidden sm:inline">
-              وضع العمل
-            </span>
-            <div className="flex bg-card rounded-full p-0.5 shadow-inner">
-              {(["قطاعي", "جملة"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={cn(
-                    "px-3 py-1 text-xs font-semibold rounded-full transition-all duration-300",
-                    mode === m ? "text-primary-foreground shadow-sm" : "text-muted-foreground",
-                  )}
-                  style={mode === m ? { background: "var(--gradient-primary)" } : undefined}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <button
-            aria-label="الإشعارات"
-            className="relative size-10 rounded-full hover:bg-muted flex items-center justify-center transition"
-          >
-            <Bell className="size-4" />
-            <span className="absolute top-2 left-2 size-2 rounded-full bg-primary ring-2 ring-background" />
-          </button>
-
-          <button className="flex items-center gap-2 pr-2 pl-3 py-1.5 rounded-full hover:bg-muted transition">
-            <div
-              className="size-8 rounded-full flex items-center justify-center text-primary-foreground font-semibold text-sm"
-              style={{ background: "var(--gradient-primary)" }}
-            >
-              س.م
-            </div>
-            <div className="text-right hidden md:block">
-              <p className="text-xs font-semibold leading-tight">سارة المصري</p>
-              <p className="text-[10px] text-muted-foreground">مدير النظام</p>
-            </div>
-            <ChevronDown className="size-3 text-muted-foreground" />
-          </button>
+          <SessionIdentity />
         </div>
       </div>
     </header>

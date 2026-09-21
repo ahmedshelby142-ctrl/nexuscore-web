@@ -55,10 +55,32 @@ interface FeatureState {
 export const useFeatureStore = create<FeatureState>()(
   persist(
     (set, get) => ({
-      returnsEnabled: false,
+      // ── Module switches: ON by default ───────────────────────────────────
+      //
+      // `returnsEnabled` and `ecommerceSyncEnabled` are not preferences in the
+      // way the other three are — `Sidebar.useNavItems` filters the navigation
+      // on them, so `false` does not disable a feature, it DELETES the link to
+      // a finished, authorized screen.
+      //
+      // Defaulting them to `false` meant every fresh browser opened NexusCore
+      // with no "المرتجعات والاستبدال" and no "ربط المتجر الإلكتروني" in the
+      // menu. `/returns` is complete — it writes `return_confirmed` events and
+      // is authorized by `write_return_records` — and it was reachable only by
+      // typing the URL. Clearing site data re-hid it. Every new machine hid it
+      // again, because this store is per-browser `localStorage` and nothing
+      // syncs it.
+      //
+      // A shop that does not take returns can still switch it off in
+      // الإعدادات → عام. That is a shop making a choice; the old default was
+      // the app making it for them, silently, on every device.
+      returnsEnabled: true,
+      ecommerceSyncEnabled: true,
+
+      // These three gate copy and behaviour inside screens the user already
+      // reached, never access to a screen. Off is a safe default for them: an
+      // un-chosen setting should not start imposing rules on a till.
       shippingTrackingEnabled: false,
       salesCommissionsEnabled: false,
-      ecommerceSyncEnabled: false,
       depositMandatory: false,
       toggleReturns: () => set((s) => ({ returnsEnabled: !s.returnsEnabled })),
       toggleShippingTracking: () =>
@@ -85,7 +107,36 @@ export const useFeatureStore = create<FeatureState>()(
         return !license.hasFeature(feature);
       },
     }),
-    { name: "feature-storage" },
+    {
+      name: "feature-storage",
+      /**
+       * A new default does nothing on its own.
+       *
+       * `persist` rehydrates over the initializer, so every browser that has
+       * ever opened this app still holds `{"returnsEnabled":false,
+       * "ecommerceSyncEnabled":false}` from the old default and would keep both
+       * modules hidden forever. The fix has to reach the stored blob.
+       *
+       * The two values are forced rather than merged because the old `false`
+       * carries no information: it is what the store wrote on first run, so
+       * "the admin switched this off" and "nobody ever touched this" are the
+       * same byte and cannot be told apart. Between restoring a hidden module
+       * and honouring a choice that may never have been made, restoring wins —
+       * a visible module a shop ignores costs nothing, an invisible one costs
+       * them the feature.
+       *
+       * Once. `version: 1` means a deliberate switch-off after this ships is
+       * preserved like any other setting.
+       */
+      version: 1,
+      migrate: (persisted, from) => {
+        const state = (persisted ?? {}) as Partial<FeatureState>;
+        if (from < 1) {
+          return { ...state, returnsEnabled: true, ecommerceSyncEnabled: true };
+        }
+        return state;
+      },
+    },
   ),
 );
 

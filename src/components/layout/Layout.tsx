@@ -3,6 +3,7 @@ import { Outlet, useLocation } from "react-router-dom";
 import { FileDown, CheckCircle2 } from "lucide-react";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { MobileNav } from "@/components/layout/MobileNav";
+import { SessionIdentity } from "@/components/layout/SessionIdentity";
 import { DevRoleSwitcher } from "@/components/auth/DevRoleSwitcher";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useThemeStore } from "@/store/useThemeStore";
@@ -208,6 +209,11 @@ export function Layout() {
               )}
 
               <span className="text-sm text-muted-foreground">النسخة 1.0.0</span>
+
+              {/* Who is signed in. This shell showed no identity at all, so
+                  there was no way to notice you were looking at someone else's
+                  session on a shared machine — see `SessionIdentity`. */}
+              <SessionIdentity className="border-r border-border pr-3" />
             </div>
           </div>
         </header>

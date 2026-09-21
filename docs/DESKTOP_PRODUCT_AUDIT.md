@@ -1,0 +1,1133 @@
+# DESKTOP PRODUCT COMPLETION AUDIT
+
+Audit date: **2026-09-21**
+Baseline commit: **97c515c**
+Live project audited: `oczgqpxeixlrufvevitz` (nexuscore), read-only
+Deployment audited: Vercel team `nexuscore1`, project `nexuscore-web1`
+
+This is an **audit only**. No source file was changed, no migration was
+created, no RLS policy was touched, no production row was modified, and no
+Mobile code was opened except to prove a shared-code fact.
+
+Everything below is either a file/line, an RPC body, a policy definition, a
+SQL result, or a command output produced during this pass. Where something
+could not be exercised it says so rather than guessing.
+
+---
+
+## A. Product scope
+
+NEXUS CORE Desktop/Web is an **online-only**, single-tenant-per-store,
+Arabic/RTL business management SPA.
+
+* **Vite + React 19 + `react-router-dom`.** Not Next.js, no server runtime.
+  (`src/App.tsx` mounts `<BrowserRouter>`; `vercel.json` sets
+  `"framework": "vite"` and one SPA rewrite.)
+* **Supabase is the entire backend.** PostgREST + Auth over HTTPS. 25 tables
+  in `public`, RLS enabled on all 25, 29 functions of which 20 are
+  `SECURITY DEFINER`.
+* **Money and stock are event-sourced** in `ledger_events` / `ledger_lines`,
+  append-only at the database (`no_update_*` / `no_delete_*` policies are
+  `USING (false)`).
+* **Offline-First is OUT OF SCOPE** and must not appear in any backlog item
+  below. The PWA precaches the shell only; every read and write needs the
+  network, and writes throw rather than queue.
+
+### What this audit deliberately does not claim
+
+Desktop is **not** complete. §D–§F below are the real backlog.
+
+---
+
+## B. Route / page inventory
+
+**33 route entries** over **25 distinct screen components**, from
+`src/App.tsx` (the only router that runs — see §H.7 on `routeTree.gen.ts`).
+
+`docs/ARCHITECTURE.md` says 32; it omits `/set-password`. Corrected here.
+
+### B.1 Guard chain, outermost first
+
+```
+ProtectedRoute        useAuthStore.isAuthenticated  (localStorage boolean)
+  ├── SystemOwnerGate      /system-admin/* only; asks the server
+  └── LicenseGate          store licence currently usable
+        └── RequireAccess  lib/roles.ts canAccess(role, path)
+              └── Layout → screen
+```
+
+### B.2 Public / pre-app (2)
+
+| # | Route | Component | State |
+|---|---|---|---|
+| 1 | `/login` | `src/pages/Login.tsx` | ✅ |
+| 2 | `/set-password` | `src/pages/SetPassword.tsx` | ✅ (outside `ProtectedRoute` on purpose) |
+
+### B.3 Session-only, outside `LicenseGate` (2)
+
+| # | Route | Component | State |
+|---|---|---|---|
+| 3 | `/license-expired` | `src/pages/LicenseExpired.tsx` | ✅ |
+| 4 | `/system-admin/licenses` | `src/routes/system-admin-licenses.tsx` | 🟡 owner happy-path never pressed |
+
+### B.4 Gated business screens (21)
+
+| # | Route | Component | In sidebar | Roles (beyond ADMIN) |
+|---|---|---|---|---|
+| 5 | `/` | `ExecutiveDashboard` | ✅ | — |
+| 6 | `/preferences` | `routes/preferences.tsx` | ✅ | POS, ECOM, ACCT, MOD |
+| 7 | `/products` | `ProductsPage` | ✅ | — |
+| 8 | `/pos` | `CheckoutForm` | ✅ | POS |
+| 9 | `/inventory` | `InventoryTable` | ✅ | ECOM, ACCT |
+| 10 | `/stock-audit` | `StockAuditPage` | ✅ | ACCT |
+| 11 | `/purchasing` | `PurchasingPage` | ✅ | ACCT |
+| 12 | `/wholesale` | `WholesalePage` | ✅ | — |
+| 13 | `/partners` | `PartnersFinancePage` + `CapitalEquityPage` | ✅ | ACCT |
+| 14 | `/ecommerce-orders` | `routes/ecommerce-orders.tsx` (order **creation**) | ✅ | POS, ECOM |
+| 15 | `/orders` | `OrdersPage` (order **lifecycle**) | ✅ | POS, ECOM |
+| 16 | `/courier-ledger` | `CourierLedgerPage` | ✅ | — |
+| 17 | `/bundles` | `BundlesPage` | ✅ | — |
+| 18 | `/discounts` | `DiscountsPage` | ✅ | — |
+| 19 | `/crm` | `CRMPage` | ✅ | POS |
+| 20 | `/returns` | `routes/returns.tsx` | ✅ *(flag now defaults on — P0 Wave 1)* | POS, ECOM |
+| 21 | `/integrations` | `IntegrationsSettingsPanel` | ✅ *(flag now defaults on — P0 Wave 1)* | — |
+| 22 | `/settings` | `routes/settings.tsx` (5 tabs) | ✅ | — |
+| 23 | `/branches` | `routes/branches.tsx` | ❌ URL-only duplicate of Settings→Branches | — |
+| 24 | `/users` | `UserManagementPanel` | ❌ URL-only duplicate of Settings→Roles | — |
+| 25 | `/backups` | `routes/backups.tsx` | ❌ URL-only duplicate of Settings→Backups | — |
+
+### B.5 Placeholders — all 8 unreachable (8)
+
+`credit-invoices`, `credit-limits`, `reps-activity`, `b2b-sales`,
+`contracts`, `production-lines`, `raw-materials`, `waste-cost`.
+
+All render `PlaceholderPage` ("هذه الوحدة قيد التطوير"). **Nothing links to
+them.** They exist for `activeBusinessProfile` values other than
+`"omnichannel"`, and `setBusinessProfile` has **zero call sites**
+(`src/store/useAuthStore.ts:150`), so no other profile can ever be selected.
+See §C-44.
+
+### B.6 Nested surfaces
+
+| Surface | Count | Notes |
+|---|---|---|
+| Sidebar nav items | 17 defined | 2 hidden by default (§B.4 rows 20, 21) |
+| Settings tabs | 5 | general, shipping, branches, roles, backups |
+| Other tab groups | 6 screens, 13 triggers | returns 2, orders 1, partners 4, integrations 2, purchasing 2, POS 2 |
+| Dialog / AlertDialog | 54 | heaviest: purchasing 6, wholesale 6, orders 5, partners 5 |
+| Sheet / Drawer | 1 | `MobileNav` responsive drawer |
+| Deep links | **1** | `/ecommerce-orders` `useSearchParams` only. See §C-39 |
+
+---
+
+## C. Business capability matrix
+
+Legend: ✅ COMPLETE · 🟡 PARTIAL · ❌ MISSING · 🔴 BROKEN · ⚠️ BUSINESS DECISION
+
+"COMPLETE" means the whole chain held under inspection: UI → validation →
+authorization → service/RPC → database → ledger → realtime → persistence →
+reload → error handling → cross-screen consistency.
+
+| # | Capability | Status | Evidence |
+|---|---|---|---|
+| 1 | Authentication (email + password) | ✅ | `lib/auth/sessionWorkflow.ts:221` `signInWithPassword`; leaked-password check at `:299`; min length `:291` |
+| 2 | Signup → store provisioning | ✅ | `claim_store(uuid)` SECURITY DEFINER, idempotent, `TRIAL_DAYS := 0` |
+| 3 | Session reconciliation (logic) | ✅ | `lib/auth/useSessionReconciliation.ts` — `getSession()`, `onAuthStateChange`, sign-out only |
+| 4 | Session reconciliation (Desktop gating) | ✅ *(was 🔴 — fixed in P0 Wave 1)* | `useRealtimeSync` returns the verdict; `App` passes it to `ProtectedRoute`, which holds on `"checking"` and refuses anything else. §P0-4 |
+| 5 | Logout ends the Supabase session | ✅ | `Sidebar.tsx` `useSidebarLogout` → `auth.signOut()` after `logout()` |
+| 6 | Password change / reset in-app | ❌ | `Login.tsx` change-password UI unreachable (`mustChangePassword` has no setter). Supabase recovery email is the only path — and email does not deliver (§M-6) |
+| 7 | System Owner identity | ✅ | `is_system_owner()` reads `auth.users.email` against 2 literals + `email_confirmed_at`; resolved on login **and** every boot |
+| 8 | System Owner UI separation | ✅ | `SystemOwnerGate` fails closed on transport error; `LicenseGate` routes owners to `/system-admin/licenses` not `/license-expired` |
+| 9 | License management (RPCs) | ✅ | 6 `admin_*` RPCs, all SECURITY DEFINER + `is_system_owner()`; refuse service-role SQL |
+| 10 | License management (owner UI pressed) | 🟡 | Never exercised by a real owner session — carried over from `KNOWN_LIMITATIONS.md` #9, still open |
+| 11 | License enforcement (client) | ✅ | `LicenseGate` holds render until `resolved`; re-checks on `online` |
+| 12 | License enforcement (database) | ✅ | `has_role()` = role match **AND** `store_licensed()`. Every write policy routes through it |
+| 13 | License expiry blocks **reads** | ⚠️ | It does not. SELECT policies use `is_store_member()`, which has no licence term. An expired shop can still read via the API. Deliberate or not, it is undecided |
+| 14 | Plan tiers (BASIC/PRO) gate features | ❌ | Two disconnected sources: `store_licenses.plan_type` (real, unused by UI) and `useSubscriptionStore.isProPlan` (localStorage-only, never fetched). §H-3 |
+| 15 | Staff invitation | 🟡 | `invite-staff` is the only deployed Edge Function and works; **the email never arrives** (§M-6) |
+| 16 | Staff management UI | 🟡 | `UserManagementPanel` lists/invites/removes. No name column exists (`store_members` has none) |
+| 17 | Role permissions — UI | ✅ | One map, `lib/roles.ts` `ROUTE_ACCESS`; Sidebar and `RequireAccess` call the same `canAccess` |
+| 18 | Role permissions — database | ✅ | 45 policies; every write gate is `has_role(store_id, …)` |
+| 19 | Role propagation without reload | 🟡 | `useAuthStore.userRole` set at boot only. Menu is stale for one page load; DB refuses regardless |
+| 20 | Dashboard | 🟡 | `ExecutiveDashboard` renders real ledger sums, but its upgrade prompt reads the dead `isProPlan` (§C-14) |
+| 21 | Global header — identity | ✅ *(was 🔴 — fixed in P0 Wave 1)* | `layout/SessionIdentity.tsx`; real username, `ROLE_LABELS` role, System Owner badge alongside the store role. The three dead controls were deleted. Global search and notifications remain ❌ — see §C-57, §C-67 |
+| 22 | POS sale | ✅ | `CheckoutForm` → `appendEvent({kind:"sale"})`; stock/wallet/revenue/cogs lines; submit-gated |
+| 23 | POS return | ✅ | `POSReturnModal` + `lib/posReturn.ts` |
+| 24 | Order creation (e-commerce) | ✅ | `routes/ecommerce-orders.tsx` → `order_placed`; shipping rate, discount claim, deposit |
+| 25 | Order lifecycle | ✅ | `lib/orderLifecycle.ts` state table + synchronous `inFlight` claim; DB CHECK mirrors the 5 statuses |
+| 26 | Order details | ✅ | Inside `OrdersPage` dialogs |
+| 27 | Order numbering | 🔴 | `useOrderStore.ts:170` — `ECO-${Date.now()}`. Not from `next_document_number`, and **no unique index on `orders."orderNumber"`**. Every other document type is server-allocated and uniquely indexed |
+| 28 | Returns & exchange | ✅ | `routes/returns.tsx`, `lib/exchange.ts`; `order_returned_pending` → `return_confirmed` split is correct and asserted |
+| 29 | Return / POS-sale document numbers | ❌ | Neither has a number. Only `FM-` (purchase), `FJ-` (wholesale), `SP-` (supplier payment) are allocated |
+| 30 | Purchasing / supplier invoices | ✅ | `PurchasingPage` + `lib/receiving/commitReceipt.ts`; `FM-` from `next_document_number` |
+| 31 | Receiving → stock | ✅ | `commitReceipt` appends `purchase` with stock + payable_supplier lines |
+| 32 | Supplier payment | ✅ | `lib/supplierPaymentCommand.ts`, `SP-` numbered |
+| 33 | Inventory view | ✅ | `InventoryTable` reads `useStock` (ledger SUM) |
+| 34 | Stock adjustments / جرد | ✅ | `StockAuditPage` → `stock_adjustment` |
+| 35 | Shortages | ✅ | `lib/shortages.ts`, `ShortagesReport` |
+| 36 | Stock authority | 🟡 | Ledger is authority, `products.quantity` is a mirror — but the mirror **is provably stale** and is read on a live fallback path. §H-1 |
+| 37 | Shipments / courier assignment | ✅ | `CourierSelect`, `lib/courierBatch.ts`, `shipping_rates` per governorate |
+| 38 | Shipping provider API | ❌ | Not implemented. `handle-shipping-webhook` exists in `supabase/functions/` and is **not deployed**. Out of scope this phase per brief |
+| 39 | Customers / CRM | ✅ | `CRMPage`; `CustomerPhoneMatch` dedupe is **client-side only** — no unique index on `(store_id, phone)` |
+| 40 | Suppliers | ✅ | Inside `PurchasingPage` |
+| 41 | Couriers | ✅ | `couriers` table, ADMIN-only writes, unique name per store |
+| 42 | Courier settlements | ✅ | `CourierLedgerPage` → `courier_settlement`; `CourierSettlementReport` print view |
+| 43 | Discounts | ✅ | `DiscountsPage`; usage counters are **trigger-protected** — direct UPDATE of `usedCount`/`totalDiscount` is silently reverted unless inside the 3 RPCs |
+| 44 | Bundles | ✅ | `BundlesPage`; `expandBundleMoves` + `bundleAvailableStock` |
+| 45 | Wholesale | ✅ | `WholesalePage`; `FJ-` numbered; `canSellWholesale` mirrors the live policy |
+| 46 | Wholesale returns | ✅ | `WholesaleReturnPanel`, `WholesaleInvoiceReturnPicker` |
+| 47 | Expenses | ✅ | `PartnersFinancePage` → `expense`; DB CHECK on 10 categories |
+| 48 | Payroll / owner draw / wallet transfer | 🟡 | Code and policies exist; `wallet_transfer` and `owner_draw` have **never been written in production** |
+| 49 | Ledger (append) | ✅ | `ledger_append(jsonb)` SECURITY **INVOKER** — atomic, authorised by the caller's policies |
+| 50 | Ledger browser / event viewer | ❌ | `ledger_events_page` RPC exists; **no Desktop consumer**. There is no screen that shows raw events |
+| 51 | Wallets | ✅ | `canonical_wallet_subject`, `WALLET_LABELS` |
+| 52 | Owner financials | 🟡 | **Two implementations**: Desktop recomputes in TS (`lib/ledger/reports.ts fetchPnl`), Mobile calls SQL `owner_financial_summary`. Nothing asserts they agree — the test that would is skipped. §H-2 |
+| 53 | Owner budget | 🟡 | `OwnerBudgetCard` writes `owner_budget` lines; **zero such lines exist in either store** |
+| 54 | Financial reports | ✅ | `FinancialReportsPage` — P&L by period/granularity, print to PDF |
+| 55 | Capital & equity | ✅ | `CapitalEquityPage` |
+| 56 | Per-screen search | ✅ | Products, inventory, orders, CRM, wholesale, purchasing all have local search |
+| 57 | Global search | 🔴 | Header input is decorative (§C-21) |
+| 58 | Filters | ✅ | Status/date/courier filters on orders, returns, courier ledger |
+| 59 | Pagination | 🟡 | `ui/pagination.tsx` exists; screens render full lists. `pageAll()` removes the 1000-row PostgREST cap on **reads**, so a large tenant renders every row at once |
+| 60 | Realtime | 🟡 | 5 of 16 published tables subscribed. §J |
+| 61 | Export (Excel) | 🟡 | Import **template** download only. No data export to xlsx |
+| 62 | Export (CSV) | ❌ | The only CSV export lives in `ProfitDashboard`, which has **0 importers** |
+| 63 | Print / PDF | 🟡 | No PDF library. `lib/pdfGenerator.ts` builds HTML then `window.print()` or downloads a `.html`. §K |
+| 64 | Settings (store profile) | ✅ | `GeneralSettingsPanel`; `pullSettings` now wired into hydration |
+| 65 | Branches | ⚠️ | CRUD works; **no policy, filter or permission references a branch**. It is a directory, not a boundary |
+| 66 | Backups | 🟡 | Settings-only JSON bundle with SHA-256. **No business-data backup or restore exists**; restore has never been executed |
+| 67 | Notifications | ❌ | No store, no table, no delivery. One decorative bell |
+| 68 | Feature toggles | 🟡 *(was 🔴 — P0 half fixed in Wave 1)* | The two module flags now default `true` and existing browsers are migrated, so no fresh device hides a finished screen. Still per-browser `localStorage` and not store-level — that is G-12. `depositMandatory` and `salesCommissionsEnabled` still have **no consumers at all** |
+| 69 | Error handling (writes) | ✅ | `writeThrough` rethrows; `appendEvent` throws; `<Toaster/>` mounted |
+| 70 | Error handling (boot reads) | 🟡 | One toast on partial hydration failure. No retry affordance except the sidebar refresh |
+| 71 | Loading states | 🔴 | **No global loading gate.** 14 tables hydrate into empty Zustand stores; every screen renders its *empty state* during boot and after a failed read. `useSyncStatus` has exactly one consumer (Sidebar). §L-1 |
+| 72 | Empty states | ✅ | `ui/empty-state.tsx` + Arabic copy throughout — but indistinguishable from loading and from failure (§C-71) |
+| 73 | Retry | ❌ | 3 occurrences across 98 components |
+| 74 | Validation | ✅ | Zod + react-hook-form on forms; `assertFiniteLines` before any ledger write |
+| 75 | Duplicate-submit gating | ✅ | `useSubmitGate` / `useRunOnce`; enforced by test over every `async` handler that calls `appendEvent` |
+| 76 | RTL / Arabic | ✅ | `dir="rtl"` document-level, logical CSS properties, Arabic copy |
+| 77 | Responsive | 🟡 | `MobileNav` drawer exists; verified only by manual browser driving in a previous pass, not in CI |
+| 78 | Keyboard / a11y | 🟡 | `check_control_names.mjs` asserts accessible names; no focus-order or trap coverage |
+| 79 | PWA | ✅ | 21 precached shell entries, no data caching, no write queue |
+| 80 | Deep links | 🟡 | Only `/ecommerce-orders?…`. No `/orders/:id`, `/products/:id`, `/crm/:id` — Mobile has all three |
+| 81 | Session expiry UX | 🟡 | Sign-out happens; no message, no return-to-where-you-were |
+| 82 | License expiry UX | ✅ | `LicenseExpired` page with owner-aware routing |
+| 83 | Tenant isolation | ✅ | Proven: 0 orphan `store_id` values across orders/products/suppliers/couriers |
+| 84 | Type safety | 🔴 | `src/types/index.ts` exports **66 domain types aliased to `any`** — `EcommerceOrder`, `EcommerceOrderStatus`, `LedgerEvent`, `Partner`, `Product`-adjacent types. `tsc --noEmit` passing proves much less than it appears to. Known debt, documented in the file header |
+
+### C.1 Transparent completion count
+
+Rows 1–84 above, one status each:
+
+Counted twice: as the audit found it (2026-09-21, commit `97c515c`) and after
+P0 Wave 1 landed the same day.
+
+| Status | At audit | After P0 Wave 1 |
+|---|---|---|
+| ✅ COMPLETE | 45 (53.6 %) | **48 (57.1 %)** |
+| 🟡 PARTIAL | 22 (26.2 %) | **20 (23.8 %)** |
+| ❌ MISSING | 9 (10.7 %) | 9 (10.7 %) |
+| 🔴 BROKEN | 7 (8.3 %) | **4 (4.8 %)** |
+| ⚠️ BUSINESS DECISION | 3 (3.6 %) | 3 (3.6 %) |
+| **Total** | **84** | **84** |
+
+Rows 4, 20 and 21 moved 🔴 → ✅; row 68 moved 🔴 → 🟡. A capability-weighted
+completion figure is therefore **57.1 % complete / 81.0 % complete-or-partial**.
+It is quoted only because it is reproducible from the table above; it is not a
+schedule estimate.
+
+The four remaining 🔴 are rows **27** (order numbering), **57** (global
+search), **71** (loading states) and **84** (type safety). All four are P1.
+None blocks shipping.
+
+---
+
+## D. P0 blockers
+
+Nothing here loses money or corrupts the ledger. These block *shipping to a
+customer*.
+
+> **Status after P0 Wave 1 (2026-09-21).** All four are **FIXED**. Each entry
+> below keeps the original finding and closes with what changed and how it was
+> proven. One caveat is recorded under P0-2: the two logged-in runtime scenarios
+> could not be executed, because this audit holds no NexusCore credentials and
+> does not create accounts.
+>
+> | Blocker | Status | Runtime proof |
+> |---|---|---|
+> | P0-1 public production access | ✅ FIXED | anonymous fetch + rendered login screen |
+> | P0-2 dynamic identity | ✅ FIXED (2 scenarios ⚠️ credential-blocked) | fictional persona absent from `dist/` |
+> | P0-3 Returns / Integrations visibility | ✅ FIXED | pre-fix `localStorage` blob migrated live |
+> | P0-4 session reconciliation authority | ✅ FIXED | forged auth flag refused in a real browser |
+
+### P0-1 — The production Desktop URL is behind a Vercel login
+
+`nexuscore-web1` has `ssoProtection: { enabled: true, deploymentType:
+"all_except_custom_domains" }` and **no custom domain** — only
+`nexuscore-web1.vercel.app` and two git aliases. Every visitor is asked for a
+Vercel team login before the app loads. `DEPLOYMENT.md` flags this for Mobile
+and does not say it applies to Desktop.
+
+Fix: attach a custom domain, or relax `ssoProtection`. Nothing in the codebase
+changes.
+
+**✅ FIXED — 2026-09-21.** `ssoProtection` set to `null` on `nexuscore-web1`
+through the Vercel API; the project now reports
+`ssoProtection: { enabled: false }`. No repository change, and **application
+authentication was not touched** — Supabase Auth + RLS remains the only
+boundary, and removing the Vercel gate exposes the login screen, not the data.
+
+Proven anonymously, with no cookie jar and no Vercel session:
+
+```
+GET https://nexuscore-web1.vercel.app/       → 200, <title>NexusCore …</title>
+GET https://nexuscore-web1.vercel.app/login  → 200 (SPA rewrite intact)
+no _vercel_sso cookie · no redirect to vercel.com · no "Authentication Required"
+```
+
+and rendered in a browser: the URL resolves to `/login` and paints NexusCore's
+own «تسجيل الدخول» screen.
+
+Regression cover: `scripts/check_desktop_p0.mjs`, opt-in because it reaches the
+public internet —
+`NEXUS_PUBLIC_URL=https://nexuscore-web1.vercel.app npm run test:units`.
+
+**A custom domain is still wanted** and is tracked as §F-13, not as a blocker:
+the team default re-applies `ssoProtection` to new projects, so a `*.vercel.app`
+origin depends on a project setting staying flipped. That is a hardening step
+for an access path that now works, not a reason the P0 is open.
+
+### P0-2 — The header misreports who is signed in
+
+`src/components/dashboard/Header.tsx:64-67` renders `"سارة المصري"` and
+`"مدير النظام"` as literals. A cashier, an accountant and a moderator all see
+an admin's name and role on every screen. On a shared till that is not a
+cosmetic bug — it is the app telling the operator they hold permissions they
+do not.
+
+**Correction to this finding (2026-09-21).** The severity above was overstated
+and the audit should have caught it. `dashboard/Header.tsx` has exactly one
+importer, `src/routes/index.tsx`, which is a **TanStack file-route** reachable
+only through `routeTree.gen.ts` → `src/router.tsx`. `src/main.tsx` renders
+`App` (react-router). **That header never rendered in the shipped product.**
+
+The real defect is adjacent and was missed: the shipped shell,
+`layout/Layout.tsx`, showed **no identity at all**. There was no way for an
+operator to see who was signed in or in what role — so on a shared machine
+nobody could notice they were working inside someone else's session. The
+fictional persona was one route change away from shipping; the absent identity
+was already shipping.
+
+**✅ FIXED — 2026-09-21.** One shared component,
+`src/components/layout/SessionIdentity.tsx`, used by both headers — two copies
+is how the fiction survived in the one nobody looked at.
+
+| Shown | Source | Server-authoritative because |
+|---|---|---|
+| name | `useAuthStore.username` | overwritten each boot from `auth.getSession()` |
+| role | `ROLE_LABELS[toAppRole(userRole)]` | overwritten each boot from `store_members.role` (P0-4) |
+| owner badge | `useAuthStore.isSystemOwner` | never persisted; re-asked via `is_system_owner()` each boot |
+
+The System Owner badge renders **alongside** the store role, never instead of
+it: an owner who also administers their own shop is both, and collapsing them
+would hide which one a screen is answering to.
+
+The email is the name deliberately — `store_members` has no name column and
+`list_store_members` returns none, so inventing a profile table to hold a
+prettier string would be a new feature with a new source of truth.
+
+Three dead controls beside it were deleted rather than wired up: a search input
+with no handler, a bell with an unconditional unread dot, and a قطاعي/جملة
+toggle backed by `useState` nothing read. Global search and notifications are
+features (§C-57, §C-67), not omissions to patch into a header.
+
+**Runtime proof.** `سارة المصري` is present in `git show HEAD:…/Header.tsx`
+and **absent from the built `dist/` bundle** (0 occurrences). All five
+`ROLE_LABELS` plus the new `مالك النظام` badge ship.
+
+**⚠️ Two scenarios could not be executed.** "a real authenticated user sees
+their own name and role" and "changing user does not retain prior identity"
+both need a working NexusCore login. This audit holds none — `pwd.txt` contains
+`owner`, the string from the local-auth backdoor that was removed for security,
+not a Supabase credential — and creating accounts is outside what this pass
+will do. The wiring, the label source, the owner/ADMIN separation and the
+absence of the literals are covered by `check_desktop_p0.mjs` and were
+mutation-tested; the rendered result for a signed-in operator is **asserted,
+not observed**, and should be confirmed by someone holding a QA account.
+
+**Note on one label.** The P0 brief lists MODERATOR as «مراجع»; `ROLE_LABELS`
+says «مشرف متابعة», and the other four labels in the brief match that map
+verbatim. The canonical map was used, because a second spelling here would
+drift from the invite dropdown and the sidebar — which is the exact class of
+bug `lib/roles.ts` exists to prevent. If «مراجع» is the intended wording it
+should change in `ROLE_LABELS`, once, for all three surfaces.
+
+### P0-3 — Returns and Integrations are invisible on every fresh browser
+
+`useFeatureStore` defaults `returnsEnabled: false` and
+`ecommerceSyncEnabled: false`, persists to `localStorage` only, and
+`Sidebar.tsx:194` filters the nav on those flags. A shop that installs on a
+new machine has no "المرتجعات والاستبدال" link and no
+"ربط المتجر الإلكتروني" link until someone finds Settings and toggles them —
+per device, forever.
+
+**✅ FIXED — 2026-09-21.** Both module flags default to `true`, and
+`feature-storage` gained `version: 1` with a `migrate` that forces the two
+module flags on once. A new default alone would have fixed nothing: `persist`
+rehydrates **over** the initializer, so every browser that had ever opened the
+app still held the old `false` and would have kept both modules hidden forever.
+
+The two values are forced rather than merged because the old `false` carries no
+information — it is what the store wrote on first run, so "the admin switched
+this off" and "nobody ever touched this" are the same byte. Between restoring a
+hidden module and honouring a choice that may never have been made, restoring
+wins: a visible module a shop ignores costs nothing, an invisible one costs
+them the feature.
+
+**The flags were not deleted.** They are a real product preference and both
+toggles remain in الإعدادات → عام. What changed is the default and the
+migration, not the concept — and `version: 1` means a deliberate switch-off
+*after* this ships is preserved like any other setting.
+
+**Visibility and authorization stay separate.** `Sidebar.useNavItems` still
+ANDs `canAccess(userRole, item.path)` before the flag, and `RequireAccess`
+still asks the same function, so a flag can hide a link and never open one.
+MODERATOR gained nothing: it is absent from `"/returns"` in `ROUTE_ACCESS`,
+`/integrations` is ADMIN-only by omission, and MODERATOR appears in no
+`has_role` array in any policy. `lib/roles.ts` and `RequireAccess` read no
+storage at all, so clearing `localStorage` cannot change what a role may open.
+
+**Runtime proof**, in a real browser:
+
+| Seeded `feature-storage` | After reload |
+|---|---|
+| `version 0`, both module flags `false` (the pre-fix blob) | `version 1`, `returnsEnabled: true`, `ecommerceSyncEnabled: true` — other three untouched |
+| `version 1`, `returnsEnabled: false` (a deliberate choice) | still `false` — preserved, not re-forced |
+
+### P0-4 — Desktop renders business screens before the session is confirmed
+
+`ProtectedRoute` gates on a `localStorage` boolean. `useRealtimeSync.ts:134`
+calls `useSessionReconciliation()` and throws away the result, so nothing
+blocks on the real answer. A stale flag paints a full working app whose every
+read 401s, until the async reconcile lands. Mobile solved this with
+`MobileSessionGate`; Desktop did not adopt it.
+
+**✅ FIXED — 2026-09-21.** Four changes, one fact:
+
+1. **`useRealtimeSync` returns the verdict** instead of discarding it, and
+   `App` hands it to `<ProtectedRoute sessionState={…} />`. The hook asks; it
+   does not decide.
+2. **`ProtectedRoute` gates on it.** `"checking"` holds the UI behind
+   «جارٍ التحقق من الجلسة…» — rendering the app "just for that moment" hands
+   someone a working-looking till for the moment, and flashing `/login` at a
+   valid user is its own kind of wrong. Anything but `"authenticated"`, and
+   anything with `isAuthenticated` false, redirects.
+3. **The membership is re-read on every boot.** The `store_members` lookup used
+   to sit behind `if (!isAuthenticated)`, so it ran only when the local flag had
+   been *lost* — an ordinary reload kept the persisted `userRole` verbatim. That
+   is how a demoted user kept an ADMIN sidebar, and it is what `KNOWN_LIMITATIONS.md`
+   #17 described. `setSession` now writes `username`, `userRole` and
+   `isAuthenticated` from the server's answer on every boot, so a stale or
+   hand-edited role survives until the next render and no longer.
+4. **A revoked membership ends the session** — but only on a *definite* answer.
+   `maybeSingle()` reports "no row" as `{data: null, error: null}` and a
+   transport failure as `{data: null, error: {…}}`. Treating those alike would
+   sign a user out over flaky wifi and throw away their work; Postgres refuses
+   every read and write from a revoked member regardless, so holding the UI open
+   through an inconclusive answer exposes nothing. The System Owner is exempt —
+   they hold no membership by design, and signing them out here would lock the
+   one account that can issue licences out of the app on every reload.
+
+**Realtime is now a consumer, not an authority.** Boot hydration and the
+`global-sync` channel both wait for `"authenticated"`. This closes a second,
+separate bug found while fixing the first: Realtime applies RLS using the token
+the socket **joined** with, so a channel opened before the session was restored
+joined as `anon` and then silently delivered nothing for the rest of its life —
+no error, no reconnect. Mobile already gated `useMobileRealtime` for exactly
+this reason. The hook issues no redirect, sets no role and grants nothing.
+
+Order is unchanged and still asserted: signed in → licensed → authorized.
+`/license-expired` and `/system-admin/licenses` stay outside `LicenseGate`.
+
+**Runtime proof**, in a real browser against the live project. The profile
+happened to hold a genuine stale session — `isAuthenticated: true`,
+`userRole: "ADMIN"`, `qa-sync-a1@nexuscore.test`, JWT expired the previous day:
+
+| Step | Result |
+|---|---|
+| cold load of `/` | held on «جارٍ التحقق من الجلسة…» |
+| reconciliation resolved | → `/login`, `isAuthenticated: false`, session cleared, `username: ""` |
+| forged `isAuthenticated: true` + `userRole: ADMIN` + `isSystemOwner: true`, then opened `/products` | → `/login`; flag reset to `false`; `isSystemOwner` was never persisted at all |
+| unauthenticated boot, network log | **zero** requests to `supabase.co` for tenant tables, and no `[Hydrate]` line — the 14 boot reads no longer fire before the session exists |
+
+Console on that boot carried only the expected
+`[Auth] local session flag with no Supabase session — signing out` and one 400
+from the dead refresh token. No new errors.
+
+---
+
+## E. P1 required work
+
+### P1-1 — Loading is indistinguishable from empty and from failure
+
+14 tables hydrate **serially** (`cloudHydrate.ts:104`, `for … await`) into
+stores that start empty. During that window — and permanently after a failed
+read — `/products` says "لا توجد منتجات" to a shop with 134 products.
+`useSyncStatus` exists and only the Sidebar reads it.
+
+### P1-2 — E-commerce order numbers are a client timestamp
+
+`ECO-${Date.now()}` (`useOrderStore.ts:170`), with no unique index on
+`orders."orderNumber"`. `next_document_number` was built precisely for this
+and orders were never migrated onto it. `purchase_invoices` and
+`wholesale_invoices` both have `…_number_per_store` unique indexes; orders
+have none.
+
+### P1-3 — `products.quantity` is a stale mirror read on a live path
+
+Measured this pass: **3 of 7** products in the QA tenant disagree with the
+ledger.
+
+| Product | `products.quantity` | `SUM(qty_delta)` |
+|---|---|---|
+| QA-UAT-PROBE2 | 0 | 14 |
+| غسول سيرافي | 51 | 50 |
+| QA-UAT-WIDGET | 24 | 22 |
+
+The production store agrees on all 132 products that have ledger lines, so
+this is not (yet) a production number. It matters because
+`lib/product.ts:getActualStock` **falls through to the mirror** whenever
+`ledgerQty()` is `null` — i.e. on every cold render before the stock snapshot
+lands. The fallback is correct in intent (null ≠ zero) and wrong in effect
+when the mirror has drifted.
+
+### P1-4 — Eleven realtime-published tables have no Desktop subscriber
+
+See §J. A second device adding a customer, supplier, purchase invoice,
+wholesale invoice, branch or shipping rate does not appear until reload.
+
+### P1-5 — Two implementations of owner financials, never compared
+
+Desktop `fetchPnl` (TypeScript, `lib/ledger/reports.ts`) vs Mobile
+`owner_financial_summary` (SQL). The only test that compares them —
+*"period filter and Owner reader (live database)"* — is **skipped** for want
+of `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `VITE_SUPABASE_ANON_KEY`.
+
+### P1-6 — 66 domain types are `any`
+
+`src/types/index.ts`. The file's own header calls it known debt from a data
+loss. Practical effect this pass: `orderLifecycle.ts`'s
+`Record<EcommerceOrderStatus, …>` — the state machine the whole order flow
+rests on — is `Record<any, …>` and exhaustiveness is unchecked.
+
+### P1-7 — Five test files assert against code that moved
+
+All 5 failures are stale locations, not regressions. Each behaviour was
+verified present at its new home during this audit (§N.11).
+
+---
+
+## F. P2 improvements
+
+* **F-1** Desktop bundle is one 2.31 MB chunk (680 KB gzip) plus **1.9 MB of
+  PNG logos** (`logo-dark` 1014 KB, `logo-light` 893 KB). Vite warns. Convert
+  the logos to SVG/WebP and `manualChunks` the vendor split.
+* **F-2** Boot does 14 serial `await cloudList(table)` round trips. They are
+  independent; `Promise.allSettled` costs one line.
+* **F-3** No pagination on any list screen. `pageAll()` removes the 1000-row
+  cap on the read, so the render is unbounded.
+* **F-4** `/branches`, `/users`, `/backups` duplicate Settings tabs at
+  URL-only routes. Two code paths, one of them undiscoverable.
+* **F-5** 8 placeholder routes and the whole `BusinessProfile` concept are
+  unreachable (`setBusinessProfile` has no callers; `BusinessProfile = any`).
+* **F-6** Dead modules confirmed still dead: `ProfitDashboard`, `PlanGate`,
+  `ShippingSelector`, `financialSyncService`, `settingsStore`, `themeStore`,
+  `RoleGuard` (App.tsx mentions it only in a comment). `supplierTotals` is no
+  longer dead — Mobile imports it, so `KNOWN_LIMITATIONS.md` #8 is now stale
+  on that one item.
+* **F-7** `routeTree.gen.ts`, `src/routes/__root.tsx`, `src/router.tsx`,
+  `src/server.ts`, `src/start.ts` and `@tanstack/react-router` +
+  `@tanstack/react-start` are a second, unused router stack. `App.tsx` uses
+  `react-router-dom`.
+* **F-8** `lib/api/*.server.ts` reference `process.env.DATABASE_URL`,
+  `AUTH_JWT_SECRET`, `STRIPE_SECRET_KEY`, `LICENSE_SIGNING_SECRET`,
+  `INTERNAL_API_KEY` — there is no server runtime to read them.
+* **F-9** Desktop Vercel env vars are set for **production only**. Preview
+  deployments boot into `offline_local` with empty screens.
+* **F-10** 21 "TODO: Analytics Engine integration point" markers with no
+  analytics engine.
+* **F-11** No `sku` / `barcode` uniqueness at the database; no
+  `(store_id, phone)` uniqueness on `customers`. Both are deduped in the
+  client only.
+* **F-12** Supabase auth errors reach the user in English inside an
+  all-Arabic UI (carried from `KNOWN_LIMITATIONS.md` #12).
+* **F-13** *(new, from P0 Wave 1)* `nexuscore-web1` serves from `*.vercel.app`
+  with no custom domain, so public access depends on `ssoProtection` staying
+  off — and the team default re-applies it to new projects. Attaching a domain
+  makes the access path independent of that setting. The URL works today;
+  this is hardening, not a blocker.
+
+---
+
+## G. Business decisions required
+
+Nothing below is invented. Each is a real fork the code and data leave open.
+
+| # | Decision | Why it is open |
+|---|---|---|
+| G-1 | Should an expired licence block **reads**? | `has_role` includes `store_licensed`; `is_store_member` does not. Writes stop, reads do not. Both are defensible |
+| G-2 | What does PRO actually buy? | `store_licenses.plan_type` is set and displayed; `PLAN_CATALOG` is `{}`; the UI reads a different, dead flag. Pricing decision, not engineering |
+| G-3 | Order lifecycle extensions | `cancelled` is terminal; there is no partial-delivery, no partial-return, no re-ship of a returned order |
+| G-4 | COD / payment model | `paymentMethod` CHECK allows only `full_prepaid` and `partial_cod`. No card, no wallet, no instalment. Paymob config exists, function undeployed |
+| G-5 | Ledger browser scope | `ledger_events_page` is built and unused. Who may see raw events, and with what filters? |
+| G-6 | Notifications | Nothing exists. In-app only, or email/SMS too? |
+| G-7 | Reports scope | P&L + capital/equity exist. No VAT return, no ageing, no per-product profitability, no stock valuation report |
+| G-8 | Courier UI scope | Couriers are ADMIN-write only, with no courier-facing surface at all |
+| G-9 | Shipping provider | Out of scope this phase by explicit instruction, but the config screen promises it |
+| G-10 | Branch semantics | §C-65. Directory, or an access/stock boundary? |
+| G-11 | Business profiles | Keep and wire up (8 placeholder modules), or delete the concept and the routes? |
+| G-12 | Feature toggles | Per-device localStorage, or a store-level setting in `stores`? Today two of them hide core navigation |
+| G-13 | Business-data backup/restore | `KNOWN_LIMITATIONS.md` #1. Supabase PITR plan, out-of-band `pg_dump`, or an in-app tenant export? |
+
+---
+
+## H. Data-authority findings
+
+| Value | Authoritative source | Mirrors / derived | Verdict |
+|---|---|---|---|
+| Stock | `SUM(ledger_lines.qty_delta) WHERE account='stock'` | `products.quantity`, `metadata.variants[].stock`, `lib/ledger/stockSnapshot` | **STALE MIRROR, ACTIVE** — read on the pre-snapshot fallback path; 3/7 QA products disagree (§P1-3) |
+| Money balances | `SUM(ledger_lines.amount_delta)` per account | none | ACTIVE, single source |
+| Wallet balances | ledger `wallet` account | none | ACTIVE |
+| Supplier balance | ledger `payable_supplier` | `purchase_invoices.paidAmount/remainingAmount/status` | **READ-ONLY MIRROR** — document fields, not the balance |
+| Customer receivable | ledger `receivable_client` | `wholesale_invoices.remainingAmount` | READ-ONLY MIRROR |
+| Courier balances | ledger `receivable_courier` / `payable_courier` | `orders.expectedCod`, `codSettledAt` | READ-ONLY MIRROR |
+| Customer LTV | ledger `customer_ltv` | `customers.returned_orders_count` | ACTIVE + counter mirror |
+| Expenses | `expenses` table **and** ledger `expense` account | — | ACTIVE, dual-written. `useFinancialStore` is explicit that the ledger is the total |
+| COGS | ledger `cogs`, `unit_cost` snapshotted at sale | `orders.cogsAmount` | READ-ONLY MIRROR |
+| Revenue booked | ledger `revenue` | `orders.revenueLogged` (boolean) | ACTIVE flag |
+| Plan tier | `store_licenses.plan_type` | `useSubscriptionStore.isProPlan` (localStorage), `profiles.is_pro` (0 rows) | **DANGEROUS-ADJACENT** — see H-3 |
+| Role | `store_members.role` | `useAuthStore.userRole` (localStorage) | UI-ONLY; DB re-reads on every request |
+| Auth | Supabase session | `useAuthStore.isAuthenticated` (localStorage) | **UI-ONLY and ungated on Desktop** (§P0-4) |
+| Store settings | `public.stores` | `useSettingsStore` | ACTIVE, pulled on hydrate |
+| `transactions` table | — | legacy sale/expense mirror | **STALE** — 0 rows in both stores, still hydrated, still realtime-subscribed |
+| Document numbers | `store_counters` via `next_document_number` | — | ACTIVE for `FM-`/`FJ-`/`SP-`; **orders bypass it entirely** |
+
+### H-1 Stock mirror drift — measured
+
+Query and result in §P1-3. Production store: 0 disagreements across 132
+products with ledger lines; 2 products have no stock lines at all and read the
+mirror permanently.
+
+### H-2 Owner financials computed twice
+
+`lib/ledger/reports.ts` (Desktop, TS) and `owner_financial_summary` (Mobile,
+SQL). `reports.ts:261` asserts in prose that the SQL reader "returns the
+same"; no runnable check enforces it, and the one that would is skipped.
+
+Positive finding while verifying this: `owner_financial_summary` **fails
+closed**. Called over a service-role SQL connection it raised
+`42501: not authenticated` — it will not answer without a real session.
+
+### H-3 Plan tier has three sources, and the UI reads the wrong one
+
+* `store_licenses.plan_type` — real, `BASIC`/`PRO`, set by the 6 admin RPCs.
+  **No UI reads it for gating.**
+* `profiles.is_pro` — legacy schema, table has **0 rows**, RLS `own_profile`.
+* `useSubscriptionStore.isProPlan` — `persist`ed to `localStorage`, default
+  `false`, and `fetchSubscriptionStatus` / `subscribeToRealtimeUpdates` have
+  **zero call sites**. So it is never fetched from anywhere: it is a
+  client-editable boolean that drives `ExecutiveDashboard:392` and
+  `IntegrationsPanel:131`.
+
+Nothing of value is gated on it today (`KNOWN_LIMITATIONS.md` #6 stands), so
+this is a correctness and honesty problem rather than a privilege escalation.
+It becomes one the day a real feature is hung off `isProPlan`.
+
+### H-4 Feature toggles are device-local
+
+`useFeatureStore` persists to `localStorage` under `feature-storage`. Nothing
+writes them to `stores` or anywhere shared. Two of the five hide navigation
+(§P0-3); two (`depositMandatory`, `salesCommissionsEnabled`) have no consumer
+at all; one (`shippingTrackingEnabled`) only changes copy on the integrations
+cards.
+
+---
+
+## I. Security findings
+
+No security object was modified. Verified by reading live policies, function
+bodies and the Supabase security advisor.
+
+### What holds
+
+* **RLS is enabled on all 25 `public` tables.** 5 carry zero policies and are
+  therefore deny-all to every client role: `users`, `auth_sessions`,
+  `auth_login_attempts`, `store_alias`, `store_counters`. The advisor reports
+  these as INFO `rls_enabled_no_policy`; **that is the intended state**, not a
+  gap — `store_counters` is reached only through SECURITY DEFINER
+  `next_document_number`, and the three `auth_*` tables are the disabled
+  legacy auth system.
+* **Tenant isolation is in Postgres.** Every policy resolves membership from
+  `auth.uid()` via `is_store_member` / `has_role` (both SECURITY DEFINER with
+  pinned `search_path`). A forged `store_id` in a payload is refused.
+* **Licence is enforced at the database**, not only in the UI:
+  `has_role(store_id, …)` = role match **AND** `store_licensed(store_id)`.
+* **MODERATOR appears in no `has_role` array anywhere.** It can SELECT (via
+  `is_store_member`) and write nothing. Read-only is real, not UI-only.
+* **Ledger is append-only for every client role.** `no_update_*` /
+  `no_delete_*` are `USING (false)` on both ledger tables.
+* **Discount counters are trigger-protected.** `guard_discount_usage` reverts
+  any `usedCount` / `totalDiscount` change not made inside
+  `claim_discount_use` / `adjust_discount_total` / `release_discount_use`.
+* **`ledger_append` is SECURITY INVOKER** — it buys atomicity and grants
+  nothing.
+* **Store ADMIN ≠ System Owner.** `is_system_owner()` reads
+  `auth.users.email` against two literals plus `email_confirmed_at`; no store
+  role can reach it.
+* **`SystemOwnerGate` fails closed** on transport error.
+* **Advisor WARN `anon_security_definer_function_executable` (8 functions) is
+  a false positive here.** All three discount RPCs open with
+  `IF NOT COALESCE(public.has_role(p_store, …), false) THEN RAISE EXCEPTION …
+  ERRCODE '42501'`, and `has_role` resolves from `auth.uid()`, which is null
+  for `anon`. `is_store_member` / `has_role` / `member_role` /
+  `list_store_members` likewise answer false/null for `anon`.
+  `products_guard_definition_columns` is a trigger function and errors without
+  trigger context. **No action required; recorded so it is not re-raised.**
+
+### Real gaps
+
+| # | Gap | Severity |
+|---|---|---|
+| I-1 | ~~Desktop does not gate on session reconciliation~~ **CLOSED 2026-09-21** (§P0-4) | was HIGH |
+| I-2 | `insert_ledger_lines` allows all four writing roles with **no kind-based restriction**, while `insert_ledger_events` restricts `expense`/`payroll`/`owner_draw`/`wallet_transfer`/`purchase`/`supplier_payment`/`stock_adjustment` to ADMIN+ACCOUNTANT. A POS_ECOMMERCE session can therefore append lines to an **existing** ADMIN-created event. No UI does this; nothing prevents it | MEDIUM |
+| I-3 | `products` carries two overlapping policies: `write_products` (ALL, ADMIN+ACCOUNTANT) and `update_products` (UPDATE, all four roles, `with_check` NULL). Permissive policies OR, so POS/ECOM can UPDATE products; only the `products_guard_definition_columns` trigger narrows which columns. Correct in effect, fragile in shape | MEDIUM |
+| I-4 | An access token keeps reading for its ~1 h lifetime after logout (stateless JWT). Carried from `KNOWN_LIMITATIONS.md` #11 | LOW, no code fix |
+| I-5 | Leaked-password protection is off at the project level; the client-side HIBP check guards the form, not the API, and fails open | LOW |
+| I-6 | Client-side privilege assumptions in `localStorage`: `isAuthenticated`, `userRole`, `isProPlan`, `feature-storage`. Only `isProPlan` and the feature flags change what is *offered*; role and auth are re-checked by Postgres | LOW |
+| I-7 | An expired licence still permits reads (§G-1) | DECISION |
+
+---
+
+## J. Realtime findings
+
+**Publication `supabase_realtime` carries 16 tables.** Desktop subscribes to
+**5**, on one channel `global-sync` (`hooks/useRealtimeSync.ts:188`).
+
+| Table | Published | Desktop subscriber | Effect |
+|---|---|---|---|
+| products | ✅ | ✅ `*` | merged, LWW on `updated_at` |
+| orders | ✅ | ✅ `*` | merged, LWW on `updatedAt` |
+| transactions | ✅ | ✅ `*` | merged into a store with 0 rows in production |
+| expenses | ✅ | ✅ `*` | merged, **no LWW guard** — unconditional overwrite |
+| ledger_events | ✅ | ✅ INSERT | fires a `ledger-sync-pulled` window event; consumed by `useStock` and `useBalances` |
+| ledger_lines | ✅ | ❌ | — |
+| customers | ✅ | ❌ | stale until reload |
+| suppliers | ✅ | ❌ | stale until reload |
+| purchase_invoices | ✅ | ❌ | stale until reload |
+| wholesale_invoices | ✅ | ❌ | stale until reload |
+| wholesale_clients | ✅ | ❌ | stale until reload |
+| return_records | ✅ | ❌ | stale until reload |
+| discount_codes | ✅ | ❌ | stale until reload |
+| shipping_rates | ✅ | ❌ | stale until reload |
+| branches | ✅ | ❌ | stale until reload |
+| stores | ✅ | ❌ | settings stale until reload |
+
+### Other findings
+
+* **No duplicate subscriptions.** One channel, created in one `useEffect`
+  with `[]` deps, removed on unmount. `useSubscriptionStore`'s
+  `subscribeToProfileChanges` (on `profiles`) has **zero call sites**, so the
+  second channel never opens.
+* **No cross-tenant delivery risk.** `postgres_changes` is filtered by RLS;
+  every subscribed table's SELECT policy is `is_store_member(store_id)`.
+* **No `store_id` filter on any subscription.** Correct but wasteful: the
+  server evaluates RLS per subscriber for every change in every tenant.
+* **Duplicate financial effects: none.** Realtime never appends; `isOwnEcho`
+  suppresses self-echo on `ledger_events`, and the ledger handler only asks
+  readers to re-aggregate.
+* **Reconnect is handled** — `window.addEventListener('online')` triggers a
+  full `hydrateAll()` catch-up.
+* **Auth/session race:** `hydrateAll()` runs in a `useEffect` with no
+  dependency on reconciliation completing. A boot that ends in sign-out still
+  fires 14 reads first.
+* **No runtime multi-client proof was taken this pass.** Doing it properly
+  needs two authenticated browser sessions against the disposable QA tenant;
+  the brief forbids permanent ledger probes and none were written.
+
+---
+
+## K. Document / export / print findings
+
+**There is no PDF library in this project.** `lib/pdfGenerator.ts` builds an
+HTML string and then either calls `window.print()` (browser "Save as PDF") or
+downloads a `.html` file. Every "PDF" button is one of those two.
+
+| Flow | Source → mapper → template → output | Status |
+|---|---|---|
+| Financial report | ledger `balances()` → `fetchPnl` → `generateFinancialPdf` → print | ✅ |
+| Courier settlement | `CourierLedgerPage` → `generateCourierPdf` → print | ✅ |
+| Orders report | `OrdersPage` → `generateOrdersPdf` → print | ✅ |
+| Generic tables | `printTableAsPdf` — inventory, shortages, POS, wholesale | ✅ |
+| Product import template | `XLSX.write` → Blob download | ✅ |
+| Product import | `XLSX.read` → `lib/productImport.ts` → validated rows | ✅ |
+| Profit CSV export | `ProfitDashboard` → Blob | ❌ component has 0 importers |
+| Shift report | `Layout.tsx:116` → `.txt` Blob | 🟡 plain text, no template |
+| Data export (xlsx/csv) | — | ❌ does not exist |
+| Quotations | — | ❌ the concept does not exist in Desktop (0 matches for `quotation` / `عرض سعر`) |
+
+### Document numbering
+
+`next_document_number(p_store, p_name, p_prefix)` — SECURITY DEFINER,
+`is_store_member` checked, single `INSERT … ON CONFLICT DO UPDATE … RETURNING`
+so concurrent callers serialise on a row lock.
+
+| Document | Prefix | Allocator | Unique index |
+|---|---|---|---|
+| Purchase invoice | `FM-` | ✅ RPC | ✅ `(store_id, "invoiceNumber")` |
+| Wholesale invoice | `FJ-` | ✅ RPC | ✅ `(store_id, "invoiceNumber")` |
+| Supplier payment | `SP-` | ✅ RPC | n/a (ledger ref) |
+| **E-commerce order** | `ECO-` | 🔴 `Date.now()` in the client | 🔴 **none** |
+| POS sale receipt | — | ❌ | ❌ |
+| Return document | — | ❌ | ❌ |
+
+**Fields dropped between authoring and snapshot:** none found. `orders.items`
+/ `stockItems` and `*_invoices.items` are `jsonb` written whole, and
+`writeThrough` reads back what Postgres stored before committing to local
+state — a dropped field would surface immediately rather than silently.
+
+---
+
+## L. UX completeness findings
+
+### L-1 The structural gap: no loading truth
+
+Scanned all 98 non-`ui/` components. Per-screen loading indicators appear in
+**11**. That is not an oversight — data arrives through one global
+`hydrateAll()` into Zustand, so screens have no local load to show. The cost
+is that **loading, empty and failed all render the same empty state**, and
+`useSyncStatus` — which knows the difference — is consumed only by the
+Sidebar.
+
+### L-2 Per-dimension
+
+| Dimension | Coverage |
+|---|---|
+| Loading | 🔴 no global gate; 11/98 components have any indicator |
+| Empty | ✅ `EmptyState` + Arabic copy, widely used |
+| Error | 🟡 writes ✅ (toast + rethrow); boot reads 🟡 one toast |
+| Retry | ❌ 3 occurrences total |
+| Validation | ✅ zod + react-hook-form + ledger-level `assertFiniteLines` |
+| Success | ✅ sonner `<Toaster richColors closeButton dir="rtl">` mounted |
+| Disabled | ✅ submit gates on every ledger-writing handler |
+| Search | ✅ per-screen · 🔴 global header input is decorative |
+| Filter | ✅ orders, returns, courier ledger, inventory |
+| Pagination | 🟡 component exists, unused on list screens |
+| Keyboard | 🟡 accessible names asserted; focus order not covered |
+| RTL | ✅ throughout |
+| Responsive | 🟡 `MobileNav` drawer; verified manually, not in CI |
+| Refresh | ✅ sidebar refresh → `hydrateAll()` |
+| Navigation | ✅ one map for sidebar and router |
+| Deep links | 🟡 one route only |
+| Session expiry | 🟡 silent sign-out |
+| License expiry | ✅ dedicated screen, owner-aware |
+
+### L-3 Error boundaries
+
+`RouteBoundary` (App.tsx) wraps 10 of 21 business routes. `/products`,
+`/pos`, `/inventory`, `/stock-audit`, `/purchasing`, `/wholesale`,
+`/partners`, `/integrations`, `/settings`, `/preferences` and `/returns` are
+**not** wrapped — a render throw there takes the whole app to a blank page.
+
+---
+
+## M. Production-data facts
+
+Read-only. **No production row was modified.** Every item is FACT; recovery
+proposals are labelled and **NOT EXECUTED**.
+
+### M-1 Six stores
+
+| Store | Name | Members | Products | Orders | Events | Licence |
+|---|---|---|---|---|---|---|
+| `c1c919f9…` | المحل التجاري | **0** | 134 | 2 | 154 | active → 2027-08-30 |
+| `db31bbd8…` | QA-STORE (disposable) | 2 (ADMIN, POS_ECOMMERCE) | 7 | 34 | 167 | active → 2027-10-03 |
+| `cf55f624…` | متجري | 1 (ADMIN) | 0 | 0 | 0 | suspended |
+| `23338df8…` | متجري | 1 (ADMIN) | 0 | 0 | 0 | **none** |
+| `c58d76ab…` | متجري | 1 (ADMIN) | 0 | 0 | 0 | active → 2027-09-19 |
+| `b73ca66a…` | متجري | 1 (ADMIN) | 0 | 0 | 0 | suspended |
+
+### M-2 FACT — the store holding the real dataset has no members
+
+`c1c919f9…` "المحل التجاري" holds 134 products, 154 ledger events and an
+active licence valid to 2027-08-30, and **zero rows in `store_members`**.
+Because every SELECT policy is `is_store_member(store_id)`, **no client
+session can read any of it.** It is live, licensed and unreachable.
+
+*Recovery proposal (NOT EXECUTED):* insert one `store_members` row granting
+ADMIN to a chosen `auth.users.id`. Blocked on two things this audit will not
+decide — **which** user, and the `store_members_one_store_per_user` unique
+index, which means that user must not already hold a membership elsewhere.
+
+### M-3 FACT — four accidental single-owner tenants
+
+`cf55f624…`, `23338df8…`, `c58d76ab…`, `b73ca66a…` are all named "متجري",
+each with exactly one ADMIN and no business data. This is the
+`claim_store` behaviour described in `KNOWN_LIMITATIONS.md` #15: an employee
+who signs up unprompted gets a shop of their own.
+
+*Recovery proposal (NOT EXECUTED):* deleting the stray membership and store is
+the documented prerequisite for inviting that person properly. Needs the
+owner to identify which accounts are genuinely stray.
+
+### M-4 FACT — one store has no licence row
+
+`23338df8…`. `store_licensed()` returns false, so it is fully write-blocked;
+`LicenseGate` sends its ADMIN to `/license-expired`.
+
+### M-5 FACT — 25 ledger events carry no lines; all 25 are explained
+
+| Kind | Count | Store | Classification |
+|---|---|---|---|
+| `order_returned_pending` | 19 | QA | **BY DESIGN** — `lib/ledger/index.ts:61` explicitly permits zero lines for this kind only |
+| `stock_adjustment` | 3 | production | `KNOWN_LIMITATIONS.md` #4, pre-`ledger_append` |
+| `purchase` | 2 (both ref `FM-0001`, 3 s apart) | production | same, plus a pre-submit-gate double click |
+| `purchase` | 1 (`382e5914…`, ref `FM-0006`) | QA | the atomicity failure **deliberately reproduced** and recorded in `lib/ledger/driver.ts` |
+
+All six non-design orphans contribute nothing to any balance. None can be
+repaired — the quantities existed only in the missing lines. **NOT EXECUTED**,
+and inventing values would put fabricated numbers in a financial ledger.
+
+### M-6 FACT — staff invitation email still does not deliver
+
+Unchanged from `KNOWN_LIMITATIONS.md` #15. `invite-staff` is the only deployed
+Edge Function (version 4, `verify_jwt: true`, ACTIVE). Four integration
+functions in `supabase/functions/` remain **undeployed**:
+`handle-ecommerce-order`, `handle-paymob-webhook`, `handle-shipping-webhook`,
+`handle-subscription-webhook`.
+
+### M-7 FACT — 2 of 8 auth users hold no membership
+
+They can sign in; `claim_store` would give each a new empty shop on next
+login through the `/login` path.
+
+### M-8 FACT — event kinds never used in production
+
+`wallet_transfer`, `owner_draw`. Account `owner_budget` has **zero lines** in
+either store, though `OwnerBudgetCard` writes it.
+
+### M-9 FACT — legacy tables carry residue
+
+`auth_login_attempts` 5 rows, `users` 0, `auth_sessions` 0, `profiles` 0,
+`store_alias` 0, `transactions` 0. All deny-all or empty. **HARMLESS.** Not
+dropped — dropping is irreversible and buys nothing over deny-all.
+
+---
+
+## N. Deployment findings
+
+### N-1 Desktop Vercel project
+
+| Setting | Value |
+|---|---|
+| Project | `nexuscore-web1` (`prj_89Pd0Ge…`), team `nexuscore1` |
+| Framework | vite · Node 24.x |
+| Build command | `npm run build` |
+| Output directory | `dist` |
+| Latest production deployment | `dpl_HfpD8tU…`, **READY** |
+| Domains | `nexuscore-web1.vercel.app` + 2 git aliases — **no custom domain** |
+| `ssoProtection` | **enabled, `all_except_custom_domains`** → §P0-1 |
+| `passwordProtection` | disabled |
+| Env vars | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` — **production target only** |
+
+### N-2 Routing / SPA
+
+`vercel.json` carries `"framework": "vite"` and one rewrite,
+`/(.*) → /index.html`. Correct for a client-side router, and deliberately
+carries **no** `buildCommand` / `outputDirectory` so the mobile project can
+set its own (`DEPLOYMENT.md` explains why).
+
+### N-3 Builds — both green
+
+```
+npm run build         → exit 0,  built in 15.24s, PWA precache 21 entries (4633.66 KiB)
+npm run build:mobile  → exit 0,  built in  7.51s, PWA precache 18 entries (1360.33 KiB)
+npx tsc --noEmit      → exit 0
+```
+
+Desktop warns: one chunk `index-*.js` at **2,313.42 kB** (gzip 680.85 kB),
+plus `logo-dark` 1,014.15 kB and `logo-light` 892.64 kB. → §F-1.
+
+### N-4 Supabase connectivity
+
+`getOperationMode()` accepts `VITE_*` or `NEXT_PUBLIC_*`; both prefixes are
+declared in `vite.config.ts`. Missing keys silently degrade to
+`offline_local` with empty screens — which is what a preview deployment does
+today (§F-9).
+
+### N-5 Auth redirects
+
+`invite-staff` builds `${APP_URL}/set-password`, falling back to the request
+origin. Supabase replaces any `redirect_to` outside the allowlist with the
+Site URL. Unchanged and unverified this pass — the invitation email does not
+arrive (§M-6).
+
+**No deployment setting was changed.** P0-1 is a production blocker but not
+an active outage, so it is reported rather than fixed.
+
+---
+
+## O. Testing
+
+```
+npm run test:units
+  tests 1190 · pass 1180 · fail 5 · skipped 5 · cancelled 0 · todo 0
+  duration 11.4 s   (81 files, scripts/check_*.mjs)
+```
+
+**Identical to the stated baseline.** No new failures.
+
+**After P0 Wave 1 (2026-09-21):**
+
+```
+  tests 1213 · pass 1202 · fail 5 · skipped 6 · cancelled 0 · todo 0
+```
+
++23 tests (`scripts/check_desktop_p0.mjs`), +22 passing, +1 skipped (the
+opt-in P0-1 live check). The 5 failures are **the same 5 stale pre-existing
+ones** classified in O-1 below — unchanged in count, name and cause. Zero NEW
+failures.
+
+One pre-existing test needed repointing because this wave changed the code it
+reads: `check_invite_staff.mjs` matched `<ProtectedRoute />` verbatim, and the
+guard now takes the reconciled session as a prop. It matches the tag name
+instead, so the invariant it guards — `/set-password` must sit above the gate —
+is unchanged and still enforced.
+
+All seven guards added this wave were **mutation-tested**: removing the
+`"checking"` hold, returning a constant instead of the verdict, opening the
+realtime channel before the session, signing out on a dropped packet, flipping
+either module flag back to `false`, dropping the `persist` migration, and
+hardcoding the role label again each make the suite fail. One mutation
+initially **escaped** — a file-wide `returnsEnabled: true` match was satisfied
+by the `true` inside `migrate` — and the assertion was tightened to the
+initializer before being re-run.
+
+### O-1 The 5 failures — all PRE-EXISTING and STALE
+
+Each asserts on a file the Mobile refactor moved code out of. Each behaviour
+was located at its new home during this audit.
+
+| Test | Asserts on | Behaviour actually lives at |
+|---|---|---|
+| the local auth flag is reconciled against the real Supabase session | `src/hooks/useRealtimeSync.ts` | `lib/auth/useSessionReconciliation.ts` — `getSession()` :24, `onAuthStateChange` :108, `logout()` :26 |
+| logging out ends the Supabase session, not just the local flag | same | same |
+| the only credential check left is Supabase Auth | `src/pages/Login.tsx` | `lib/auth/sessionWorkflow.ts:244` `auth.signInWithPassword` |
+| accepting an invitation never creates a second shop | `src/pages/SetPassword.tsx` | `lib/auth/sessionWorkflow.ts:290-334` — no `claim_store`, `if (!membership)` :325, `toAppRole(membership.role)` :334 |
+| the password set here is held to the same standard as signup | same | `sessionWorkflow.ts:291` length, `:299` `checkLeakedPassword` |
+
+**Classification: PRE-EXISTING / STALE.** The fix is to repoint the test
+reads — no production code changes. Not done here (§P forbids it).
+
+### O-2 The 5 skips — ENVIRONMENTAL
+
+All five need `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` /
+`VITE_SUPABASE_ANON_KEY`, which are not in the shell:
+
+* `ledger_append atomicity (live database)`
+* `MODERATOR against a real database`
+* `period filter and Owner reader (live database)` ← the only owner-financials
+  cross-check (§P1-5)
+* `the capability and the database agree, role by role (live)`
+* `Supabase Environment Configuration`
+
+This is the highest-value gap in the suite: the four live tests are exactly
+the ones that would have caught §I-2, §I-3 and §H-2.
+
+### O-3 Coverage shape
+
+Strong: ledger arithmetic, duplicate-submit gating, licence state machine,
+accessible names, cloud-write contract, order lifecycle, discounts, exchange,
+paging, mobile alignment.
+
+Absent: rendered layout, responsive behaviour, focus order, any Desktop
+component render test.
+
+---
+
+## P. Recommended execution order
+
+Each step is independently shippable and leaves the suite green.
+
+| Order | Item | Why first |
+|---|---|---|
+| ~~1~~ | ~~**P0-1** attach a domain / relax `ssoProtection`~~ | ✅ **DONE** 2026-09-21 — `ssoProtection` off, verified anonymously |
+| ~~2~~ | ~~**P0-2** wire the header to `useAuthStore`~~ | ✅ **DONE** 2026-09-21 — `SessionIdentity`, shared by both headers |
+| ~~3~~ | ~~**P0-4 / I-1** gate `ProtectedRoute` on `SessionReconciliationState`~~ | ✅ **DONE** 2026-09-21 — plus the membership re-read and the realtime gate |
+| ~~4~~ | ~~**P0-3 / H-4** default the two flags on~~ | ✅ **DONE** 2026-09-21 — default + `version: 1` migration |
+| 5 | **O-1** repoint the 5 stale tests | **NEXT.** Gets to green before anything else moves. Do it before step 6 |
+| 6 | **P1-1 / C-71** one boot gate driven by `useSyncStatus` | Fixes "empty vs loading vs failed" for all 21 screens at once |
+| 7 | **P1-2 / K** move order numbers onto `next_document_number("ecommerce_order","ECO-")` + add the unique index | Migration + one call site. Existing rows keep their timestamps |
+| 8 | **P1-4 / J** subscribe the 11 unsubscribed tables (or unpublish the ones nobody wants) | One `.on()` per table on the existing channel |
+| 9 | **O-2** get the 4 live tests running in CI | Prerequisite for trusting steps 10–11 |
+| 10 | **P1-5 / H-2** assert Desktop `fetchPnl` == SQL `owner_financial_summary` on one real period | Needs step 9 |
+| 11 | **I-2 / I-3** narrow `insert_ledger_lines` by kind; collapse the two `products` policies | Needs step 9 to prove no role loses a write it needs |
+| 12 | **P1-3 / H-1** decide whether the mirror stays; if it does, add a reconciliation check | Behind steps 6 and 9 — the boot gate shrinks the window the stale read is visible in |
+| 13 | **F-1 / F-2** logos → SVG/WebP, `manualChunks`, parallel hydrate | Pure performance, no behaviour change |
+| 14 | **F-4 – F-8** delete the dead router stack, dead modules, URL-only duplicates, `*.server.ts` | Safe once nothing above depends on reading them |
+| 15 | **P1-6** restore the 66 `any` types, highest-traffic first | Largest and least urgent; do it with tests green |
+| 16 | **M-2** decide and execute the orphan-store recovery | Needs an owner decision, not an engineering one |
+| 17 | Answer **G-1 … G-13** | Feeds the next roadmap, not this one |
+
+**Not in this order, by explicit instruction:** Offline-First (out of product
+scope), Shipping API (§G-9), Final UX/UI Pro Max pass, Mobile lint debt.
+
+---
+
+## Q. Explicit out-of-scope
+
+* **Offline-First** — out of product scope. Not deferred work, not a gap.
+  Must never appear in P0/P1.
+* **Shipping provider API** — deferred by instruction.
+* **Final UI/UX Pro Max pass** — deferred until the functional backlog above
+  is closed.
+* **Mobile** — untouched. Both builds verified green; no Mobile file was
+  edited, and no shared-code regression was found.
+* **Mobile P2-9 lint debt** — separate quality task, does not block Desktop.
+* **Production data mutation** — nothing was changed. All recovery proposals
+  in §M are labelled NOT EXECUTED.
+* **Security changes** — §I documents gaps and changes nothing.
+* **Any source, migration, RLS or UI change** — this pass wrote exactly one
+  file, this one.
+
+---
+
+## Files changed
+
+**Audit pass (2026-09-21, from `97c515c`)** — documentation only:
+
+```
+docs/DESKTOP_PRODUCT_AUDIT.md   (new)
+```
+
+**P0 Wave 1 (2026-09-21)** — the four blockers:
+
+```
+src/components/layout/SessionIdentity.tsx      (new)   P0-2
+src/components/dashboard/Header.tsx                    P0-2
+src/components/layout/Layout.tsx                       P0-2
+src/store/useFeatureStore.ts                           P0-3
+src/components/auth/ProtectedRoute.tsx                 P0-4
+src/lib/auth/useSessionReconciliation.ts               P0-4
+src/hooks/useRealtimeSync.ts                           P0-4
+src/App.tsx                                            P0-4
+scripts/check_desktop_p0.mjs                   (new)   tests
+scripts/check_invite_staff.mjs                         test repointed
+docs/DESKTOP_PRODUCT_AUDIT.md                          status
+docs/NEXUSCORE_CHANGELOG.md                            entry
+```
+
+Plus one Vercel project setting (`nexuscore-web1.ssoProtection` → off), which
+is not a repository change.
+
+No migration, no RLS policy, no ledger code, no Mobile source, and no
+production data was modified in either pass.

@@ -66,6 +66,8 @@ export const MOBILE_REALTIME_TABLES = [
   "products",
   "customers",
   "ledger_events",
+  // المشتريات reads the documents `commitReceipt` writes.
+  "purchase_invoices",
 ] as const;
 
 export type MobileRealtimeTable = (typeof MOBILE_REALTIME_TABLES)[number];

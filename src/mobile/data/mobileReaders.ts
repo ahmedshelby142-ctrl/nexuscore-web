@@ -152,6 +152,40 @@ export function readMobileShipments(query: MobileListQuery = {}) {
   }, (row) => row);
 }
 
+/**
+ * فواتير المشتريات — the read side of a write mobile already performs.
+ *
+ * `commitReceipt` has written `purchase_invoices` from the phone since توريد
+ * سريع shipped; nothing on the phone could read them back, which is the "➖
+ * written ✅, not read" line in the persona architecture's Owner table.
+ *
+ * Newest first, because the question a purchasing screen answers on a phone is
+ * "did that receipt land, and what do I still owe on it" — not "show me the
+ * history from the beginning".
+ *
+ * `status` is the DOCUMENT's own paid/partial/unpaid, written by `commitReceipt`
+ * from what was actually handed over. It is not recomputed here: the desktop
+ * purchasing table reads the same column, and a second opinion about whether an
+ * invoice is settled is exactly the kind of divergence this codebase keeps
+ * deleting.
+ */
+export function readMobilePurchaseInvoices(query: MobileListQuery = {}) {
+  const search = escapeLike(query.search ?? "");
+  return readPage("purchase_invoices", query, (builder) => {
+    let next = builder
+      .order("createdAt", { ascending: false })
+      .order("id", { ascending: false });
+    if (query.id) next = next.eq("id", query.id);
+    // "آجل" on the segmented control means anything still owed — partial counts.
+    if (query.status === "unpaid") next = next.neq("status", "paid");
+    if (query.status === "paid") next = next.eq("status", "paid");
+    if (search) {
+      next = next.or(`invoiceNumber.ilike.%${search}%,supplierName.ilike.%${search}%`);
+    }
+    return next;
+  }, (row) => row);
+}
+
 export async function readMobileProducts(query: MobileListQuery = {}) {
   const page = await readPage("products", query, (builder) => {
     const search = escapeLike(query.search ?? "");

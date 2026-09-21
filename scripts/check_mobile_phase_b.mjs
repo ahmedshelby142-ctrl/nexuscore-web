@@ -60,9 +60,13 @@ test("More is capability-filtered and does not expose administration", () => {
   assert.match(more, /قريباً/);
 });
 
-test("deferred destinations are real mobile routes, not hash links", () => {
+test("every nav destination is a real mobile route, not a hash link", () => {
   assert.doesNotMatch(bottomNav, /to=\{?"#"/);
-  assert.match(router, /MobileDeferredScreen/);
+  // This used to assert `MobileDeferredScreen` was routed, back when المشتريات
+  // and الإعدادات were قريباً cards. Both are real screens now, so the thing
+  // worth pinning is that they have routes — not that a placeholder still does.
+  assert.match(router, /path="purchasing" element=\{<MobilePurchasingScreen/);
+  assert.match(router, /path="preferences" element=\{<MobilePreferencesScreen/);
   assert.match(router, /path="inventory"/);
   assert.match(router, /path="shipments"/);
   assert.match(router, /path="orders\/:orderId"/);

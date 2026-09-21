@@ -216,8 +216,17 @@ ORIGINAL wording rather than left deferred by habit. Six close; the seventh does
       — checked against `pg_policies` across all 25 tables. Five infra tables (`auth_sessions`,
       `auth_login_attempts`, `store_alias`, `store_counters`, `users`) carry RLS with NO policy at
       all, which denies everything and is stronger still.
-- [ ] Multi-device test: two devices, one offline sells + one online sells → stock correct on both
-      ← **STILL OPEN, and the missing half is the OFFLINE one.** The online half is proven: two
+- [~] Multi-device test: two devices, one offline sells + one online sells → stock correct on both
+      ← **OUT OF PRODUCT SCOPE — ONLINE-ONLY (decided 2026-09-21).** The offline half of this
+      item is not deferred work and is not a gap: NEXUS CORE is an online-only product,
+      Supabase/Postgres is the authority, and no offline queue, offline sale, offline ledger
+      write or reconciliation engine is to be built. This item must not be counted as required
+      work, and must not appear in a P0/P1 backlog.
+
+      The ONLINE half is proven and stands as written below. What replaces the offline half is
+      graceful online-only degradation, tracked in `MOBILE_PRODUCT_AUDIT.md` §M.
+
+      ← The online half is proven: two
       authenticated clients in one store, A writes an order and a `sale` event, B sees both over
       the channel and reads them back from the server with none of A's local state; then B updates
       the order and A sees that. Replaying A's event was refused `23505` and stock stayed −3, so

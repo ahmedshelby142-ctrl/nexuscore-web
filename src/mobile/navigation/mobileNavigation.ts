@@ -24,8 +24,8 @@ export const ALL_MODULES: Record<MobileCapability, MobileNavigationItem> = {
   stock: { id: "stock", label: "المخزون", icon: Package, path: "/inventory", isImplemented: true },
   shipments: { id: "shipments", label: "الشحنات", icon: Truck, path: "/shipments", isImplemented: true },
   customers: { id: "customers", label: "العملاء", icon: Users, path: "/customers", isImplemented: true },
-  purchasing: { id: "purchasing", label: "المشتريات", icon: Boxes, path: "/purchasing", isImplemented: false },
-  preferences: { id: "preferences", label: "الإعدادات", icon: Settings, path: "/preferences", isImplemented: false },
+  purchasing: { id: "purchasing", label: "المشتريات", icon: Boxes, path: "/purchasing", isImplemented: true },
+  preferences: { id: "preferences", label: "الإعدادات", icon: Settings, path: "/preferences", isImplemented: true },
   owner: { id: "owner", label: "المالية", icon: Wallet, path: "/owner", isImplemented: true },
   more: { id: "more", label: "المزيد", icon: Menu, isImplemented: true },
 };

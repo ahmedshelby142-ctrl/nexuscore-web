@@ -130,7 +130,9 @@ test("B · realtime subscribes to what mobile reads, and nothing else", () => {
   const listed = /MOBILE_REALTIME_TABLES = \[([\s\S]*?)\] as const;/.exec(realtime);
   assert.ok(listed);
   const tables = [...listed[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(tables, ["orders", "products", "customers", "ledger_events"]);
+  // `purchase_invoices` joined the list when المشتريات gained the read side of
+  // a write `commitReceipt` had been performing from the phone all along.
+  assert.deepEqual(tables, ["orders", "products", "customers", "ledger_events", "purchase_invoices"]);
   // Desktop watches these two; mobile reads neither table, so a subscription
   // would be delivery cost for a row no mobile screen can render.
   assert.ok(!tables.includes("transactions"));

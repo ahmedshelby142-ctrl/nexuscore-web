@@ -5,7 +5,8 @@ import { MobileSetPassword } from "./auth/MobileSetPassword";
 import { MobileLicenseExpired } from "./screens/LicenseExpired";
 import { MobileHomePlaceholder } from "./screens/MobileHomePlaceholder";
 import { MobileRouteGuard } from "./navigation/MobileRouteGuard";
-import { MobileDeferredScreen } from "./screens/MobileDeferredScreen";
+import { MobilePurchasingScreen } from "./screens/MobilePurchasingScreen";
+import { MobilePreferencesScreen } from "./screens/MobilePreferencesScreen";
 import { MobileStockScreen } from "./screens/MobileStockScreen";
 import { MobileShortagesScreen } from "./screens/MobileShortagesScreen";
 import { MobileOrdersScreen } from "./screens/MobileOrdersScreen";
@@ -40,9 +41,9 @@ export function MobileRouter({
           <Route element={<MobileRouteGuard capability="shipments" />}><Route path="shipments" element={<MobileShipmentsScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="customers" />}><Route path="customers" element={<MobileCustomersScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="customers" />}><Route path="customers/:customerId" element={<MobileCustomerDetails />} /></Route>
-          <Route element={<MobileRouteGuard capability="purchasing" />}><Route path="purchasing" element={<MobileDeferredScreen title="المشتريات" />} /><Route path="restock" element={<MobileQuickRestock />} /></Route>
+          <Route element={<MobileRouteGuard capability="purchasing" />}><Route path="purchasing" element={<MobilePurchasingScreen />} /><Route path="restock" element={<MobileQuickRestock />} /></Route>
           <Route element={<MobileRouteGuard capability="owner" />}><Route path="owner" element={<MobileOwnerScreen />} /></Route>
-          <Route element={<MobileRouteGuard capability="preferences" />}><Route path="preferences" element={<MobileDeferredScreen title="الإعدادات" />} /></Route>
+          <Route element={<MobileRouteGuard capability="preferences" />}><Route path="preferences" element={<MobilePreferencesScreen />} /></Route>
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

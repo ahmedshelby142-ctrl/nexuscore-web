@@ -184,13 +184,36 @@ and both deploying production on push to `main`.
 
 ### Mobile — `nexuscore-mobile`
 
-| Setting | Value |
-|---|---|
-| Framework Preset | Vite |
-| Root Directory | repository root |
-| Install Command | `npm install` |
-| Build Command | `npm run build:mobile` |
-| Output Directory | `dist-mobile` |
+Project `prj_hK9dk59nsp0NP2vOZ18Tk7MUNi6q`. Created and configured 2026-09-21.
+
+| Setting | Value | State |
+|---|---|---|
+| Framework Preset | Vite | ✅ set |
+| Root Directory | repository root | ✅ set |
+| Install Command | `npm install` | ✅ set |
+| Build Command | `npm run build:mobile` | ✅ set |
+| Output Directory | `dist-mobile` | ✅ set |
+| `VITE_SUPABASE_URL` | production + preview | ✅ set |
+| `VITE_SUPABASE_ANON_KEY` | production + preview | ✅ set |
+| **Git repository** | `ahmedshelby142-ctrl/nexuscore-web`, branch `main` | ⚠️ **NOT connected** |
+
+> **One manual step remains.** The Vercel REST API has no endpoint that
+> connects a Git repository to an *existing* project, and the "create project
+> from git" endpoint refuses to make a second project for a repository that
+> already has one — it silently reuses `nexuscore-web1` instead. So the link
+> has to be made in the dashboard:
+>
+> **Project `nexuscore-mobile` → Settings → Git → Connect Git Repository →
+> `ahmedshelby142-ctrl/nexuscore-web`, production branch `main`.**
+>
+> Everything else is already configured. The first push to `main` after
+> connecting produces the first mobile production deployment. Until then the
+> project exists but has never built, and **there is no mobile production URL**.
+>
+> Note the team default gives new projects Vercel Authentication
+> (`ssoProtection`) on all but custom domains, so the first `*.vercel.app`
+> mobile URL will ask for a Vercel login. Attach a custom domain, or relax that
+> setting, before handing the URL to a shop.
 
 Root Directory stays at the repository root for both: the mobile entry imports
 `src/lib`, the stores and the services, so a narrower root would cut the build

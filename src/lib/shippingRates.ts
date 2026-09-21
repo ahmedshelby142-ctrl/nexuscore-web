@@ -131,6 +131,97 @@ export const COUNTER_RETURN_CAUSE_HINTS: Record<ReturnCause, string> = {
   unknown: "مش متأكد — هيتسجّل كـ(غير محدد) ومش هيتحسب على حد",
 };
 
+/**
+ * The same three causes, worded for an EXCHANGE.
+ *
+ * ## Cause is not requester
+ *
+ * The single most expensive confusion in this policy. A customer asking for a
+ * swap does not make the customer responsible for it — if we shipped the wrong
+ * size, or the item arrived faulty, that is the shop's fault however the
+ * request reached us. `RETURN_CAUSE_LABELS` says only «العميل», which reads to
+ * an operator as "the customer asked", and the operator picks it because the
+ * customer did ask. The money then follows the wrong party.
+ *
+ * So on an exchange the choices name the CAUSE, and the customer option names
+ * the only case that is genuinely theirs: changing their mind.
+ */
+export const EXCHANGE_CAUSE_LABELS: Record<ReturnCause, string> = {
+  customer: "تغيير رغبة العميلة",
+  courier: "خطأ من المندوب / شركة الشحن",
+  shop: "خطأ من المحل أو عيب في المنتج",
+  unknown: "غير محدد",
+};
+
+export const EXCHANGE_CAUSE_HINTS: Record<ReturnCause, string> = {
+  customer:
+    "العميلة غيّرت رأيها أو اختارت مقاس/لون تاني — دي الحالة الوحيدة اللي الاستبدال فيها على العميلة",
+  courier: "غلطة من المندوب/شركة الشحن — الشحن يتحمّله الشحن نفسه، ومش على العميلة",
+  shop: "بعتنا حاجة غلط أو المنتج فيه عيب — التكلفة علينا، ومش على العميلة",
+  unknown: "لازم تحدد السبب قبل التأكيد — السبب هو اللي بيحدد التكلفة على مين",
+};
+
+/**
+ * The labels and hints for a movement. One lookup so no screen picks its own.
+ */
+export function causeLabelsFor(movement: "return" | "exchange"): Record<ReturnCause, string> {
+  return movement === "exchange" ? EXCHANGE_CAUSE_LABELS : RETURN_CAUSE_LABELS;
+}
+
+export function causeHintsFor(movement: "return" | "exchange"): Record<ReturnCause, string> {
+  return movement === "exchange" ? EXCHANGE_CAUSE_HINTS : RETURN_CAUSE_HINTS;
+}
+
+/**
+ * May this movement be confirmed with the cause the operator has chosen?
+ *
+ * `"unknown"` is refused. Every screen defaults the picker to it, and
+ * `shippingBorneBy("unknown", "exchange")` resolves to `"customer"` — so an
+ * operator who simply pressed تأكيد billed the customer for a swap that may
+ * well have been the shop's fault. That is the blanket "exchange = customer"
+ * rule, surviving as a default rather than as a line of code.
+ *
+ * The fallback inside `shippingBorneBy` is deliberately NOT changed: every row
+ * written before the cause axis existed is `'unknown'`, and re-deciding those
+ * would move historical figures. It stays as the reading of history, and this
+ * stops new history being written into it.
+ *
+ * Applied to returns as well as exchanges. A return confirmed with no
+ * responsibility is the ambiguity this whole axis exists to remove — it decides
+ * the deposit, the wasted-trip debt and who carries the fee.
+ */
+export function causeRequiredFor(_movement: "return" | "exchange"): boolean {
+  return true;
+}
+
+/** Why this movement cannot be confirmed yet, or `null` if it can. */
+export function blockingCauseReason(
+  cause: ReturnCause,
+  movement: "return" | "exchange",
+): string | null {
+  if (cause !== "unknown") return null;
+  return movement === "exchange"
+    ? "حدّد سبب الاستبدال — هو اللي بيحدد التكلفة على المحل ولا على العميلة"
+    : "حدّد سبب المرتجع — هو اللي بيحدد الشحن والعربون على مين";
+}
+
+/**
+ * Who the shop expects compensation FROM, if anyone, for this movement.
+ *
+ * Exists so a screen or a report can state the courier-compensation case in
+ * words rather than leaving the operator to infer it from a `receivable_courier`
+ * line. `"customer"` is a pass-through the courier collects on our behalf;
+ * `"courier"` is the provider reimbursing us for a trip their own fault wasted.
+ * Both land identically in the ledger — which is exactly why the distinction
+ * has to be carried by `return_cause` and said out loud here.
+ */
+export function compensationExpectedFrom(
+  cause: ReturnCause,
+  movement: "return" | "exchange",
+): "courier" | null {
+  return shippingBorneBy(cause, movement) === "courier" ? "courier" : null;
+}
+
 /** Anything stored → a safe cause. Unknown values never become blame. */
 export function toReturnCause(value: string | null | undefined): ReturnCause {
   return (RETURN_CAUSES as readonly string[]).includes(value ?? "")
@@ -157,11 +248,18 @@ export type FeeBearer = "customer" | "shop" | "courier";
  * both cases.
  *
  * `"unknown"` falls back to the ESTABLISHED movement-keyed default — return is
- * the shop's cost, exchange is the customer's pass-through. That is deliberate:
- * every row written before migration 026 defaults to `'unknown'`, so this
- * function reproduces exactly the accounting those rows already had and no
- * historical figure moves. It is also the safe direction — an unclassified
- * return is not silently billed to the customer.
+ * the shop's cost, exchange is the customer's. That fallback is now purely a
+ * READING OF HISTORY: every row written before migration 026 defaults to
+ * `'unknown'`, so this function reproduces exactly the accounting those rows
+ * already had and no historical figure moves.
+ *
+ * It must not be reached by anything NEW. On an exchange it resolves to
+ * `"customer"`, which is the blanket "exchange = customer pays" rule surviving
+ * as a default rather than as a line of code — an operator who never touched
+ * the picker billed the customer for a swap the shop may have caused.
+ * `blockingCauseReason` refuses to confirm an unclassified movement, in the UI
+ * and again in the handler, so the only `'unknown'` rows that exist are the
+ * ones that already existed.
  */
 export function shippingBorneBy(
   cause: ReturnCause,

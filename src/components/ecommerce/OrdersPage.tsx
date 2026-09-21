@@ -41,8 +41,9 @@ import {
   shippingBorneBy,
   toReturnCause,
   RETURN_CAUSES,
-  RETURN_CAUSE_LABELS,
-  RETURN_CAUSE_HINTS,
+  causeLabelsFor,
+  causeHintsFor,
+  blockingCauseReason,
   type ReturnCause,
 } from "@/lib/shippingRates";
 import { storeIdentity } from "@/lib/pdfGenerator";
@@ -324,6 +325,15 @@ export function OrdersPage() {
    * refunding cash — without it a trader would be handed money they never paid.
    */
   const returningOrder = orders.find((o) => o.id === confirmDialog.orderId) ?? null;
+  // The movement the dialog is about, derived the SAME way the handler derives
+  // it (`movementFor`), so the wording the operator reads and the rule the
+  // money follows cannot describe two different things.
+  const confirmMovement: "return" | "exchange" = returningOrder
+    ? movementFor(returningOrder, orders)
+    : "return";
+  // Why تأكيد is unavailable, or null. Rendered under the picker AND used to
+  // disable the button, so the reason is visible rather than a dead control.
+  const causeBlock = blockingCauseReason(confirmCause, confirmMovement);
   const returnClientId: string | undefined = (returningOrder as any)?.wholesaleClientId || undefined;
   const returnClientDebt = returnClientId ? debtOf(returnClientId) : 0;
 
@@ -591,18 +601,44 @@ export function OrdersPage() {
             // Back at the cost it left at, so the average is unchanged.
             unitCost: line.unitCost ?? 0,
           })),
-          // Refund the advance deposit from the wallet it was paid into.
-          // Orders placed before `depositWallet` was introduced carry no
-          // wallet — those never booked the deposit at placement either, so
-          // the builder skips the refund line. That is correct: you cannot
-          // reverse something that was never recorded.
-          depositAmount: order.depositAmount,
+          // ── العربون ميترجعش ────────────────────────────────────────────
+          //
+          // This is the customer calling the order off. Store policy is that
+          // the deposit is FORFEITED: it is what made the order real, and the
+          // shop has already committed to a trip on the strength of it.
+          //
+          // This used to pass `depositAmount` to a builder that answered with
+          // `wallet −deposit` — the money handed straight back, with no cause
+          // asked and no income recognised. The forfeit path existed on every
+          // OTHER way an order can come back (return, RTO) and this one route
+          // out of the funnel ignored it.
+          //
+          // No wallet line is written now: `order_placed` already banked the
+          // cash, and forfeiting is the moment it stops being a holding and
+          // becomes income. The builder books `revenue +forfeited_deposit`
+          // and the matching LTV.
+          //
+          // Capped at what the customer actually paid for the goods, the same
+          // way the return and RTO handlers cap it — a deposit larger than the
+          // order is a data error, not a windfall.
+          //
+          // And gated on the order carrying a `depositWallet`, which is the
+          // ONLY evidence that the deposit was ever booked. Orders placed
+          // before that field existed hold an amount and no wallet: under the
+          // old accounting the money was deferred to delivery, so
+          // `order_placed` wrote no wallet line for them. Forfeiting one of
+          // those would recognise income against cash the ledger never saw —
+          // inventing revenue rather than retaining it. The old code skipped
+          // the REFUND for exactly this reason; the forfeit has to skip too.
+          forfeitedDeposit: canonicalWallet(order.depositWallet ?? "")
+            ? Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0)
+            : 0,
           // Canonicalised on the way back OUT of the document. Three QA-STORE
           // orders still carry the legacy `instapay` spelling from before
-          // `WALLET_LABELS` and the writers agreed; refunding into that raw
-          // value would keep growing a subject no picker can show. Reading it
-          // through `canonicalWallet` keeps the write on the one real till.
+          // `WALLET_LABELS` and the writers agreed; reading it through
+          // `canonicalWallet` keeps any write on the one real till.
           wallet: canonicalWallet(order.depositWallet ?? ""),
+          customerId: order.customerId || undefined,
         }),
       });
       
@@ -673,6 +709,21 @@ export function OrdersPage() {
       // the wasted-trip debt and the stored document all read these.
       const movement = movementFor(order, orders);
       const cause = confirmCause;
+      // Re-checked HERE, not only on the button. The dialog can sit open while
+      // state changes underneath it, and a disabled button is a courtesy — this
+      // is the point past which a ledger event becomes permanent, so an
+      // unclassified movement has to be refused where it would be written.
+      //
+      // Without it, `shippingBorneBy("unknown", "exchange")` resolves to
+      // "customer" and a swap the shop may well have caused is billed to the
+      // customer because nobody touched the picker.
+      const unclassified = blockingCauseReason(cause, movement);
+      if (unclassified) {
+        setActionError(unclassified);
+        setIsWorking(false);
+        releaseOrder(order.id);
+        return;
+      }
       const feeBorneBy = shippingBorneBy(cause, movement);
       // Capped at the order total, exactly as the refund branch caps it: a
       // deposit larger than the goods must not turn a refusal into a payout.
@@ -2189,9 +2240,15 @@ export function OrdersPage() {
             </div>
             {/* Responsibility. Asked, never guessed: the movement cannot tell
                 a swap we caused from one the customer caused, and it decides
-                who pays the courier AND whether a wasted trip is charged. */}
+                who pays the courier AND whether a wasted trip is charged.
+
+                Worded for the MOVEMENT. On an exchange «العميل» reads as "the
+                customer asked for it" and gets picked for every swap, which is
+                how a shop-caused swap ends up billed to the customer — so the
+                exchange wording names the cause instead, and the customer
+                option is «تغيير رغبة العميلة», the one case that is theirs. */}
             <div className="space-y-2">
-              <Label>مين سبب المرتجع؟</Label>
+              <Label>{confirmMovement === "exchange" ? "سبب الاستبدال" : "سبب المرتجع"}</Label>
               <Select
                 value={confirmCause}
                 onValueChange={(v) => setConfirmCause(v as ReturnCause)}
@@ -2202,14 +2259,28 @@ export function OrdersPage() {
                 <SelectContent>
                   {RETURN_CAUSES.map((cause) => (
                     <SelectItem key={cause} value={cause}>
-                      {RETURN_CAUSE_LABELS[cause]}
+                      {causeLabelsFor(confirmMovement)[cause]}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                {RETURN_CAUSE_HINTS[confirmCause]}
+                {causeHintsFor(confirmMovement)[confirmCause]}
               </p>
+              {/* The financial consequence, said out loud before تأكيد. The
+                  operator is choosing who pays; they should be able to read it
+                  rather than infer it from a ledger line afterwards. */}
+              {confirmCause !== "unknown" && (
+                <p className="text-xs font-medium">
+                  المسؤول المالي:{" "}
+                  {shippingBorneBy(confirmCause, confirmMovement) === "shop"
+                    ? "على المحل"
+                    : shippingBorneBy(confirmCause, confirmMovement) === "courier"
+                      ? "تعويض من شركة الشحن"
+                      : "على العميلة"}
+                </p>
+              )}
+              {causeBlock && <p className="text-xs text-destructive">{causeBlock}</p>}
             </div>
             {/* HOW the refund reaches the customer. A COD order that comes
                 back was never paid into our till — the courier is still
@@ -2303,7 +2374,8 @@ export function OrdersPage() {
             </Button>
             <Button
               onClick={() => void confirmReturn()}
-              disabled={isWorking || !confirmName.trim()}
+              disabled={isWorking || !confirmName.trim() || causeBlock !== null}
+              title={causeBlock ?? undefined}
             >
               {isWorking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {isWorking

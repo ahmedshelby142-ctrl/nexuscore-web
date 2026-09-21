@@ -234,9 +234,14 @@ test("the goods physically swap: the old one back, the new one out", () => {
   assert.equal(qtyOn(all, "stock", "B"), -1, "the replacement left it");
 });
 
-test("an exchange trip is NEVER the shop's expense", () => {
+test("a VOLUNTARY exchange trip is not the shop's expense", () => {
+  // Retitled, and deliberately. This used to read "an exchange trip is NEVER
+  // the shop's expense" — the blanket rule, asserted, so the correct model
+  // could not have been introduced without this test objecting. The fee falls
+  // on the customer in exactly one case: they changed their mind. The company
+  // and courier cases are asserted in `check_return_policy.mjs`.
   const { returned } = bookExchange({ oldPrice: 500, oldCost: 300, newPrice: 600, newCost: 350 });
-  assert.equal(on(returned, "expense"), 0, "the customer pays an exchange trip");
+  assert.equal(on(returned, "expense"), 0, "a change-of-mind swap is the customer's");
   // We still owe the courier, and still collect it from the customer — the two
   // cancel, which is what a pass-through must do.
   assert.equal(
@@ -577,9 +582,13 @@ test("a cancellation exactly inverts the placement it compensates", () => {
 });
 
 test("the compensation gives back a deposit the placement took", () => {
+  // The COMPENSATION path — `order_placed` landed and the order document was
+  // then refused. No order ever existed, so the deposit cannot be earned and
+  // comes back out. This is the one cancellation that refunds; a customer
+  // calling off a REAL order forfeits (see `check_return_policy.mjs` S1).
   const items = [{ productId: "A", quantity: 1, unitPrice: 300, unitCost: 100 }];
   const placed = buildOrderPlacedLines({ items, depositAmount: 300, wallet: "instaPay" });
-  const released = buildOrderCancelledLines({ items, depositAmount: 300, wallet: "instaPay" });
+  const released = buildOrderCancelledLines({ items, refundedDeposit: 300, wallet: "instaPay" });
   assert.equal(on(placed, "wallet"), 300, "money came in with the order");
   assert.equal(on(placed, "wallet") + on(released, "wallet"), 0, "and goes back out with it");
 });

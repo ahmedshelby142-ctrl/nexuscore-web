@@ -270,6 +270,58 @@ export function Settings() {
               />
             </div>
           </SettingsCard>
+
+          {/* ── قواعد ثابتة، مش إعدادات ──────────────────────────────────
+              Stated, never switchable. These decide money, and a toggle here
+              would be a way to configure an invalid financial policy — a shop
+              could "turn off" the forfeit and start refunding deposits, or
+              "turn on" charging the customer for the shop's own mistake.
+
+              Responsibility is chosen per movement, on the document, from
+              `RETURN_CAUSES`. What each choice COSTS is fixed. */}
+          <SettingsCard
+            title="قواعد المرتجعات والاستبدال والعربون"
+            badge="Policy"
+            description="قواعد ثابتة — بتتسجّل مع كل مرتجع أو استبدال، ومش قابلة للتغيير من هنا."
+          >
+            <div className="space-y-3 text-sm">
+              <div className="rounded-xl border border-border p-3">
+                <p className="font-semibold">العربون</p>
+                <p className="text-muted-foreground mt-1">
+                  العربون <span className="font-semibold">ميترجعش</span> لما العميلة تلغي الطلب أو
+                  ترفضه — الرحلة اتعملت واتدفعت. بيتسجّل كإيراد باسم «عربون محتجز»، مش كمبيعات.
+                </p>
+              </div>
+              <div className="rounded-xl border border-border p-3">
+                <p className="font-semibold">المسؤول المالي بيتحدد بالسبب، مش بمين طلب</p>
+                <ul className="text-muted-foreground mt-1 space-y-1 list-disc pr-4">
+                  <li>
+                    <span className="font-medium">خطأ من المحل أو عيب في المنتج</span> — التكلفة على
+                    المحل، ومش بتتحسب على العميلة.
+                  </li>
+                  <li>
+                    <span className="font-medium">خطأ من المندوب / شركة الشحن</span> — تعويض علينا من
+                    شركة الشحن، ومش على العميلة.
+                  </li>
+                  <li>
+                    <span className="font-medium">تغيير رغبة العميلة</span> — دي الحالة الوحيدة اللي
+                    الاستبدال أو المرتجع فيها على العميلة.
+                  </li>
+                </ul>
+                <p className="text-muted-foreground mt-2">
+                  إن العميلة هي اللي طلبت الاستبدال ده <span className="font-semibold">مش</span> معناه
+                  إنها المسؤولة — السبب هو اللي بيحدد.
+                </p>
+              </div>
+              <div className="rounded-xl border border-border p-3">
+                <p className="font-semibold">لازم تحدد السبب</p>
+                <p className="text-muted-foreground mt-1">
+                  مفيش مرتجع أو استبدال بيتأكد من غير سبب — السبب هو اللي بيحدد الشحن على مين،
+                  والعربون، والتقارير.
+                </p>
+              </div>
+            </div>
+          </SettingsCard>
         </KeepAliveTab>
 
         {/* ── الشحن ───────────────────────────────────────────────────── */}

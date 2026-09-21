@@ -91,20 +91,39 @@ test("a deposit without a wallet is refused", () => {
 
 // ── 2. Cancelling an order WITH a deposit ─────────────────────────────────
 
-test("cancelling an order with a deposit refunds wallet −deposit AND stock +", () => {
+test("a customer cancellation returns the STOCK and keeps the deposit", () => {
+  // Was "…refunds wallet −deposit AND stock +". The refund half was the bug:
+  // a deposit is what made the order real and the trip was committed on the
+  // strength of it, so the customer walking away does not get it back.
   const lines = buildOrderCancelledLines({
     items: ITEMS,
-    depositAmount: 400,
+    forfeitedDeposit: 400,
     wallet: WALLET,
+    customerId: "c1",
   });
 
-  assert.equal(lines.length, 2, "one stock line + one wallet refund line");
   assert.equal(qtyOn(lines, "stock"), 2, "units return to the shelf");
   assert.equal(amountOn(lines, "stock"), 600, "value comes back with the units");
-  assert.equal(amountOn(lines, "wallet"), -400, "deposit is refunded from the wallet");
+  assert.equal(countOn(lines, "wallet"), 0, "NO wallet line — the cash never moves");
+  assert.equal(
+    amountOn(lines, "revenue"),
+    400,
+    "the retained deposit is recognised as income under its own subject",
+  );
+  const rev = lines.find((l) => l.account === "revenue");
+  assert.equal(rev.subjectId, "forfeited_deposit", "never netted into sales");
+});
 
+test("the refused-document rollback is the one cancellation that refunds", () => {
+  const lines = buildOrderCancelledLines({
+    items: ITEMS,
+    refundedDeposit: 400,
+    wallet: WALLET,
+  });
+  assert.equal(amountOn(lines, "wallet"), -400, "the money goes back out");
   const walletLine = lines.find((l) => l.account === "wallet");
-  assert.equal(walletLine.subjectId, WALLET, "refund comes from the original wallet");
+  assert.equal(walletLine.subjectId, WALLET, "from the original wallet");
+  assert.equal(countOn(lines, "revenue"), 0, "and nothing is earned");
 });
 
 test("cancelling an order WITHOUT a deposit returns stock only", () => {
@@ -114,26 +133,35 @@ test("cancelling an order WITHOUT a deposit returns stock only", () => {
   assert.equal(countOn(lines, "wallet"), 0, "no wallet movement when there's no deposit");
 });
 
-test("cancelling a legacy order (deposit but no wallet) skips the refund", () => {
+test("cancelling a legacy order (deposit but no wallet) moves no money", () => {
   // Orders placed before the depositWallet field was introduced have a
   // depositAmount but no wallet. Those orders never booked the deposit at
-  // placement, so there's nothing to refund. The builder must skip gracefully.
-  const lines = buildOrderCancelledLines({
-    items: ITEMS,
-    depositAmount: 400,
-    // wallet deliberately omitted — simulates a legacy order
-  });
+  // placement, so there is nothing to refund AND nothing to forfeit — the call
+  // site passes neither field. Forfeiting one would recognise income against
+  // cash the ledger never saw, which is inventing revenue, not retaining it.
+  const lines = buildOrderCancelledLines({ items: ITEMS });
 
-  // Only stock lines — no wallet refund because there's no wallet to refund from.
-  // This is correct: the old accounting never booked the deposit at placement,
-  // so there is nothing to reverse.
-  assert.equal(lines.length, 1, "stock restored, no wallet line (legacy order)");
-  assert.equal(countOn(lines, "wallet"), 0, "no wallet refund without a known wallet");
+  assert.equal(lines.length, 1, "stock restored, nothing else (legacy order)");
+  assert.equal(countOn(lines, "wallet"), 0);
+  assert.equal(countOn(lines, "revenue"), 0);
+});
+
+test("a refunded deposit with no wallet is refused, not silently dropped", () => {
+  assert.throws(
+    () => buildOrderCancelledLines({ items: ITEMS, refundedDeposit: 400 }),
+    /needs a wallet/,
+    "cash cannot leave a till nobody named",
+  );
 });
 
 // ── 3. Full round-trip: place → cancel ────────────────────────────────────
 
-test("place with deposit then cancel nets to ZERO on every account", () => {
+test("place then cancel: stock nets to ZERO, and the deposit stays earned", () => {
+  // Retitled from "nets to ZERO on every account". Stock still must — inventory
+  // is neither created nor destroyed — but the WALLET deliberately does not:
+  // the customer's deposit stays in the till and is recognised as income. A
+  // round trip that netted the wallet to zero was the refund this policy
+  // removed.
   const placed = buildOrderPlacedLines({
     items: ITEMS,
     depositAmount: 400,
@@ -142,14 +170,15 @@ test("place with deposit then cancel nets to ZERO on every account", () => {
 
   const cancelled = buildOrderCancelledLines({
     items: ITEMS,
-    depositAmount: 400,
+    forfeitedDeposit: 400,
     wallet: WALLET,
   });
 
   const all = [...placed, ...cancelled];
   assert.equal(qtyOn(all, "stock"), 0, "no inventory created or destroyed");
   assert.equal(amountOn(all, "stock"), 0, "no stock value created or destroyed");
-  assert.equal(amountOn(all, "wallet"), 0, "wallet is back to its original balance");
+  assert.equal(amountOn(all, "wallet"), 400, "the deposit STAYS — it is not refunded");
+  assert.equal(amountOn(all, "revenue"), 400, "and the till balance is explained by income");
 });
 
 test("place without deposit then cancel also nets to zero", () => {
@@ -242,7 +271,7 @@ test("full prepaid: deposit covers everything, COD is zero", () => {
   );
 });
 
-test("full prepaid cancelled: wallet goes back to zero", () => {
+test("full prepaid cancelled: the shop keeps it, and says it is income", () => {
   const placed = buildOrderPlacedLines({
     items: ITEMS,
     depositAmount: 1100,
@@ -251,12 +280,13 @@ test("full prepaid cancelled: wallet goes back to zero", () => {
 
   const cancelled = buildOrderCancelledLines({
     items: ITEMS,
-    depositAmount: 1100,
+    forfeitedDeposit: 1100,
     wallet: WALLET,
   });
 
   const all = [...placed, ...cancelled];
-  assert.equal(amountOn(all, "wallet"), 0, "full prepaid deposit fully refunded");
+  assert.equal(amountOn(all, "wallet"), 1100, "the money stays in the till");
+  assert.equal(amountOn(all, "revenue"), 1100, "…and is recognised, not left as a ghost");
   assert.equal(qtyOn(all, "stock"), 0, "stock net zero");
 });
 

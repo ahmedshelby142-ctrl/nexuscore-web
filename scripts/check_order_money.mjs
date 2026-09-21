@@ -222,19 +222,35 @@ test("cancelling invents no revenue, no COD, no courier debt", () => {
   }
 });
 
-test("cancelling refunds a deposit that was actually taken", () => {
+test("a customer cancellation KEEPS the deposit", () => {
+  // Was "cancelling refunds a deposit that was actually taken". The refund was
+  // the defect: store policy forfeits when the customer walks away, and this
+  // builder handed the money straight back with no cause asked.
   const lines = buildOrderCancelledLines({
     items,
-    depositAmount: 200,
+    forfeitedDeposit: 200,
     wallet: "inStoreSafe",
+    customerId: "c1",
   });
-  assert.equal(on(lines, "wallet"), -200, "the money goes back out");
+  assert.equal(on(lines, "wallet"), 0, "the cash never moves — it is already ours");
+  assert.equal(on(lines, "revenue"), 200, "it is recognised as income instead");
+  assert.equal(on(lines, "customer_ltv"), 200, "and LTV mirrors it");
+});
+
+test("the refused-document rollback still hands it back", () => {
+  const lines = buildOrderCancelledLines({ items, refundedDeposit: 200, wallet: "inStoreSafe" });
+  assert.equal(on(lines, "wallet"), -200, "no order existed, so nothing was earned");
+  assert.equal(on(lines, "revenue"), 0);
 });
 
 test("a legacy order with no deposit wallet reverses nothing", () => {
   // Placed before `depositWallet` existed, so the deposit never hit a till.
-  const lines = buildOrderCancelledLines({ items, depositAmount: 200 });
+  // Neither field is passed, because there is nothing to keep OR give back —
+  // forfeiting one of these would recognise income against cash the ledger
+  // never saw.
+  const lines = buildOrderCancelledLines({ items });
   assert.equal(on(lines, "wallet"), 0);
+  assert.equal(on(lines, "revenue"), 0);
 });
 
 test("cancelling a bundle order releases the components", () => {

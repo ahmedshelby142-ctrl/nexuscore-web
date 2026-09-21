@@ -51,6 +51,8 @@ import {
   countsAsWastedTrip,
   depositForfeitedOn,
   shippingBorneBy,
+  causeLabelsFor,
+  blockingCauseReason,
   RETURN_CAUSES,
   RETURN_CAUSE_LABELS,
   RETURN_CAUSE_HINTS,
@@ -132,6 +134,21 @@ export function Returns() {
   const [confirmCause, setConfirmCause] = useState<ReturnCause>("unknown");
   // …and who caused the counter return/exchange below.
   const [counterCause, setCounterCause] = useState<ReturnCause>("unknown");
+  // Why the counter movement cannot be confirmed yet, or null. A movement with
+  // no responsibility is the ambiguity `return_cause` exists to remove: it is
+  // the axis reports read and, on the courier paths, the axis the shipping and
+  // the deposit follow.
+  const counterBlock = blockingCauseReason(
+    counterCause,
+    exchangeMode ? "exchange" : "return",
+  );
+  // The courier-return dialog's own movement, derived the same way the handler
+  // derives it so the wording and the money describe one thing.
+  const confirmingOrder = orders.find((o) => o.id === confirmDialog.orderId) ?? null;
+  const confirmMovement: "return" | "exchange" = confirmingOrder
+    ? movementFor(confirmingOrder, orders)
+    : "return";
+  const confirmBlock = blockingCauseReason(confirmCause, confirmMovement);
   
 
   // One in-flight write at a time; see `useRunOnce`.
@@ -171,6 +188,15 @@ export function Returns() {
       // document all read these, so they cannot disagree.
       const movement = movementFor(order, orders);
       const cause = confirmCause;
+      // Refused here as well as on the button: the dialog can sit open while
+      // the order moves, and this is where the event becomes permanent.
+      const unclassified = blockingCauseReason(cause, movement);
+      if (unclassified) {
+        releaseOrder(order.id);
+        setIsWorking(false);
+        toast.error(unclassified);
+        return;
+      }
       const feeBorneBy = shippingBorneBy(cause, movement);
       // One deposit decision for both branches below. Store policy keeps it
       // when the CUSTOMER walked away; a refusal the courier or the shop caused
@@ -389,6 +415,13 @@ export function Returns() {
     const itemsToReturn = returnEntries.filter((e) => e.quantity > 0);
     if (itemsToReturn.length === 0) {
       toast.error("اختر منتج واحد على الأقل للإرجاع");
+      return;
+    }
+    // Responsibility is not optional. It is the axis every report reads, and
+    // leaving it "unknown" is what let a swap the shop caused be filed against
+    // the customer — see `blockingCauseReason`.
+    if (counterBlock) {
+      toast.error(counterBlock);
       return;
     }
 
@@ -950,8 +983,10 @@ export function Returns() {
           {/* Responsibility. Decides who bears any shipping on this movement
               and whether it counts as a wasted trip against the customer. */}
           <div className="space-y-1.5">
-            <label className="text-xs text-muted-foreground">مين سبب الإرجاع/الاستبدال؟</label>
-            <div className="flex gap-2">
+            <label className="text-xs text-muted-foreground">
+              {exchangeMode ? "سبب الاستبدال" : "سبب المرتجع"}
+            </label>
+            <div className="flex gap-2 flex-wrap">
               {RETURN_CAUSES.map((c) => (
                 <Button
                   key={c}
@@ -960,11 +995,14 @@ export function Returns() {
                   variant={counterCause === c ? "default" : "outline"}
                   onClick={() => setCounterCause(c)}
                 >
-                  {RETURN_CAUSE_LABELS[c]}
+                  {/* Worded for the movement: on a swap «العميل» reads as "the
+                      customer asked", which is the requester, not the cause. */}
+                  {causeLabelsFor(exchangeMode ? "exchange" : "return")[c]}
                 </Button>
               ))}
             </div>
             <p className="text-xs text-muted-foreground">{COUNTER_RETURN_CAUSE_HINTS[counterCause]}</p>
+            {counterBlock && <p className="text-xs text-destructive">{counterBlock}</p>}
           </div>
 
           {/* Notes */}
@@ -978,7 +1016,13 @@ export function Returns() {
             />
           </div>
 
-          <Button onClick={handleReturn} className="w-full" size="lg" disabled={isWorking}>
+          <Button
+            onClick={handleReturn}
+            className="w-full"
+            size="lg"
+            disabled={isWorking || counterBlock !== null}
+            title={counterBlock ?? undefined}
+          >
             {isWorking ? (
               <Loader2 className="h-4 w-4 animate-spin ml-2" />
             ) : exchangeMode ? (
@@ -1092,8 +1136,10 @@ export function Returns() {
             {/* Responsibility, asked rather than guessed — it decides who pays
                 the courier and whether a wasted trip lands on the customer. */}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">مين سبب المرتجع؟</label>
-              <div className="flex gap-2">
+              <label className="text-sm font-medium">
+                {confirmMovement === "exchange" ? "سبب الاستبدال" : "سبب المرتجع"}
+              </label>
+              <div className="flex gap-2 flex-wrap">
                 {RETURN_CAUSES.map((c) => (
                   <Button
                     key={c}
@@ -1102,18 +1148,23 @@ export function Returns() {
                     variant={confirmCause === c ? "default" : "outline"}
                     onClick={() => setConfirmCause(c)}
                   >
-                    {RETURN_CAUSE_LABELS[c]}
+                    {causeLabelsFor(confirmMovement)[c]}
                   </Button>
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">{RETURN_CAUSE_HINTS[confirmCause]}</p>
+              {confirmBlock && <p className="text-xs text-destructive">{confirmBlock}</p>}
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmDialog({ open: false, orderId: "" })} disabled={isWorking}>
               إلغاء
             </Button>
-            <Button onClick={handleConfirmCourierReturn} disabled={isWorking}>
+            <Button
+              onClick={handleConfirmCourierReturn}
+              disabled={isWorking || confirmBlock !== null}
+              title={confirmBlock ?? undefined}
+            >
               {isWorking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {isWorking ? "جاري التأكيد..." : "تأكيد واسترجاع للمخزن"}
             </Button>

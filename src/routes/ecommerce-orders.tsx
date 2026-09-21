@@ -23,6 +23,7 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import { useFeatureStore } from "@/store/useFeatureStore";
 import { useOrderStore, expandStockItems } from "@/store/useOrderStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
 import { rateFor, shippingFeeFor } from "@/lib/shippingRates";
@@ -540,13 +541,28 @@ function EcommerceOrdersInner() {
     [setRows],
   );
 
+  // Owner setting, read here because this is the only screen that raises an
+  // online order. See the note inside `canSubmit`.
+  const depositMandatory = useFeatureStore((f) => f.depositMandatory);
+
   const canSubmit = useMemo(() => {
     if (!customer_name.trim() || !customer_phone.trim() || !governorate) return false;
     if (rows.length === 0 || !rows.every(rowIsSound)) return false;
     if (!Number.isFinite(total_price) || !Number.isFinite(shipping_fee)) return false;
     if (!Number.isFinite(depositVal) || !Number.isFinite(remaining_balance)) return false;
+    // الإعدادات → «تفعيل شرط العربون الإلزامي». The toggle has existed, and been
+    // described to the owner as disabling the submit button, since it was
+    // added — and nothing read it. A switch that promises to enforce a rule and
+    // enforces nothing is worse than no switch: the shop believes every online
+    // order carries a stake, and none of them has to.
+    //
+    // It gates only what it says it gates. The deposit POLICY — that the money
+    // is forfeited when the customer walks away — is a fixed business rule and
+    // is deliberately not configurable anywhere.
+    if (depositMandatory && depositVal <= 0) return false;
     return true;
   }, [
+    depositMandatory,
     customer_name,
     customer_phone,
     governorate,
@@ -877,7 +893,15 @@ function EcommerceOrdersInner() {
               unitPrice: line.unitPrice,
               unitCost: line.unitCost ?? 0,
             })),
-            depositAmount: depositVal,
+            // REFUNDED, not forfeited — and this is the one cancellation where
+            // that is right. The order document was REFUSED after
+            // `order_placed` had already banked the deposit, so no order ever
+            // existed. Forfeiting would book income against a document that is
+            // not there and strand the customer's money in the till.
+            //
+            // A customer calling off a real order is the other case entirely
+            // and forfeits — see `cancelOrder` in شاشة إدارة الطلبات.
+            refundedDeposit: depositVal,
             wallet: depositVal > 0 ? depositWallet : undefined,
           }),
         });

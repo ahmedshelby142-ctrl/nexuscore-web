@@ -35,9 +35,11 @@
  *   1. replacement order placed   `order_placed`   stock − (the new goods)
  *   2. original order → returned  `order_returned_pending`   nothing moves
  *   3. original return confirmed  `return_confirmed` with movement "exchange"
- *                                 stock +, revenue −, cogs −, LTV −, fee
- *                                 pass-through (the CUSTOMER pays an exchange
- *                                 trip, so it is never the shop's expense)
+ *                                 stock +, revenue −, cogs −, LTV −, and the
+ *                                 courier's fee charged to whoever CAUSED the
+ *                                 swap — see `shippingBorneBy`. It falls on
+ *                                 the customer only when the customer changed
+ *                                 their mind; a swap we caused is our cost.
  *   4. replacement delivered      `order_delivered`  revenue +, cogs +, COD
  *
  * ## Why there is no "price difference" event
@@ -269,11 +271,12 @@ export function exchangedItemsLabel(record: {
  * Is this order the original half of an exchange — i.e. does a replacement
  * order point at it?
  *
- * This is what decides `movement` when the return is confirmed: on an exchange
- * the CUSTOMER pays the courier's trip, so the fee is a pass-through and not
- * the shop's expense. Booking it as an expense understates profit on every
- * swap, which is the branch `buildReturnConfirmedLines` has always had and
- * nothing has ever reached.
+ * This decides `movement` when the return is confirmed. `movement` prices the
+ * trip; it does NOT decide who pays for it — that is `shippingBorneBy(cause,
+ * movement)`, because a swap because we shipped the wrong size and a swap
+ * because the customer changed their mind are the same journey and opposite
+ * bills. Treating every exchange as the customer's pass-through was the
+ * blanket rule this axis replaced.
  */
 export function movementFor(
   order: ExchangeableOrder,

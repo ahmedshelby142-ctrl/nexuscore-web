@@ -44,6 +44,39 @@ export interface OrderPlacedInput {
 }
 
 /**
+ * Cancelling an order, and what happens to the deposit.
+ *
+ * Separate from `OrderPlacedInput` because the two are no longer the same
+ * question — see `buildOrderCancelledLines`.
+ */
+export interface OrderCancelledInput {
+  items: OrderLineItem[];
+  /**
+   * The deposit the shop KEEPS, EGP. The standard rule when the CUSTOMER
+   * cancels: the money is forfeited, not returned.
+   *
+   * Books `revenue +forfeited_deposit` and no wallet line — the cash is already
+   * in the till from `order_placed` and simply stays there, now recognised as
+   * income. Mutually exclusive with `refundedDeposit`.
+   */
+  forfeitedDeposit?: number;
+  /**
+   * The deposit actually HANDED BACK, EGP.
+   *
+   * Reserved for a cancellation that is not the customer walking away — today
+   * that is the rollback path in شاشة الطلبات الإلكترونية, where the order
+   * DOCUMENT was refused after `order_placed` had already banked the deposit.
+   * No order ever existed, so the money cannot be earned and must come back
+   * out. Requires a wallet, because it moves real cash.
+   */
+  refundedDeposit?: number;
+  /** The till a refunded deposit leaves, or that a forfeited one stays in. */
+  wallet?: string;
+  /** Whose LTV keeps a forfeited deposit. Omit for a guest order. */
+  customerId?: string;
+}
+
+/**
  * Placing an order reserves stock — and books the advance deposit, if any.
  *
  * Quantity AND value leave together. Moving only the quantity would leave the
@@ -286,8 +319,34 @@ export function buildReturnPendingLines(): NewLine[] {
  *
  * Only valid before delivery. Once delivered, goods coming back is a return,
  * which reverses money as well.
+ *
+ * ## The deposit is NOT refunded here, and it used to be
+ *
+ * This builder took `depositAmount` and unconditionally wrote
+ * `wallet −deposit` — "the money is handed back", with no question asked about
+ * WHY the order was cancelled. That is the one thing store policy says never
+ * happens: a deposit is what makes an online order real, and when the customer
+ * walks away the shop has already committed to the trip. `depositForfeitedOn`,
+ * `forfeited_deposit` revenue and the whole forfeit path existed either side of
+ * this function — in `buildReturnConfirmedLines` and `buildOrderRTOLines` — and
+ * the cancellation path never consulted any of it.
+ *
+ * So the disposition is now EXPLICIT and the caller must say which it is.
+ * There is no default: a cancellation that passes neither keeps the cash in the
+ * till with no income recognised against it, which is its own quiet error, and
+ * `depositAmount` is gone so an old call site cannot compile into the old
+ * behaviour.
+ *
+ *   forfeitedDeposit  the customer cancelled → the shop keeps it
+ *   refundedDeposit   no order ever existed  → it comes back out
+ *
+ * The second is not a softening of the rule. It is the rollback in
+ * شاشة الطلبات الإلكترونية, where `order_placed` has already banked a deposit
+ * and the order DOCUMENT is then refused by Postgres. Forfeiting there would
+ * book income against an order that does not exist and leave the customer's
+ * money in the till with nothing pointing at it.
  */
-export function buildOrderCancelledLines(order: OrderPlacedInput): NewLine[] {
+export function buildOrderCancelledLines(order: OrderCancelledInput): NewLine[] {
   if (order.items.length === 0) {
     throw new Error("order: cannot cancel an order with no items");
   }
@@ -304,17 +363,34 @@ export function buildOrderCancelledLines(order: OrderPlacedInput): NewLine[] {
     lines.push(...stockLinesFor(item, 1));
   }
 
-  // If the customer paid a deposit at order_placed, it was booked as
-  // wallet +deposit then. Cancellation must reverse it: the money is handed
-  // back (or credited) and the wallet comes down by the same amount.
-  //
-  // Orders placed BEFORE the `depositWallet` field was introduced carry
-  // `depositAmount > 0` but no wallet. Those orders never booked the deposit
-  // at placement (it was deferred to delivery under the old accounting), so
-  // there is nothing to reverse. Skipping rather than throwing is correct.
-  const deposit = order.depositAmount ?? 0;
-  if (deposit > 0 && order.wallet) {
-    lines.push({ account: "wallet", subjectId: order.wallet, amount: -deposit });
+  const forfeited = order.forfeitedDeposit ?? 0;
+  const refunded = order.refundedDeposit ?? 0;
+  if (forfeited < 0) throw new Error("cancel: forfeited deposit cannot be negative");
+  if (refunded < 0) throw new Error("cancel: refunded deposit cannot be negative");
+  if (forfeited > 0 && refunded > 0) {
+    throw new Error("cancel: a deposit cannot be both kept and refunded");
+  }
+
+  if (refunded > 0) {
+    // Real cash leaves the till, so it needs one. Orders placed BEFORE the
+    // `depositWallet` field existed carry an amount and no wallet; those never
+    // booked the deposit at placement either, so the caller passes nothing and
+    // there is correctly nothing to reverse.
+    if (!order.wallet) throw new Error("cancel: needs a wallet to refund the deposit from");
+    lines.push({ account: "wallet", subjectId: order.wallet, amount: -refunded });
+  }
+
+  if (forfeited > 0) {
+    // No wallet line: the cash never moves. `order_placed` already put it in
+    // the till, and cancelling is the moment it stops being a holding and
+    // becomes income — recognised under its own subject so صافي الربح can
+    // report retained deposits separately from goods sold, because they are
+    // not a sale.
+    lines.push({ account: "revenue", subjectId: "forfeited_deposit", amount: forfeited });
+    if (order.customerId) {
+      // LTV mirrors revenue. The customer really did leave that money with us.
+      lines.push({ account: "customer_ltv", subjectId: order.customerId, amount: forfeited });
+    }
   }
 
   return lines;
@@ -435,13 +511,12 @@ export interface ReturnConfirmedInput {
    */
   returnFee?: number;
   /**
-   * Which movement this is, because the two are priced AND borne differently:
+   * Which movement this is. It prices the trip from the Settings matrix, and it
+   * supplies the LEGACY fallback bearer when no `feeBorneBy` is given.
    *
-   *   "return"   goods come back to US — WE pay the courier → our `expense +`
-   *   "exchange" the customer swaps — THE CUSTOMER pays → pass-through, no expense
-   *
-   * Booking an exchange's fee as our expense would invent a cost the shop never
-   * bore and quietly understate profit on every swap.
+   * It does not decide responsibility. `feeBorneBy` does — see below and
+   * `shippingBorneBy`. "exchange ⇒ the customer pays" was a blanket rule and
+   * it was wrong: a swap because we shipped the wrong item is our cost.
    */
   movement?: "return" | "exchange";
   /**

@@ -6,6 +6,7 @@ import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
 import { StatusPill } from "@/mobile/components/StatusPill";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { deriveStockStatusKey } from "@/mobile/viewmodels/stockViewModel";
 import { resolveStockStatus } from "@/mobile/viewmodels/statusTaxonomies";
 import { formatArabicQuantity } from "@/mobile/viewmodels/formatters";
@@ -20,6 +21,7 @@ import { Fragment } from "react";
 const FILTERS = [{ id: "all", label: "الكل" }, { id: "low", label: "منخفض" }, { id: "out", label: "نافد" }] as const;
 
 export function MobileStockScreen() {
+  const offline = useIsOffline();
   const navigate = useNavigate();
   // توريد سريع is a WRITE (`commitReceipt`), and `/restock` is guarded by the
   // `purchasing` capability. Drawing the button for a role that does not hold
@@ -73,7 +75,7 @@ export function MobileStockScreen() {
             تقرير النواقص
           </button>
         </div>
-        {typeof navigator !== "undefined" && !navigator.onLine ? (
+        {offline ? (
           <OfflineState />
         ) : page.loading ? (
           <SkeletonState />

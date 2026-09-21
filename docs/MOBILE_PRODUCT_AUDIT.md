@@ -49,7 +49,7 @@ against `src/mobile/navigation/mobileNavigation.ts` and the filesystem
 | 1 | `/login` | `MobileLogin` | public | ✅ |
 | 2 | `/set-password` | `MobileSetPassword` | public | ✅ |
 | 3 | `/license-expired` | `MobileLicenseExpired` | session | ✅ |
-| 4 | `/` | `MobileHomePlaceholder` | home | ✅ |
+| 4 | `/` | `MobileHomeScreen` | home | ✅ |
 | 5 | `/orders` | `MobileOrdersScreen` | orders | ✅ read |
 | 6 | `/orders/:orderId` | `MobileOrderDetails` | orders | ✅ read |
 | 7 | `/inventory` | `MobileStockScreen` | stock | ✅ read |
@@ -95,7 +95,7 @@ Status: ✅ COMPLETE · 🟡 PARTIAL · ❌ MISSING · 🔴 BROKEN · ⚠️ BUS
 |---|---|---|---|---|---|
 | 1 | Authentication | ✅ | `MobileLogin`, `MobileSetPassword`, Supabase Auth. Runtime: session for `shahdshrife@gmail.com` resolved on boot | — | — |
 | 2 | Session reconciliation | ✅ | `useSessionReconciliation`; `MobileSessionGate` fail-closed → `/login`. Runtime console: `[Auth] local session flag with no Supabase session — signing out` | — | — |
-| 3 | Home / dashboard | ✅ | `MobileHomePlaceholder` + `mobileHomeReader`. Runtime: alerts, 3 metrics, 2 queues, real data | hardcoded status label | P2 |
+| 3 | Home / dashboard | ✅ | `MobileHomeScreen` + `mobileHomeReader`. Runtime: alerts, 3 metrics, 2 queues, real data | hardcoded status label | P2 |
 | 4 | Orders list | ✅ | `MobileOrdersScreen` + `readMobileOrders`. Runtime: 3 pending, correct labels | refresh button dead | **P1** |
 | 5 | Order details | ✅ | `MobileOrderDetails` + ledger timeline (`ref_type='ecommerce_order'`) | no offline state, no retry | P2 |
 | 6 | Creating orders | ❌ | no create path in `src/mobile` | whole flow | ⚠️ |
@@ -242,6 +242,27 @@ anywhere in the mobile app**.
 
 ## F. P2 — polish / quality
 
+> **All seven CLOSED on 2026-09-21** (commit `finish mobile p2 hardening`). The
+> findings are kept below as written, because the evidence is what makes the
+> regression tests in `check_mobile_p2_hardening.mjs` legible.
+>
+> Two things were found while closing them and are NOT yet done, so this section
+> is not empty:
+>
+> - **P2-8 · swallowed read errors.** `waitingError` (ProductDetails),
+>   `financialsError` / `financialsLoading` (CustomerDetails) and
+>   `suppliersError` (QuickRestock) are all set and never rendered. Those
+>   sections fail silently — they show nothing rather than saying the read
+>   broke. Deliberately left alone here: deleting the variables to satisfy
+>   `noUnusedLocals` would have removed the error path instead of surfacing it,
+>   and wiring four new error states is its own change.
+> - **P2-9 · mobile lint debt.** `npx eslint src/mobile` reports ~940 problems,
+>   almost all `prettier/prettier` and `@typescript-eslint/no-explicit-any`, and
+>   `@typescript-eslint/no-unused-vars` is switched **off** in
+>   `eslint.config.js` — which is why forty dead imports survived until a
+>   `tsc --noUnusedLocals` pass found them. Pre-existing; out of scope for a P2
+>   pass that was told not to refactor broadly.
+
 | # | Finding | Evidence |
 |---|---|---|
 | P2-1 | Home queue invents a status label — hardcodes `"قيد الإجراء"` while the taxonomy and the Orders screen say `"قيد الانتظار"` for the same order. Directly violates `statusTaxonomies.ts`' own rule ("Screens MUST NOT invent their own labels") | `mobileHomeReader.ts:89`; runtime: both labels seen on the same order |
@@ -249,7 +270,7 @@ anywhere in the mobile app**.
 | P2-3 | `onRetry` missing on `MobileOrderDetails` and `MobileProductDetails` | both render `ErrorState` without it |
 | P2-4 | Quick restock's توريد button is not disabled offline — `canSave` (line 159) has no connectivity term; `OfflineState` appears only inside the product-picker dialog. It **fails safely** (throws, nothing committed) but shows a raw error instead of preventing the tap | `MobileQuickRestock.tsx:159,469,495` |
 | P2-5 | Dead imports: `useCustomerStore` in `MobileCustomersScreen`, `useBusinessStore` in `MobileQuickRestock` — imported, never called. Harmless, but exactly the stale-mirror pattern the surrounding comments warn about | — |
-| P2-6 | `MobileHomePlaceholder` is a fully implemented home screen carrying a placeholder name | — |
+| P2-6 | `MobileHomeScreen` is a fully implemented home screen carrying a placeholder name | — |
 | P2-7 | `MOBILE_PERSONA_ARCHITECTURE.md` §2 still describes the home queue as "pending/processing count" — stale since e1025a3 removed `processing` | — |
 
 ---

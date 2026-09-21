@@ -114,7 +114,7 @@ const DESKTOP_RESOURCE_FOR_CAPABILITY: Record<
  *
  * ## Why this is a cache and not just a function
  *
- * `getMobileCapabilities` is called during render by `MobileHomePlaceholder`
+ * `getMobileCapabilities` is called during render by `MobileHomeScreen`
  * and by `useAlertBadges` — which the bottom nav mounts on EVERY screen.
  * Building a fresh `Set` each time gave every render a new object identity, so
  * `useMobileHomeData`'s `useCallback([capabilities, …])` was rebuilt on every

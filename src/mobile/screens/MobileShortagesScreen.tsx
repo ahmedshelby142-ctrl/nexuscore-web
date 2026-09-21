@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { formatArabicQuantity, formatArabicCount } from "@/mobile/viewmodels/formatters";
 import { readMobileShortages, type MobileShortageRow } from "@/mobile/data/mobileHomeReader";
 import { useMobileCapabilities } from "@/mobile/navigation/MobileRouteGuard";
@@ -39,6 +40,7 @@ import { useMobileCapabilities } from "@/mobile/navigation/MobileRouteGuard";
  * wrong in one place.
  */
 export function MobileShortagesScreen() {
+  const offline = useIsOffline();
   const navigate = useNavigate();
   // توريد is a WRITE (`commitReceipt`) behind the `purchasing` capability. A
   // role that can SEE a shortage is not automatically a role that can fill it —
@@ -103,7 +105,7 @@ export function MobileShortagesScreen() {
 
         <MobileSearch value={query} onChange={setQuery} placeholder="ابحث عن صنف ناقص" />
 
-        {typeof navigator !== "undefined" && !navigator.onLine ? (
+        {offline ? (
           <OfflineState />
         ) : loading ? (
           <SkeletonState />

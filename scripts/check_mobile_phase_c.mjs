@@ -13,7 +13,7 @@ const customerDetails = read("../src/mobile/screens/MobileCustomerDetails.tsx");
 const readers = read("../src/mobile/data/mobileReaders.ts");
 const pagedHook = read("../src/mobile/data/useMobilePagedQuery.ts");
 const homeReader = read("../src/mobile/data/mobileHomeReader.ts");
-const homeScreen = read("../src/mobile/screens/MobileHomePlaceholder.tsx");
+const homeScreen = read("../src/mobile/screens/MobileHomeScreen.tsx");
 const badgeHook = read("../src/mobile/shell/useAlertBadges.ts");
 const migration = read("../docs/migrations/028_mobile_shortages_real_demand.sql");
 const router = read("../src/mobile/router.tsx");
@@ -22,7 +22,7 @@ const terminology = [
   read("../src/mobile/viewmodels/metricDefinitions.ts"),
   read("../src/mobile/viewmodels/alertModel.ts"),
   read("../src/mobile/viewmodels/home/homeComposer.ts"),
-  read("../src/mobile/screens/MobileHomePlaceholder.tsx"),
+  read("../src/mobile/screens/MobileHomeScreen.tsx"),
 ].join("\n");
 
 test("Stock filters on stock state; shortages are their own screen", () => {

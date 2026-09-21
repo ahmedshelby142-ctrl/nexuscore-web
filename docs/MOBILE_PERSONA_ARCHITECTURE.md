@@ -63,7 +63,11 @@ member management · wholesale money · discount management.
 
 Operational, in this order. No money anywhere on it.
 
-1. **Orders requiring action** — pending/processing count, three most urgent
+1. **Orders requiring action** — `pending` count, three most urgent. (Until
+   2026-09-21 this line also named a second status that was never valid:
+   `orders_status_check` accepts `pending` · `shipped` · `delivered` ·
+   `returned` · `cancelled`, and Postgres rejects anything else with `23514`.
+   See migrations 012 and 037.)
 2. **Shortages** — products blocking open orders, deficit first
 3. **In transit** — shipped, with courier and age
 4. **Customer lookup** — a search field, not a list

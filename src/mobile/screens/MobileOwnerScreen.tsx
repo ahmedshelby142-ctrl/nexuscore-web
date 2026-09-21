@@ -41,9 +41,10 @@ import { useNavigate } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSection } from "@/mobile/components/MobileSection";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
-import { EmptyState, ErrorState, SkeletonState } from "@/mobile/components/States";
+import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { useOwnerFinancials } from "@/mobile/data/useOwnerFinancials";
 import { useSubjectNames } from "@/mobile/data/useSubjectNames";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { formatArabicCurrency } from "@/mobile/viewmodels/formatters";
 import { channelLabel, periodWindow, type PeriodPreset } from "@/lib/ledger/reports";
 import { WALLET_LABELS } from "@/types";
@@ -144,6 +145,7 @@ export function MobileOwnerScreen() {
   // label, and asking for registries the caller may not be able to read either
   // would just be two more failures behind a screen that already said why.
   const names = useSubjectNames(Boolean(data));
+  const offline = useIsOffline();
 
   const periodLabel = PERIODS.find((p) => p.id === preset)?.label ?? "";
 
@@ -173,17 +175,21 @@ export function MobileOwnerScreen() {
           />
         </div>
 
-        {loading && <SkeletonState count={6} />}
+        {/* A money screen with no connection must say so rather than render
+            the last figures it happens to be holding. */}
+        {offline && <OfflineState />}
+
+        {!offline && loading && <SkeletonState count={6} />}
 
         {/* A refusal and a broken connection need different words, and neither
             may be rendered as a figure. */}
-        {!loading && error && (
+        {!offline && !loading && error && (
           denied
             ? <EmptyState titleAr="غير مصرّح" messageAr={error} />
             : <ErrorState messageAr={error} onRetry={reload} />
         )}
 
-        {!loading && !error && data && (
+        {!offline && !loading && !error && data && (
           <>
             <MobileSection titleAr={`الأرباح — ${periodLabel}`}>
               <div className="mobile-owner-card">

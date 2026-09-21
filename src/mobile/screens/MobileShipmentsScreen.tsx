@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, RefreshCw, Truck } from "lucide-react";
+import { ArrowRight, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
 import { QueueRow } from "@/mobile/components/QueueRow";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { toMobileShipmentQueue } from "@/mobile/viewmodels/shipmentViewModel";
 import { toMobileOrderQueue } from "@/mobile/viewmodels/orderViewModel";
 import { readMobileShipments, readMobileCouriers } from "@/mobile/data/mobileReaders";
@@ -15,6 +16,7 @@ import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
 const PIPELINE = [{ id: "ready", label: "جاهز للشحن" }, { id: "shipped", label: "في الطريق" }, { id: "delivered", label: "تم التسليم" }] as const;
 
 export function MobileShipmentsScreen() {
+  const offline = useIsOffline();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState("ready");
@@ -47,7 +49,7 @@ export function MobileShipmentsScreen() {
       <MobileSearch value={query} onChange={setQuery} placeholder="ابحث برقم الطلب أو المندوب" />
       <div className="mobile-segmented-control" role="tablist">{PIPELINE.map((item) => <button key={item.id} type="button" role="tab" aria-selected={stage === item.id} className={stage === item.id ? "is-active" : ""} onClick={() => setStage(item.id)}>{item.label}</button>)}</div>
       <div className="mobile-filter-row"><FilterSheet label="مرحلة الشحن" options={PIPELINE as readonly { id: string; label: string }[]} value={stage} onChange={setStage} /></div>
-      {typeof navigator !== "undefined" && !navigator.onLine ? <OfflineState /> : page.loading ? <SkeletonState /> : page.error ? <ErrorState messageAr="تعذّر تحميل الشحنات." onRetry={page.reload} /> : pipelineRows.length === 0 ? <EmptyState titleAr="لا توجد شحنات" messageAr="لا توجد شحنات في هذه المرحلة." /> : <><div className="mobile-queue-list">{pipelineRows.map((row) => <QueueRow key={row.id} item={row} />)}</div>{page.hasMore && <button type="button" className="mobile-primary-button mobile-load-more" onClick={page.loadMore} disabled={page.loadingMore}>{page.loadingMore ? "جارٍ التحميل…" : "تحميل المزيد"}</button>}</>}
+      {offline ? <OfflineState /> : page.loading ? <SkeletonState /> : page.error ? <ErrorState messageAr="تعذّر تحميل الشحنات." onRetry={page.reload} /> : pipelineRows.length === 0 ? <EmptyState titleAr="لا توجد شحنات" messageAr="لا توجد شحنات في هذه المرحلة." /> : <><div className="mobile-queue-list">{pipelineRows.map((row) => <QueueRow key={row.id} item={row} />)}</div>{page.hasMore && <button type="button" className="mobile-primary-button mobile-load-more" onClick={page.loadMore} disabled={page.loadingMore}>{page.loadingMore ? "جارٍ التحميل…" : "تحميل المزيد"}</button>}</>}
     </div>
   </section>;
 }

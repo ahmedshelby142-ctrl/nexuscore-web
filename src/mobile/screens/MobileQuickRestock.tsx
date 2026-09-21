@@ -1,5 +1,5 @@
-import { useRef, useState, useEffect } from "react";
-import { PackageCheck, Loader2, Search, Plus, Trash2, X } from "lucide-react";
+import { useState, useEffect } from "react";
+import { PackageCheck, Loader2, Plus, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -14,17 +14,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
-import { executeQuickRestock, formatQuickRestockSuccess, NEW_SUPPLIER, readSuppliers, type QuickRestockLineInput, type QuickRestockSupplierInput, type SupplierOption } from "@/lib/receiving";
+import { executeQuickRestock, formatQuickRestockSuccess, NEW_SUPPLIER, readSuppliers, type QuickRestockLineInput, type SupplierOption } from "@/lib/receiving";
 import { readMobileProductsForRestock } from "@/mobile/data/mobileReaders";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSearch } from "@/mobile/components/MobileSearch";
-import { FilterSheet } from "@/mobile/components/FilterSheet";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { formatMoney } from "@/lib/math";
 import { WALLET_LABELS } from "@/types";
-import type { Product, Supplier, WalletType } from "@/types";
-import { useBusinessStore } from "@/store/useBusinessStore";
+import type { WalletType } from "@/types";
 
 /** What the owner typed for one line of the receipt. */
 interface LineDraft {
@@ -156,7 +155,16 @@ export function MobileQuickRestock() {
   // A درجة-bearing product must say WHICH درجة arrived, or a later return off
   // this receipt cannot name it. Mirrors the desktop dialog's same guard.
   const variantsResolved = draftRows.every((r) => r.quantity <= 0 || r.variants.length === 0 || Boolean(r.draft.variantName));
-  const canSave = received.length > 0 && supplierReady && variantsResolved && !saving;
+  const offline = useIsOffline();
+  // The write already FAILS safely offline — `commitReceipt` awaits the
+  // server and throws, so nothing is committed and no success is shown. What
+  // it did NOT do was say so before the tap: the button looked live, the
+  // operator filled a receipt, pressed توريد, and got a raw network error.
+  //
+  // This is the whole of the fix. No draft is saved, nothing is queued, and
+  // `commitReceipt` remains the only write path — being offline simply means
+  // the receipt cannot be taken yet.
+  const canSave = received.length > 0 && supplierReady && variantsResolved && !saving && !offline;
 
   function reset() {
     setLines({});
@@ -466,7 +474,7 @@ export function MobileQuickRestock() {
           <Button variant="outline" onClick={close} disabled={saving}>
             إلغاء
           </Button>
-          <Button onClick={() => void receive()} disabled={!canSave} className="flex-1">
+          <Button onClick={() => void receive()} disabled={!canSave} className="flex-1" title={offline ? "لا يوجد اتصال بالسحابة" : undefined}>
             {saving && <Loader2 className="ml-2 h-4 w-4 animate-spin" />}
             {saving
               ? "جاري التسجيل…"
@@ -492,7 +500,7 @@ export function MobileQuickRestock() {
             </DialogHeader>
             <div className="space-y-2">
               <MobileSearch value={query} onChange={setQuery} placeholder="ابحث عن منتج…" />
-              {typeof navigator !== "undefined" && !navigator.onLine ? (
+              {offline ? (
                 <OfflineState />
               ) : page.loading ? (
                 <SkeletonState />

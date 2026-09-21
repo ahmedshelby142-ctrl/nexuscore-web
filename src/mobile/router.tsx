@@ -3,7 +3,7 @@ import type { SessionReconciliationState } from "@/lib/auth/useSessionReconcilia
 import { MobileLogin } from "./auth/MobileLogin";
 import { MobileSetPassword } from "./auth/MobileSetPassword";
 import { MobileLicenseExpired } from "./screens/LicenseExpired";
-import { MobileHomePlaceholder } from "./screens/MobileHomePlaceholder";
+import { MobileHomeScreen } from "./screens/MobileHomeScreen";
 import { MobileRouteGuard } from "./navigation/MobileRouteGuard";
 import { MobilePurchasingScreen } from "./screens/MobilePurchasingScreen";
 import { MobilePreferencesScreen } from "./screens/MobilePreferencesScreen";
@@ -32,7 +32,7 @@ export function MobileRouter({
       <Route element={<MobileSessionGate sessionState={sessionState} />}>
         <Route path="/license-expired" element={<MobileLicenseExpired />} />
         <Route path="/" element={<MobileShell />}>
-          <Route index element={<MobileHomePlaceholder />} />
+          <Route index element={<MobileHomeScreen />} />
           <Route element={<MobileRouteGuard capability="orders" />}><Route path="orders" element={<MobileOrdersScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="orders" />}><Route path="orders/:orderId" element={<MobileOrderDetails />} /></Route>
           <Route element={<MobileRouteGuard capability="stock" />}><Route path="inventory" element={<MobileStockScreen />} /></Route>

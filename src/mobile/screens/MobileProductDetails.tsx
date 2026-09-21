@@ -1,22 +1,31 @@
-import { ArrowRight, Package, TrendingUp, TrendingDown, Minus, ShoppingBag, AlertTriangle, DollarSign, Tag, Box } from "lucide-react";
+import { ArrowRight, Package, AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { productMinLevel, productPrice, productWholesalePrice, getActualStock, isProductArchived } from "@/lib/product";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSection } from "@/mobile/components/MobileSection";
 import { StatusPill } from "@/mobile/components/StatusPill";
-import { EmptyState, ErrorState, SkeletonState } from "@/mobile/components/States";
+import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { deriveStockStatusKey } from "@/mobile/viewmodels/stockViewModel";
 import { resolveStockStatus } from "@/mobile/viewmodels/statusTaxonomies";
-import { formatArabicCurrency, formatArabicDate, formatArabicQuantity, formatArabicRelativeTime } from "@/mobile/viewmodels/formatters";
+import { formatArabicCurrency, formatArabicDate, formatArabicQuantity } from "@/mobile/viewmodels/formatters";
 import { readMobileProduct, readMobileProductWaitingOrders } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 
 export function MobileProductDetails() {
   const navigate = useNavigate();
   const { productId } = useParams();
   const loadProduct = useCallback(() => readMobileProduct(productId ?? ""), [productId]);
-  const { data: product, loading, error } = useMobileEntity(loadProduct);
+  const { data: product, loading, error, reload } = useMobileEntity(loadProduct);
+  const offline = useIsOffline();
+  // One back affordance for every terminal state: an operator who lands on
+  // "not found", an error or a lost connection must still be able to leave.
+  const back = (
+    <button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع">
+      <ArrowRight aria-hidden="true" />
+    </button>
+  );
   const [waitingOrders, setWaitingOrders] = useState<any[]>([]);
   const [waitingLoading, setWaitingLoading] = useState(true);
   const [waitingError, setWaitingError] = useState<string | null>(null);
@@ -32,8 +41,9 @@ export function MobileProductDetails() {
     return () => { active = false; };
   }, [productId]);
 
+  if (offline) return <><MobileAppBar title="تفاصيل المنتج" leadingAction={back} /><div className="mobile-screen-body"><OfflineState /></div></>;
   if (loading) return <><MobileAppBar title="تفاصيل المنتج" /><div className="mobile-screen-body"><SkeletonState /></div></>;
-  if (error) return <><MobileAppBar title="تفاصيل المنتج" /><ErrorState messageAr="تعذّر تحميل المنتج." /></>;
+  if (error) return <><MobileAppBar title="تفاصيل المنتج" leadingAction={back} /><ErrorState messageAr="تعذّر تحميل المنتج." onRetry={reload} /></>;
   if (!product) return <><MobileAppBar title="تفاصيل المنتج" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} /><EmptyState titleAr="المنتج غير موجود" messageAr="تعذّر العثور على هذا المنتج." /></>;
 
   const archived = isProductArchived(product);

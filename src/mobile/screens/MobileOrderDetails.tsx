@@ -1,20 +1,29 @@
-import { ArrowRight, Clock, Package, User, MapPin, Phone, Wallet, Truck, CreditCard, FileText, AlertTriangle, CheckCircle2, XCircle, RotateCcw, DollarSign } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowRight, Package } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSection } from "@/mobile/components/MobileSection";
 import { StatusPill } from "@/mobile/components/StatusPill";
-import { EmptyState, ErrorState, SkeletonState } from "@/mobile/components/States";
+import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { resolveOrderStatus, resolveShipmentStatus } from "@/mobile/viewmodels/statusTaxonomies";
 import { formatArabicCurrency, formatArabicDate, formatArabicRelativeTime, formatArabicQuantity } from "@/mobile/viewmodels/formatters";
 import { readMobileOrder, readMobileOrderTimeline, readMobileCouriers } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 
 export function MobileOrderDetails() {
   const navigate = useNavigate();
   const { orderId } = useParams();
   const loadOrder = useCallback(() => readMobileOrder(orderId ?? ""), [orderId]);
-  const { data: order, loading, error } = useMobileEntity(loadOrder);
+  const { data: order, loading, error, reload } = useMobileEntity(loadOrder);
+  const offline = useIsOffline();
+  // One back affordance for every terminal state: an operator who lands on
+  // "not found", an error or a lost connection must still be able to leave.
+  const back = (
+    <button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع">
+      <ArrowRight aria-hidden="true" />
+    </button>
+  );
   const [timeline, setTimeline] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(true);
   const [timelineError, setTimelineError] = useState<string | null>(null);
@@ -41,8 +50,9 @@ export function MobileOrderDetails() {
     return () => { active = false; };
   }, [orderId]);
 
+  if (offline) return <><MobileAppBar title="تفاصيل الطلب" leadingAction={back} /><div className="mobile-screen-body"><OfflineState /></div></>;
   if (loading) return <><MobileAppBar title="تفاصيل الطلب" /><div className="mobile-screen-body"><SkeletonState /></div></>;
-  if (error) return <><MobileAppBar title="تفاصيل الطلب" /><ErrorState messageAr="تعذّر تحميل الطلب." /></>;
+  if (error) return <><MobileAppBar title="تفاصيل الطلب" leadingAction={back} /><ErrorState messageAr="تعذّر تحميل الطلب." onRetry={reload} /></>;
   if (!order) return <><MobileAppBar title="تفاصيل الطلب" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} /><EmptyState titleAr="الطلب غير موجود" messageAr="تعذّر العثور على هذا الطلب." /></>;
 
   const status = resolveOrderStatus(order.status);

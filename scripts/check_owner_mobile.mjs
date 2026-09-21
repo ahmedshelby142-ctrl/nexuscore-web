@@ -207,10 +207,14 @@ test("a failed read drops its figures instead of showing them as zero", () => {
   assert.match(hook, /42501/, "and it is recognised by Postgres' own code");
 });
 
-test("the screen renders one of loading / error / denied / data — never a mix", () => {
-  assert.match(screenCode, /\{loading && <SkeletonState/);
-  assert.match(screenCode, /\{!loading && error &&/);
-  assert.match(screenCode, /\{!loading && !error && data &&/);
+test("the screen renders one of offline / loading / error / denied / data — never a mix", () => {
+  // `offline` joined the set in the P2 pass. It comes FIRST and every other
+  // branch is gated behind it: a money screen with no connection must show no
+  // figures at all, not the last ones it happens to be holding.
+  assert.match(screenCode, /\{offline && <OfflineState \/>\}/);
+  assert.match(screenCode, /\{!offline && loading && <SkeletonState/);
+  assert.match(screenCode, /\{!offline && !loading && error &&/);
+  assert.match(screenCode, /\{!offline && !loading && !error && data &&/);
   assert.match(screenCode, /denied[\s\S]{0,120}EmptyState[\s\S]{0,120}ErrorState/, "different words for different failures");
   assert.match(screen, /onRetry=\{reload\}/, "a broken read is retryable");
 });

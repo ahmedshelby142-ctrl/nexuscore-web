@@ -42,6 +42,7 @@ import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { StatusPill } from "@/mobile/components/StatusPill";
 import { readMobilePurchaseInvoices } from "@/mobile/data/mobileReaders";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
@@ -158,6 +159,7 @@ function InvoicesTab({
   status: string;
   onStatus: (value: string) => void;
 }) {
+  const offline = useIsOffline();
   return (
     <>
       <MobileSearch value={query} onChange={onQuery} placeholder="ابحث برقم الفاتورة أو المورد" />
@@ -170,7 +172,7 @@ function InvoicesTab({
         />
       </div>
 
-      {typeof navigator !== "undefined" && !navigator.onLine ? (
+      {offline ? (
         <OfflineState />
       ) : page.loading ? (
         <SkeletonState />
@@ -230,6 +232,7 @@ function InvoicesTab({
  * not appear — a list of zeroes is not an answer to "who do I owe".
  */
 function SuppliersTab() {
+  const offline = useIsOffline();
   const [rows, setRows] = useState<Balance[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const names = useSubjectNames(true);
@@ -253,7 +256,7 @@ function SuppliersTab() {
     [rows],
   );
 
-  if (typeof navigator !== "undefined" && !navigator.onLine) return <OfflineState />;
+  if (offline) return <OfflineState />;
   if (error) return <ErrorState messageAr="تعذّر تحميل مستحقات الموردين." onRetry={() => void load()} />;
   if (rows === null) return <SkeletonState />;
   if (owed.length === 0) {

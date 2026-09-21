@@ -1,6 +1,6 @@
 import { RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
-import { useEffect, useState } from "react";
+
 import { toAppRole } from "@/lib/roles";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useStoreLicense } from "@/store/useStoreLicense";
@@ -11,27 +11,18 @@ import { AlertCard } from "@/mobile/components/AlertCard";
 import { MetricTile } from "@/mobile/components/MetricTile";
 import { QueueRow } from "@/mobile/components/QueueRow";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 
-export function MobileHomePlaceholder() {
+export function MobileHomeScreen() {
   const userRole = useAuthStore((state) => state.userRole);
   const username = useAuthStore((state) => state.username);
   const licenseDecision = useStoreLicense((state) => state.decision);
   const refreshLicense = useStoreLicense((state) => state.refresh);
-  const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" && !navigator.onLine);
+  const isOffline = useIsOffline();
   const role = toAppRole(userRole);
   const capabilities = getMobileCapabilities(role);
   const homeData = useMobileHomeData(capabilities, licenseDecision?.verdict === "unverified" || licenseDecision?.verdict === "suspended");
 
-  useEffect(() => {
-    const onOnline = () => setIsOffline(false);
-    const onOffline = () => setIsOffline(true);
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
-    return () => {
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
-    };
-  }, []);
 
   const home = homeData.data;
 

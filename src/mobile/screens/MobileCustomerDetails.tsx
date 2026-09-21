@@ -1,20 +1,29 @@
-import { ArrowRight, Phone, UserRound, AlertTriangle, DollarSign, Clock, CheckCircle2, RotateCcw, XCircle, TrendingUp } from "lucide-react";
+import { ArrowRight, Phone, UserRound, AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSection } from "@/mobile/components/MobileSection";
 import { QueueRow } from "@/mobile/components/QueueRow";
-import { EmptyState, ErrorState, SkeletonState } from "@/mobile/components/States";
+import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { toMobileOrderQueue } from "@/mobile/viewmodels/orderViewModel";
 import { formatArabicCurrency, formatArabicDate, formatArabicRelativeTime, formatArabicCount } from "@/mobile/viewmodels/formatters";
 import { readMobileCustomer, readMobileCustomerFinancialSummary, readMobileCustomerOrderHistory } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
+import { useIsOffline } from "@/mobile/data/useIsOffline";
 
 export function MobileCustomerDetails() {
   const navigate = useNavigate();
   const { customerId } = useParams();
   const loadCustomer = useCallback(() => readMobileCustomer(customerId ?? ""), [customerId]);
-  const { data: customer, loading, error } = useMobileEntity(loadCustomer);
+  const { data: customer, loading, error, reload } = useMobileEntity(loadCustomer);
+  const offline = useIsOffline();
+  // One back affordance for every terminal state: an operator who lands on
+  // "not found", an error or a lost connection must still be able to leave.
+  const back = (
+    <button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع">
+      <ArrowRight aria-hidden="true" />
+    </button>
+  );
   const [financials, setFinancials] = useState<any>(null);
   const [financialsLoading, setFinancialsLoading] = useState(true);
   const [financialsError, setFinancialsError] = useState<string | null>(null);
@@ -81,8 +90,9 @@ export function MobileCustomerDetails() {
   // with the customer's data.
   const history = useMemo(() => toMobileOrderQueue(ordersPage.rows), [ordersPage.rows]);
 
+  if (offline) return <><MobileAppBar title="تفاصيل العميل" leadingAction={back} /><div className="mobile-screen-body"><OfflineState /></div></>;
   if (loading) return <><MobileAppBar title="تفاصيل العميل" /><div className="mobile-screen-body"><SkeletonState /></div></>;
-  if (error) return <><MobileAppBar title="تفاصيل العميل" /><ErrorState messageAr="تعذّر تحميل العميل." /></>;
+  if (error) return <><MobileAppBar title="تفاصيل العميل" leadingAction={back} /><ErrorState messageAr="تعذّر تحميل العميل." onRetry={reload} /></>;
   if (!customer) return <><MobileAppBar title="تفاصيل العميل" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} /><EmptyState titleAr="العميل غير موجود" messageAr="تعذّر العثور على هذا العميل." /></>;
 
   const warnings: string[] = [];

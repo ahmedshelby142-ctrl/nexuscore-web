@@ -2,9 +2,45 @@
 
 ## What gets deployed
 
-A static bundle. `vite build` produces `dist/`, Vercel serves it, and the
-browser talks to Supabase directly. There is no server runtime, no API route and
-no SSR — which is why the security rules all live in Postgres.
+**Two static bundles, from one repository, as two separate Vercel projects.**
+
+| | Desktop / Web | Mobile PWA |
+|---|---|---|
+| Entry | `index.html` → `src/main.tsx` | `mobile/index.html` → `src/mobile/main.tsx` |
+| Build command | `npm run build` | `npm run build:mobile` |
+| Output directory | `dist` | `dist-mobile` |
+| Vercel project | `nexuscore-web1` | `nexuscore-mobile` |
+
+Neither has a server runtime, an API route or SSR — the browser talks to
+Supabase directly, which is why the security rules all live in Postgres.
+
+### ONLINE-ONLY — no Offline-First
+
+NEXUS CORE is an online-only product. Supabase/Postgres is the authority and the
+client is a thin, always-connected reader.
+
+The service worker precaches the **app shell only**. No Supabase REST, Auth or
+Realtime response is ever runtime-cached, and there is no background-sync write
+queue. A cached shell is **not** permission to write financial data offline:
+`commitReceipt` — the single write the mobile app performs — throws with no
+local queue, so an offline attempt fails visibly and commits nothing.
+
+Do not add an offline write queue, a local ledger, local document numbering or
+a sync-conflict engine to either bundle.
+
+### Why two projects and not one
+
+`vercel.json` build settings override Project Settings for **every** project
+linked to this repository. While it pinned `buildCommand`/`outputDirectory`,
+a second project could not build anything but the desktop app — which is why
+the mobile bundle was built locally and never served.
+
+So the shared `vercel.json` now carries only what is genuinely common: the
+`framework` and the SPA rewrite (`/(.*) → /index.html`), which is correct for
+both bundles because each serves its own `index.html` from its own output
+directory. **Build command and output directory are set per project, in the
+Vercel dashboard.** If you put them back in `vercel.json`, the mobile project
+silently starts serving the desktop shell again.
 
 ## Local commands
 
@@ -127,19 +163,62 @@ tracked. Copy it to `.env.local` to develop.
 
 ## Vercel
 
-* Project `nexuscore-web1`, team `nexuscore1`.
-* Deploys on push to `main` of the `deployed` remote
-  (`github.com/ahmedshelby142-ctrl/nexuscore-web1`). `origin`
-  (`nexuscore-web`) is the second remote and is not wired to Vercel.
-* Build command `vite build`, output `dist`.
-* Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in the project's
-  Environment Variables for the Production environment.
+Team `nexuscore1` (`team_uxtO2746GEcTwKAhTEfEourS`). Two projects, both linked
+to **`github.com/ahmedshelby142-ctrl/nexuscore-web`** — the `origin` remote —
+and both deploying production on push to `main`.
 
-Push to both remotes:
+> An earlier version of this file claimed the desktop project deploys from the
+> `deployed` remote (`nexuscore-web1`). That was wrong, and it mattered: the
+> live deployment's `meta.githubRepo` is `nexuscore-web`. **A push to `origin`
+> deploys desktop production.** Corrected 2026-09-21.
+
+### Desktop — `nexuscore-web1`
+
+| Setting | Value |
+|---|---|
+| Framework Preset | Vite |
+| Root Directory | repository root |
+| Install Command | `npm install` |
+| Build Command | `npm run build` |
+| Output Directory | `dist` |
+
+### Mobile — `nexuscore-mobile`
+
+| Setting | Value |
+|---|---|
+| Framework Preset | Vite |
+| Root Directory | repository root |
+| Install Command | `npm install` |
+| Build Command | `npm run build:mobile` |
+| Output Directory | `dist-mobile` |
+
+Root Directory stays at the repository root for both: the mobile entry imports
+`src/lib`, the stores and the services, so a narrower root would cut the build
+off from its own source.
+
+### Environment variables (both projects)
+
+Each project needs these two, in its own Production environment. They are read
+at **build** time and baked into the bundle, so changing one requires a
+redeploy, not just a save:
+
+```
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY
+```
+
+Nothing else. Every other variable in `.env.example` is server-side and belongs
+to the Supabase Edge Functions, never to a browser bundle.
+
+Push:
 
 ```bash
-git push origin main && git push deployed main
+git push origin main
 ```
+
+`origin` is what both Vercel projects build. `deployed`
+(`github.com/ahmedshelby142-ctrl/nexuscore-web1`) is a second GitHub remote
+that no Vercel project is linked to — pushing there deploys nothing.
 
 ### Verifying a deployment
 
@@ -201,6 +280,28 @@ precache.
 The precache is the **app shell only** — JS, CSS, `index.html`, icons, manifest.
 Nothing from Supabase is cached, by design: there is no `runtimeCaching` entry,
 and `navigateFallbackDenylist` excludes `/rest/`, `/auth/` and `/functions/`.
+
+### The mobile shell must be at the root of `dist-mobile`
+
+The mobile entry HTML lives at `mobile/index.html` so it can sit beside the
+desktop `index.html` in the repo, and Vite preserves that path in the output —
+so the build used to emit `dist-mobile/mobile/index.html`.
+
+That broke the installed app in two ways: `/` was a 404, and Workbox's
+`navigateFallback` is bound to `/index.html`, a URL that was **not** in the
+precache manifest (which listed `mobile/index.html`). `createHandlerBoundToURL`
+throws on a non-precached URL, so every deep link and every refresh had no
+document to fall back to.
+
+The `mobile-shell-at-root` plugin in `vite.mobile.config.ts` renames the emitted
+asset in `generateBundle`, so the file is written to `dist-mobile/index.html`
+*before* `vite-plugin-pwa` globs the directory and therefore precaches
+`index.html`. Nothing inside the HTML needs rewriting — every reference Vite
+injects is already absolute.
+
+If you change the mobile entry path or that plugin, re-check the built
+`dist-mobile/sw.js`: the precache list must contain `index.html`, and
+`createHandlerBoundToURL("/index.html")` must point at it.
 
 ### Stale chunks after a deployment
 

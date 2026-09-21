@@ -32,6 +32,43 @@ function serveMobileIndexInDev() {
 }
 
 /**
+ * Emit the shell at the ROOT of `dist-mobile`, not at `mobile/index.html`.
+ *
+ * The entry HTML lives at `mobile/index.html` so it can sit beside the desktop
+ * `index.html` in the repo, and Vite preserves that path in the output. But the
+ * mobile Vercel project serves `dist-mobile` AS the site root, so the shell has
+ * to be `/index.html`:
+ *
+ *   - `/` was a 404, because the only document was `/mobile/index.html`.
+ *   - Workbox's navigation fallback is bound to `/index.html`, and that URL was
+ *     NOT in the precache manifest — the manifest listed `mobile/index.html`.
+ *     `createHandlerBoundToURL` throws on a non-precached URL, so once the app
+ *     was installed every deep link and every refresh had no document to fall
+ *     back to.
+ *
+ * Renaming in `generateBundle` means the file is WRITTEN to the right place, so
+ * `vite-plugin-pwa` globs a finished directory and precaches `index.html` —
+ * which is what makes `navigateFallback` resolve. Doing it afterwards, in a
+ * `writeBundle`/`closeBundle` hook, would race that glob.
+ *
+ * Nothing inside the HTML needs rewriting: every reference Vite injects is
+ * already absolute (`/assets/…`, `/manifest.webmanifest`, `/registerSW.js`).
+ */
+function emitShellAtRoot() {
+  return {
+    name: "mobile-shell-at-root",
+    enforce: "post" as const,
+    generateBundle(_options: unknown, bundle: Record<string, { fileName: string }>) {
+      const emitted = bundle["mobile/index.html"];
+      if (!emitted) return;
+      delete bundle["mobile/index.html"];
+      emitted.fileName = "index.html";
+      bundle["index.html"] = emitted;
+    },
+  };
+}
+
+/**
  * The mobile app is an independent Vite entry, not a responsive variant of
  * the desktop entry. It shares only `src/lib`, stores, types, and services it
  * imports explicitly; Vite therefore does not load desktop routes or screens.
@@ -39,6 +76,7 @@ function serveMobileIndexInDev() {
 export default defineConfig({
   plugins: [
     serveMobileIndexInDev(),
+    emitShellAtRoot(),
     tailwindcss(),
     react(),
     VitePWA({

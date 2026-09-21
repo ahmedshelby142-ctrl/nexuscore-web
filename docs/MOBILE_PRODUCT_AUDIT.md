@@ -249,13 +249,12 @@ anywhere in the mobile app**.
 > Two things were found while closing them and are NOT yet done, so this section
 > is not empty:
 >
-> - **P2-8 · swallowed read errors.** `waitingError` (ProductDetails),
->   `financialsError` / `financialsLoading` (CustomerDetails) and
->   `suppliersError` (QuickRestock) are all set and never rendered. Those
->   sections fail silently — they show nothing rather than saying the read
->   broke. Deliberately left alone here: deleting the variables to satisfy
->   `noUnusedLocals` would have removed the error path instead of surfacing it,
->   and wiring four new error states is its own change.
+> - **P2-8 · swallowed read errors — CLOSED 2026-09-21.** `waitingError`,
+>   `financialsError`, `suppliersError` and a fourth path found while fixing
+>   them (the order-history retry was wired to `setOrdersPage({loading:true})`
+>   and never re-read) now all render an `ErrorState` with a retry through the
+>   canonical reader. `tsc --noUnusedLocals` over `src/mobile` is now clean of
+>   set-but-unread state. Covered by `check_mobile_read_errors.mjs`.
 > - **P2-9 · mobile lint debt.** `npx eslint src/mobile` reports ~940 problems,
 >   almost all `prettier/prettier` and `@typescript-eslint/no-explicit-any`, and
 >   `@typescript-eslint/no-unused-vars` is switched **off** in

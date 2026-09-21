@@ -30,16 +30,32 @@ export function MobileProductDetails() {
   const [waitingLoading, setWaitingLoading] = useState(true);
   const [waitingError, setWaitingError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    if (productId) {
-      setWaitingLoading(true);
-      readMobileProductWaitingOrders(productId).then((data) => {
-        if (active) { setWaitingOrders(data); setWaitingLoading(false); }
-      }).catch((err) => { if (active) { setWaitingError(err.message); setWaitingLoading(false); } });
+  /**
+   * Who is waiting on this product.
+   *
+   * Lifted out of the effect so the error state can ask again through the SAME
+   * reader. `waitingError` used to be set and never rendered: a failed read
+   * left `waitingOrders` at `[]`, and the empty branch then told the operator
+   * «لا توجد طلبات نشطة تنتظر هذا المنتج» — which is a different claim
+   * entirely, and the one they would act on when deciding not to reorder.
+   */
+  const loadWaiting = useCallback(async () => {
+    if (!productId) return;
+    setWaitingLoading(true);
+    setWaitingError(null);
+    try {
+      setWaitingOrders(await readMobileProductWaitingOrders(productId));
+    } catch (err) {
+      // No partial list: half an answer about who is waiting is worse than
+      // saying the question could not be answered.
+      setWaitingOrders([]);
+      setWaitingError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWaitingLoading(false);
     }
-    return () => { active = false; };
   }, [productId]);
+
+  useEffect(() => { void loadWaiting(); }, [loadWaiting]);
 
   if (offline) return <><MobileAppBar title="تفاصيل المنتج" leadingAction={back} /><div className="mobile-screen-body"><OfflineState /></div></>;
   if (loading) return <><MobileAppBar title="تفاصيل المنتج" /><div className="mobile-screen-body"><SkeletonState /></div></>;
@@ -149,8 +165,15 @@ export function MobileProductDetails() {
         </MobileSection>
       )}
 
-      {waitingOrders.length > 0 && (
-        <MobileSection titleAr={`طلبات تنتظر هذا المنتج (${waitingOrders.length})`}>
+      <MobileSection titleAr={waitingOrders.length > 0 ? `طلبات تنتظر هذا المنتج (${waitingOrders.length})` : "طلبات تنتظر هذا المنتج"}>
+        {waitingLoading ? (
+          <SkeletonState count={2} />
+        ) : waitingError ? (
+          <ErrorState messageAr="تعذّر تحميل الطلبات المنتظرة." onRetry={() => void loadWaiting()} />
+        ) : waitingOrders.length === 0 ? (
+          <p className="mobile-muted">لا توجد طلبات نشطة تنتظر هذا المنتج.</p>
+        ) : (
+          <>
           {waitingOrders.slice(0, 10).map((wo: any) => (
             <button
               type="button"
@@ -176,14 +199,9 @@ export function MobileProductDetails() {
               و {waitingOrders.length - 10} طلبات أخرى…
             </p>
           )}
-        </MobileSection>
-      )}
-
-      {waitingOrders.length === 0 && !waitingLoading && (
-        <MobileSection titleAr="طلبات تنتظر هذا المنتج">
-          <p className="mobile-muted">لا توجد طلبات نشطة تنتظر هذا المنتج.</p>
-        </MobileSection>
-      )}
+          </>
+        )}
+      </MobileSection>
 
       {isBundle && bundleItems.length > 0 && (
         <MobileSection titleAr="مكونات الباقة">

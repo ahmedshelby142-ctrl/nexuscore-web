@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
 import { PackageCheck, Loader2, Plus, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -64,14 +64,38 @@ export function MobileQuickRestock() {
   // mobile never calls `hydrateAll`, so that array is permanently empty and the
   // picker showed nothing at all.
   const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
+  const [suppliersLoading, setSuppliersLoading] = useState(true);
   const [suppliersError, setSuppliersError] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void readSuppliers({ limit: 200 })
-      .then((rows) => { if (!cancelled) { setSuppliers(rows); setSuppliersError(null); } })
-      .catch((e) => { if (!cancelled) setSuppliersError(e instanceof Error ? e.message : String(e)); });
-    return () => { cancelled = true; };
+
+  /**
+   * The supplier list, and the most expensive swallowed error in the app.
+   *
+   * `suppliersError` was set and never rendered. A failed read left `suppliers`
+   * at `[]`, and an empty picker is indistinguishable from "this shop has no
+   * suppliers yet" — so the only apparent option was «+ مورد جديد». That is
+   * precisely the duplicate-supplier bug `lib/receiving/suppliers.ts` was
+   * written to stop: each mobile receipt minting another copy of a supplier
+   * that already existed, splintering their `payable_supplier` across the
+   * copies.
+   *
+   * So a failure now says it failed, offers to ask again, and — while it is
+   * unresolved — registering a new supplier is held back, because the operator
+   * cannot see whether the one they want is already there.
+   */
+  const loadSuppliers = useCallback(async () => {
+    setSuppliersLoading(true);
+    setSuppliersError(null);
+    try {
+      setSuppliers(await readSuppliers({ limit: 200 }));
+    } catch (e) {
+      setSuppliers([]);
+      setSuppliersError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSuppliersLoading(false);
+    }
   }, []);
+
+  useEffect(() => { void loadSuppliers(); }, [loadSuppliers]);
 
   // Search products for the picker
   const page = useMobilePagedQuery(readMobileProductsForRestock, { search: query });
@@ -164,7 +188,7 @@ export function MobileQuickRestock() {
   // This is the whole of the fix. No draft is saved, nothing is queued, and
   // `commitReceipt` remains the only write path — being offline simply means
   // the receipt cannot be taken yet.
-  const canSave = received.length > 0 && supplierReady && variantsResolved && !saving && !offline;
+  const canSave = received.length > 0 && supplierReady && variantsResolved && !saving && !offline && !suppliersError;
 
   function reset() {
     setLines({});
@@ -359,9 +383,9 @@ export function MobileQuickRestock() {
             <div className="space-y-4 mt-4">
               <div className="space-y-1.5">
                 <Label htmlFor="restock-supplier">المورد</Label>
-                <Select value={supplierId} onValueChange={setSupplierId}>
+                <Select value={supplierId} onValueChange={setSupplierId} disabled={Boolean(suppliersError)}>
                   <SelectTrigger id="restock-supplier">
-                    <SelectValue placeholder="اختر المورد…" />
+                    <SelectValue placeholder={suppliersLoading ? "جارٍ تحميل الموردين…" : "اختر المورد…"} />
                   </SelectTrigger>
                   <SelectContent>
                     {suppliers.map((s) => (
@@ -369,9 +393,17 @@ export function MobileQuickRestock() {
                         {s.companyName}
                       </SelectItem>
                     ))}
-                    <SelectItem value={NEW_SUPPLIER}>+ مورد جديد</SelectItem>
+                    {/* Held back while the list is unknown: choosing "new" against a
+                        list that merely failed to load is how duplicates are minted. */}
+                    {!suppliersError && <SelectItem value={NEW_SUPPLIER}>+ مورد جديد</SelectItem>}
                   </SelectContent>
                 </Select>
+                {suppliersError && (
+                  <ErrorState
+                    messageAr="تعذّر تحميل قائمة الموردين. جرّب تاني قبل ما تسجّل مورد جديد."
+                    onRetry={() => void loadSuppliers()}
+                  />
+                )}
                 <p className="text-xs text-muted-foreground">
                   المورد بيتسجّل على التوريدة نفسها، مش على المنتج — نفس الصنف ممكن ييجي من مورد مختلف المرة الجاية.
                 </p>

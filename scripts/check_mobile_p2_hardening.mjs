@@ -146,7 +146,10 @@ test("P2-3 · a money screen with no connection shows no figures at all", () => 
 // ═══════════════════════════════════════════════════════════════════════════
 
 test("P2-4 · توريد is unavailable while the connection is gone", () => {
-  assert.match(restock, /const canSave = [^;]*&& !offline;/);
+  // `\b` not `;` — the expression legitimately grew a `&& !suppliersError`
+  // term in P2-8, and pinning the tail makes the guard brittle to its own
+  // reinforcement.
+  assert.match(restock, /const canSave = [^;]*&& !offline\b/);
   assert.match(restock, /disabled=\{!canSave\}/);
   // Disabled with no reason given is its own bug.
   assert.match(restock, /title=\{offline \? "لا يوجد اتصال بالسحابة" : undefined\}/);
@@ -214,7 +217,10 @@ test("P2-6 · the home screen is no longer named a placeholder", () => {
   assert.ok(!existsSync(new URL("../src/mobile/screens/MobileHomePlaceholder.tsx", import.meta.url)));
   let hits = [];
   try {
-    hits = execFileSync("git", ["grep", "-nl", "MobileHomePlaceholder"], { encoding: "utf8" })
+    // `:!` excludes this file and the changelog: both NAME the old component
+    // in order to explain the rename, which is not a stale reference to it.
+    hits = execFileSync("git", ["grep", "-nl", "MobileHomePlaceholder", "--", ".",
+      ":!scripts/check_mobile_p2_hardening.mjs", ":!docs/NEXUSCORE_CHANGELOG.md"], { encoding: "utf8" })
       .split("\n").filter(Boolean);
   } catch (e) {
     if (e.status !== 1) throw e;

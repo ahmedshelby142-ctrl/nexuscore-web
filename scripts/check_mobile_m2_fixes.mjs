@@ -317,11 +317,17 @@ test("M2.2: mobile forwards paidAmount instead of hardcoding paid-in-full", () =
     /paidAmount: input\.paidAmount \?\? Number\.POSITIVE_INFINITY/,
     "forwarded, with paid-in-full as the default",
   );
-  // Still no mobile-side accounting.
+  // Still no mobile-side accounting. Asserted on the CODE, not the prose: the
+  // screen's comments legitimately name `payable_supplier` when explaining why
+  // a swallowed supplier error mints duplicates, and an assertion that cannot
+  // tell an explanation from an implementation fails on good documentation.
+  const restockCode = restock
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\r\n]*/g, "$1");
   assert.match(restock, /executeQuickRestock\(/);
-  assert.doesNotMatch(restock, /payable_supplier/, "mobile must not name ledger accounts");
-  assert.doesNotMatch(restock, /buildPurchaseLines/, "nor build ledger lines");
-  assert.doesNotMatch(restock, /appendEvent\(/, "nor append events");
+  assert.doesNotMatch(restockCode, /payable_supplier/, "mobile must not name ledger accounts");
+  assert.doesNotMatch(restockCode, /buildPurchaseLines/, "nor build ledger lines");
+  assert.doesNotMatch(restockCode, /appendEvent\(/, "nor append events");
 });
 
 test("M2.2: the paid field means the same thing on mobile as on desktop", () => {

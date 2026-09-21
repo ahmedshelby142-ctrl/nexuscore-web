@@ -32,34 +32,54 @@ export function MobileCustomerDetails() {
   });
   const [pageNum, setPageNum] = useState(0);
 
-  useEffect(() => {
-    let active = true;
-    if (customerId) {
-      setFinancialsLoading(true);
-      readMobileCustomerFinancialSummary(customerId).then((data) => {
-        if (active) { setFinancials(data); setFinancialsLoading(false); }
-      }).catch((err) => { if (active) { setFinancialsError(err.message); setFinancialsLoading(false); } });
-
-      const loadOrders = async (page = 0) => {
-        setOrdersPage((current) => ({ ...current, loading: page === 0, loadingMore: page > 0, error: null }));
-        try {
-          const result = await readMobileCustomerOrderHistory(customerId, page, 25);
-          setOrdersPage((current) => ({
-            rows: page === 0 ? result.rows : [...current.rows, ...result.rows.filter((next: any) => !current.rows.some((existing: any) => String(existing.id) === String(next.id)))],
-            total: result.total,
-            hasMore: result.hasMore,
-            loading: false,
-            loadingMore: false,
-            error: null
-          }));
-        } catch (err) {
-          setOrdersPage((current) => ({ ...current, loading: false, loadingMore: false, error: err instanceof Error ? err.message : String(err) }));
-        }
-      };
-      loadOrders(0);
+  /**
+   * The customer's money.
+   *
+   * `financialsError` used to be set and never rendered: the whole الملخص
+   * المالي card is behind `{financials && …}`, so a failed read made the
+   * section VANISH. Nothing said the figures were unavailable — the screen
+   * simply looked like a customer who had never traded.
+   *
+   * On failure `financials` is cleared rather than left holding the previous
+   * customer's answer. A number under the wrong name is worse than no number,
+   * and the section now says which of the two it is showing.
+   */
+  const loadFinancials = useCallback(async () => {
+    if (!customerId) return;
+    setFinancialsLoading(true);
+    setFinancialsError(null);
+    try {
+      setFinancials(await readMobileCustomerFinancialSummary(customerId));
+    } catch (err) {
+      setFinancials(null);
+      setFinancialsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFinancialsLoading(false);
     }
-    return () => { active = false; };
   }, [customerId]);
+
+  /** The order history, hoisted so its error state can ask again. */
+  const loadOrders = useCallback(async (page = 0) => {
+    if (!customerId) return;
+    setOrdersPage((current) => ({ ...current, loading: page === 0, loadingMore: page > 0, error: null }));
+    try {
+      const result = await readMobileCustomerOrderHistory(customerId, page, 25);
+      setOrdersPage((current) => ({
+        rows: page === 0 ? result.rows : [...current.rows, ...result.rows.filter((next: any) => !current.rows.some((existing: any) => String(existing.id) === String(next.id)))],
+        total: result.total,
+        hasMore: result.hasMore,
+        loading: false,
+        loadingMore: false,
+        error: null,
+      }));
+    } catch (err) {
+      setOrdersPage((current) => ({ ...current, loading: false, loadingMore: false, error: err instanceof Error ? err.message : String(err) }));
+    }
+  }, [customerId]);
+
+  useEffect(() => { void loadFinancials(); }, [loadFinancials]);
+  useEffect(() => { void loadOrders(0); }, [loadOrders]);
+
 
   const loadMoreOrders = () => {
     if (ordersPage.hasMore && !ordersPage.loadingMore) {
@@ -125,8 +145,16 @@ export function MobileCustomerDetails() {
         {customer.email && <div className="mobile-detail-line"><span>البريد الإلكتروني</span><strong dir="ltr">{customer.email}</strong></div>}
       </MobileSection>
 
-      {financials && (
-        <MobileSection titleAr="الملخص المالي">
+      <MobileSection titleAr="الملخص المالي">
+        {financialsLoading ? (
+          <SkeletonState count={3} />
+        ) : financialsError ? (
+          /* Never a zero and never the previous customer's figures: a money
+             section that failed says so, and offers to ask again. */
+          <ErrorState messageAr="تعذّر تحميل الملخص المالي لهذا العميل." onRetry={() => void loadFinancials()} />
+        ) : !financials ? (
+          <EmptyState messageAr="لا توجد بيانات مالية لهذا العميل." />
+        ) : (
           <div className="mobile-customer-financial-grid">
             <div>
               <span>إيراد المسلم (مُسجل)</span>
@@ -161,8 +189,8 @@ export function MobileCustomerDetails() {
               <strong style={{ color: financials.wastedTrips > 0 ? "var(--destructive)" : "var(--success)" }}>{formatArabicCount(financials.wastedTrips)}</strong>
             </div>
           </div>
-        </MobileSection>
-      )}
+        )}
+      </MobileSection>
 
       {warnings.length > 0 && (
         <MobileSection titleAr="تنبيهات">
@@ -179,7 +207,7 @@ export function MobileCustomerDetails() {
         {ordersPage.loading ? (
           <SkeletonState count={3} />
         ) : ordersPage.error ? (
-          <ErrorState messageAr={ordersPage.error} onRetry={() => setOrdersPage(p => ({ ...p, loading: true }))} />
+          <ErrorState messageAr="تعذّر تحميل سجل الطلبات." onRetry={() => void loadOrders(0)} />
         ) : history.length === 0 ? (
           <EmptyState titleAr="لا يوجد سجل طلبات" messageAr="هذا العميل ليس لديه طلبات مسجلة." />
         ) : (

@@ -221,11 +221,33 @@ test("the claim has a real lifecycle, not a free-text status", () => {
   );
   // A status column with no transition rule is a column where any state
   // reaches any other, which is not a lifecycle.
-  assert.match(M039C, /WHEN 'pending'\s*THEN NEW\.status IN \('submitted', 'rejected'\)/);
-  assert.match(M039C, /WHEN 'submitted' THEN NEW\.status IN \('approved', 'rejected'\)/);
-  assert.match(M039C, /WHEN 'approved'\s*THEN NEW\.status = 'settled'/);
-  assert.match(M039C, /ELSE false/, "settled and rejected are terminal");
-  assert.match(M039C, /NEXUS_CLAIM_MUST_START_PENDING/);
+  //
+  // Read from 041, NOT 039. The CHECK constraint above is still 039's, but 041
+  // REPLACED the whole guard function — and asserting the transition table
+  // against the superseded copy was a real defect in this file. A mutation run
+  // proved it: breaking the live table in 041 left these green, because they
+  // were reading a migration that no longer runs.
+  assert.match(M041C, /WHEN 'pending'\s*THEN NEW\.status IN \('submitted', 'rejected'\)/);
+  assert.match(M041C, /WHEN 'submitted' THEN NEW\.status IN \('approved', 'rejected'\)/);
+  assert.match(M041C, /WHEN 'approved'\s*THEN NEW\.status = 'settled'/);
+  assert.match(M041C, /ELSE false/, "settled and rejected are terminal");
+  assert.match(M041C, /NEXUS_CLAIM_MUST_START_PENDING/);
+  // Nothing but `approved` may reach `settled`.
+  assert.ok(
+    !/THEN NEW\.status IN \([^)]*'settled'/.test(M041C),
+    "no multi-target transition may include settled",
+  );
+  assert.ok(
+    !/WHEN 'approved'\s*THEN true/.test(M041C),
+    "the approved arm must name its one legal target",
+  );
+});
+
+test("the settlement event is checked against THIS store", () => {
+  // Without the tenant term a claim could close against a settlement belonging
+  // to another shop — `courier_id` values are per-store text ids and could
+  // collide across tenants.
+  assert.match(M041C, /AND e\.store_id = NEW\.store_id/, "the event must be ours");
 });
 
 test("the claim is traceable to everything the business needs", () => {
@@ -398,4 +420,122 @@ test("there is NO code path from a courier cause to an automatic refund", () => 
   // And the one refund path is the RPC, which requires an operator's call.
   assert.ok(!/refund_order_deposit/.test(strip(read("../src/lib/shippingRates.ts"))),
     "no policy function may invoke the refund");
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SETTLEMENT INTEGRATION — the claim closes against the EXISTING event
+// ═══════════════════════════════════════════════════════════════════════════
+
+const M041 = read("../docs/migrations/041_settled_claim_is_frozen.sql");
+const M041C = sql(M041);
+const LEDGERPAGE = strip(read("../src/components/ecommerce/CourierLedgerPage.tsx"));
+
+test("no second settlement system — the existing event is reused", () => {
+  // One event kind settles a courier, and this migration adds no other. No new
+  // money, no new RPC that writes a settlement.
+  assert.ok(!/CREATE (OR REPLACE )?FUNCTION[\s\S]{0,200}settle_courier/i.test(M041C));
+  assert.ok(!/INSERT INTO public\.ledger_/.test(M041C), "the guard writes no ledger row");
+  // The screen appends the SAME `courier_settlement` it always did, and simply
+  // keeps its id.
+  assert.match(LEDGERPAGE, /const settlementEventId = await appendEvent\(\{/);
+  assert.match(LEDGERPAGE, /kind: "courier_settlement"/);
+});
+
+test("the UI never sets the status directly — it passes the real event", () => {
+  // There is no status dropdown on this screen. The only call names `settled`
+  // together with the id of the event that just moved the money.
+  assert.match(
+    LEDGERPAGE,
+    /advanceClaim\(\{ claimId: claim\.id, to: "settled", settlementEventId \}\)/,
+  );
+  // …and only APPROVED claims are offered, because a claim the company has not
+  // agreed to is not something a transfer closes.
+  assert.match(LEDGERPAGE, /c\.status === "approved"/);
+});
+
+test("`settled` requires an event that moved THIS courier's receivable", () => {
+  // Checked against the ledger LINE, not a label: the batch path puts the
+  // courier in the payload and the per-order path does not name it at all, so
+  // neither `ref_id` nor the payload is a reliable place to ask.
+  assert.match(M041C, /e\.kind = 'courier_settlement'/);
+  assert.match(M041C, /l\.account = 'receivable_courier'/);
+  assert.match(M041C, /l\.subject_id = NEW\.courier_id/);
+  assert.match(M041C, /NEXUS_CLAIM_SETTLEMENT_EVENT_MISMATCH/);
+});
+
+test("a settled claim is frozen — found by probing 040, not by reading it", () => {
+  // The unchanged-status early return left every OTHER column editable, so a
+  // closed claim could be re-pointed at a `sale` and its amount rewritten. The
+  // amount is the snapshot the ledger line is reconciled against; one that can
+  // be edited afterwards reconciles with anything.
+  assert.match(M041C, /IF OLD\.status IN \('settled', 'rejected'\) THEN/);
+  // The STATUS itself is the first thing frozen, and it has to be: the
+  // terminal block `RETURN NEW`s, so the transition table below never runs for
+  // a closed claim. Drop this one term and a settled claim can be flipped back
+  // to `approved` — the `ELSE false` that looks like it would stop that is
+  // unreachable from here. A mutation run is what surfaced it.
+  assert.match(
+    M041C,
+    /IF NEW\.status IS DISTINCT FROM OLD\.status\s*\r?\n\s*OR NEW\.settlement_event_id/,
+    "a closed claim's status must be frozen by the terminal block itself",
+  );
+  for (const col of [
+    "settlement_event_id",
+    "amount_piastres",
+    "order_id",
+    "courier_id",
+    "return_record_id",
+  ]) {
+    assert.ok(
+      // `\\.` and `\\s`, doubled: inside a template literal JavaScript eats the
+      // single backslash before the RegExp ever sees it, so `\.` became a
+      // wildcard and `\s` became a literal "s" — the pattern silently stopped
+      // matching anything and the freeze looked absent.
+      new RegExp(`NEW\\.${col}\\s+IS DISTINCT FROM OLD\\.${col}`).test(M041C),
+      `${col} must be frozen on a closed claim`,
+    );
+  }
+  assert.match(M041C, /NEXUS_CLAIM_IS_CLOSED/);
+  // The freeze is checked BEFORE the unchanged-status shortcut, which is
+  // exactly where the gap was.
+  assert.ok(
+    M041C.indexOf("IF OLD.status IN ('settled', 'rejected')") <
+      M041C.indexOf("IF OLD.status = NEW.status THEN"),
+    "the freeze must come before the early return it was hiding behind",
+  );
+  // Notes stay writable: a later note distorts no figure.
+  assert.ok(!/NEW\.notes\s+IS DISTINCT FROM OLD\.notes/.test(M041C));
+});
+
+test("settling a claim does not touch the deposit, on the screen too", () => {
+  // The settlement screen knows nothing about deposits.
+  assert.ok(
+    !/refundOrderDeposit|deposit_pending_resolution|forfeitedDeposit|pendingDeposit/.test(
+      LEDGERPAGE,
+    ),
+    "the courier settlement screen must not reach the customer's deposit",
+  );
+  // …and the guard reads no deposit account.
+  assert.ok(!/deposit/i.test(M041C.replace(/NEXUS_CLAIM[A-Z_]*/g, "")));
+});
+
+test("the claim half fails safe — the money is recorded first", () => {
+  // The settlement is the financial fact; the claim is a note about it. If the
+  // claim update fails the transfer has still landed correctly and the claim
+  // stays `approved`, recoverable next time. The reverse order would mark a
+  // claim settled against an event that might never be written.
+  const confirm = LEDGERPAGE.slice(
+    LEDGERPAGE.indexOf("const confirmBatch"),
+    LEDGERPAGE.indexOf("const confirmBatch") + 4000,
+  );
+  assert.ok(
+    confirm.indexOf("await appendEvent") < confirm.indexOf("advanceClaim"),
+    "the event is written before any claim is closed",
+  );
+  assert.match(LEDGERPAGE, /التحويلة اتسجلت والفلوس اتحركت، لكن/, "and the operator is told");
+});
+
+test("the operator is told the two are unrelated, on the settlement screen", () => {
+  assert.match(LEDGERPAGE, /قفل المطالبة مالوش أي علاقة بعربون العميلة/);
+  assert.match(LEDGERPAGE, /مش بيزوّد المبلغ/, "and that it adds nothing to the transfer");
 });

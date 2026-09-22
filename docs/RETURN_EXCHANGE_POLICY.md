@@ -330,6 +330,86 @@ shipped copy that contradicts the ledger is worse than no copy.
 
 ---
 
+## 6c. The claim closes against the real settlement
+
+Added 2026-09-22, migrations 040 and 041.
+
+### The lifecycle, end to end
+
+```
+courier-caused return -> claim PENDING
+                          -> SUBMITTED   (put to the provider)
+                            -> APPROVED  (they agreed)   or -> REJECTED
+                              -> the EXISTING courier settlement runs
+                                -> SETTLED, carrying that event's id
+```
+
+`REJECTED` and `SETTLED` are terminal.
+
+### No second settlement system
+
+حسابات الشحن settles a courier exactly as it always did — one
+`courier_settlement` event, one `buildCourierBatchSettlementLines` call, the
+same receivable cleared. The only change is that the screen now keeps the
+event id it was already producing and offers the courier's **approved**
+claims to be closed with it.
+
+Ticking a claim adds nothing to the transfer. The receivable it represents is
+already inside the balance being settled.
+
+### The UI cannot set `settled`
+
+There is no status control for it. The only call that names `settled` passes
+the id of the event that just moved the money, and migration 041 verifies
+that event **actually moved this courier's receivable** —
+
+```sql
+e.kind = 'courier_settlement'  AND  e.store_id = NEW.store_id
+AND l.account = 'receivable_courier'  AND  l.subject_id = NEW.courier_id
+```
+
+— asked of the ledger **line**, not a label, because the batch path puts the
+courier in the payload and the per-order path does not name it at all.
+
+### A closed claim is frozen
+
+Found by probing 040 rather than reading it: the guard returned early when
+the status was unchanged, so a settled claim's `settlement_event_id` could be
+re-pointed at a `sale` and its `amount_piastres` rewritten. The amount is the
+snapshot the ledger line is reconciled against; one that can be edited
+afterwards reconciles with anything.
+
+041 freezes order, courier, return record, amount, settlement event **and the
+status itself** on a terminal claim. Only `notes` and `deleted_at` stay
+writable — a later note distorts no figure, and a rejected claim must remain
+removable so a fresh one can be raised.
+
+### Independence, proven both directions
+
+| Action | Deposit | Claim |
+|---|---|---|
+| claim settles | still held, 0 refunds | `settled` |
+| deposit refunded | refunded once | still `settled`, amount and event unchanged |
+
+The settlement screen contains no deposit reference at all, and
+`refund_order_deposit` touches no courier account.
+
+### Order safety
+
+The claim keys on Order A by foreign key and the settlement writes nothing to
+any order. Order A keeps its status, cause, deposit and claim; Order B is a
+separate document linked by `original_order_id`. Their financial histories
+never merge.
+
+### Failure direction
+
+The event is written first and the claims are closed after. If the claim half
+fails the transfer has still landed correctly and the claim stays `approved`,
+recoverable on the next transfer — and the operator is told. The reverse order
+would mark a claim settled against an event that might never exist.
+
+---
+
 ## 7. Data facts, 2026-09-21 (read-only, nothing executed)
 
 Live project `oczgqpxeixlrufvevitz`.

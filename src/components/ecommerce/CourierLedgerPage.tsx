@@ -20,6 +20,12 @@ import { useBalances } from "@/lib/ledger/useBalances";
 import { appendEvent, events } from "@/lib/ledger";
 import { buildCourierBatchSettlementLines } from "@/lib/ledger/orders";
 import {
+  listClaims,
+  advanceClaim,
+  CLAIM_STATUS_LABELS,
+  type CourierClaim,
+} from "@/services/courierClaims";
+import {
   batchSummary,
   courierIdOf,
   isLegacyCourier,
@@ -234,6 +240,14 @@ export function CourierLedgerPage() {
 
   // ── Batch settlement (تسوية دفعة) ────────────────────────────────────────
   const [batchCourier, setBatchCourier] = useState<{ id: string; name: string } | null>(null);
+  // Approved claims against this courier, offered for closing WITH the
+  // transfer that is being recorded. This is not a second settlement system:
+  // the `courier_settlement` event below is still the only thing that moves
+  // money, and a claim can only point at one that actually moved THIS
+  // courier's receivable (migration 040).
+  const [claims, setClaims] = useState<CourierClaim[]>([]);
+  const [claimTicked, setClaimTicked] = useState<Record<string, boolean>>({});
+  const [claimNote, setClaimNote] = useState<string | null>(null);
   const [ticked, setTicked] = useState<Record<string, boolean>>({});
   const [received, setReceived] = useState("");
   const [wallet, setWallet] = useState<WalletType>("inStoreSafe");
@@ -267,6 +281,28 @@ export function CourierLedgerPage() {
   // One in-flight write at a time; see `useRunOnce`.
   const runOnce = useRunOnce();
 
+  // Read when the dialog opens, not hydrated at boot: a claim is looked at
+  // here and nowhere else on this screen.
+  useEffect(() => {
+    if (!batchCourier) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const all = await listClaims();
+        if (cancelled) return;
+        setClaims(all.filter((c) => c.courier_id === batchCourier.id && c.status === "approved"));
+        setClaimNote(null);
+      } catch (e) {
+        if (cancelled) return;
+        // Empty AND said, never a silent "no claims" — that is the sentence
+        // an operator reads before settling one twice later.
+        setClaims([]);
+        setClaimNote(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [batchCourier]);
+
   const confirmBatch = async () => runOnce(async () => {
     if (!batchCourier || writing.current) return;
     // Re-read from the store: this dialog can sit open while an order is
@@ -291,7 +327,7 @@ export function CourierLedgerPage() {
     try {
       // ONE event for the whole transfer, never one per order: the courier made
       // one payment, and the books should show one payment.
-      await appendEvent({
+      const settlementEventId = await appendEvent({
         kind: "courier_settlement",
         actor: "حسابات الشحن",
         refType: "courier_batch",
@@ -325,6 +361,32 @@ export function CourierLedgerPage() {
       // stamped — everything left unticked stays open for the next transfer.
       for (const order of live) {
         await updateOrder(order.id, { codSettledAt: new Date(), codSettlementId: settlementId });
+      }
+
+      // ── the claims close against THIS transfer ──────────────────────────
+      //
+      // After the event, deliberately. The settlement is the financial fact;
+      // a claim is a note about it. If this half fails the money has still
+      // moved correctly and the claim stays `approved` — recoverable on the
+      // next transfer. The reverse order would mark a claim settled against
+      // an event that might never be written.
+      //
+      // The status is never set from a dropdown: it is a consequence of the
+      // transfer, and migration 040 refuses any event that did not move this
+      // courier's receivable.
+      const toSettle = claims.filter((c) => claimTicked[c.id]);
+      const failed: string[] = [];
+      for (const claim of toSettle) {
+        try {
+          await advanceClaim({ claimId: claim.id, to: "settled", settlementEventId });
+        } catch (e) {
+          failed.push(e instanceof Error ? e.message : String(e));
+        }
+      }
+      if (failed.length > 0) {
+        setClaimNote(
+          `التحويلة اتسجلت والفلوس اتحركت، لكن ${failed.length} مطالبة مقفلتش: ${failed[0]}`,
+        );
       }
 
       owedToUs.refresh();
@@ -736,6 +798,51 @@ export function CourierLedgerPage() {
                     : "المبلغ المستلم أكبر من الصافي المتوقع للطلبات المحددة."}
               </p>
             </div>
+
+            {/* ── مطالبات معتمدة على المندوب ده ────────────────────────────
+                Closed WITH the transfer, never by a status dropdown. Only
+                `approved` claims appear: one that has not been agreed with
+                the company yet is not something a transfer settles.
+
+                This adds no money to the batch. The receivable these claims
+                represent is already in the `receivable_courier` balance the
+                settlement above clears — ticking one records that THIS
+                transfer is what closed it. */}
+            {claims.length > 0 && (
+              <div className="rounded-xl border border-border p-3 space-y-2">
+                <p className="text-sm font-semibold">مطالبات معتمدة على المندوب ده</p>
+                <p className="text-xs text-muted-foreground">
+                  علّم اللي اتحصّل في التحويلة دي. مش بيزوّد المبلغ — بس بيقفل المطالبة.
+                </p>
+                {claims.map((claim) => (
+                  <label key={claim.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={!!claimTicked[claim.id]}
+                      onChange={(e) =>
+                        setClaimTicked((t) => ({ ...t, [claim.id]: e.target.checked }))
+                      }
+                    />
+                    <span className="flex-1">مطالبة على الطلب {claim.order_id}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {CLAIM_STATUS_LABELS[claim.status]}
+                    </span>
+                    <span className="font-semibold">
+                      {formatMoney(claim.amount_piastres / 100)}
+                    </span>
+                  </label>
+                ))}
+                <p className="text-xs text-muted-foreground">
+                  قفل المطالبة مالوش أي علاقة بعربون العميلة — ده حساب مع الشركة.
+                </p>
+              </div>
+            )}
+
+            {claimNote && (
+              <div className="rounded-lg p-3 bg-amber-50 border border-amber-200">
+                <p className="text-sm font-medium text-amber-900">{claimNote}</p>
+              </div>
+            )}
 
             {batchError && (
               <div className="rounded-lg p-3 bg-red-50 border border-red-200">

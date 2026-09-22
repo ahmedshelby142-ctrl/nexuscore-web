@@ -230,6 +230,89 @@ The client sends **no amount**. There is no `depositRefundedAt` column: the
 balance is both the entitlement and the duplicate guard, and the ledger cannot
 be updated or deleted by any client role, so the guard cannot be edited away.
 
+## 6b. Cancellation has a cause, and the claim has a lifecycle
+
+Added 2026-09-22, migration 039.
+
+### The falsified cancellation
+
+A courier that fails a delivery may report *"the customer cancelled"*. Until
+now the app could not contradict it: `cancelOrder` recorded **no cause at
+all**, so a falsified cancellation and a real one were the same row — and both
+forfeited the customer's deposit.
+
+إلغاء الطلب now asks. Three causes, written to the order **and** to the
+append-only event:
+
+| Cause | Deposit | Next |
+|---|---|---|
+| العميلة لغت بنفسها | **forfeited** — Rule A | — |
+| المندوب / شركة الشحن | **held** | claim + customer resolution |
+| خطأ من المحل | **held** | customer resolution |
+
+### Who may say who was at fault
+
+`orders_guard_return_cause`, a **trigger** — not an RPC, because the cause is
+written from four handlers and from anything anyone points at PostgREST
+tomorrow. An RPC guards the path that calls it; a trigger guards the table.
+
+* `courier` and `shop` require **ADMIN or ACCOUNTANT** — the same pair the
+  ledger's money kinds require. `write_orders` admits POS_ECOMMERCE and
+  ECOMMERCE_ONLY, so without this a cashier could assert that a shipping
+  provider owes the shop money.
+* `customer` stays open to the order-writing roles: it creates nothing to
+  claim and is the ordinary reading of a cancellation.
+* The cause **freezes** once a `deposit_refunded` event exists. Re-pointing
+  the blame after the money moved would leave a refund standing on an order
+  that no longer justifies it — and the refund cannot be reversed.
+
+**Workflow impact, stated plainly:** a POS_ECOMMERCE or ECOMMERCE_ONLY user
+can no longer confirm a return as courier- or shop-caused. That is the
+intended restriction, and it is a real change to who can complete that step.
+
+### The claim lifecycle
+
+`courier_claims` — `pending → submitted → approved → settled`, with
+`rejected` reachable from the first two, and both terminal states enforced by
+a trigger. A status column with no transition rule is a column where any
+state reaches any other, which is not a lifecycle.
+
+It is traceable to the order, the courier, the return record, the amount, the
+settlement event, four dates and two users — by **foreign key**, not text ids.
+
+**It holds no money.** The receivable already lives in `ledger_lines` and the
+settlement is a `courier_settlement` event this table only *references*.
+`amount_piastres` is a snapshot for reconciliation and nothing sums it — a
+second summed amount is how two answers to "what does this courier owe us"
+come to exist. It is equally not a string in a ledger payload:
+`no_update_ledger_events` is `USING (false)`, so a status living there could
+never advance past the moment it was written.
+
+### What must never couple — proven, not asserted
+
+Settling the claim left the deposit **still held at 30000 piastres**.
+Refunding the deposit left the claim **still `settled`, amount unchanged at
+4000**. Different counterparties, different money, different events.
+
+### Shop-caused: still a business decision
+
+The evidence determines that `shop` is **not forfeited** — `RETURN_CAUSE_HINTS`,
+the old `depositForfeitedOn` doc and migration 029 all say so. It does **not**
+determine refund-now versus hold, because the one source that said "refunded"
+is the same boolean this correction overrode for the courier case.
+
+So `shop` is **held**: the only answer that moves no money and leaves both
+outcomes reachable. Not invented, and not settled either.
+
+**Decision still required:** on a shop-caused return, should the deposit be
+refunded automatically, or stay a case-by-case resolution as it is now?
+
+Two hint strings promised «والعربون يرجع للعميل» — *the deposit goes back* —
+which stopped being true when the disposition became "held". Both corrected;
+shipped copy that contradicts the ledger is worse than no copy.
+
+---
+
 ## 7. Data facts, 2026-09-21 (read-only, nothing executed)
 
 Live project `oczgqpxeixlrufvevitz`.

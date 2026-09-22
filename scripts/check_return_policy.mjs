@@ -143,11 +143,17 @@ test("S1 · the customer-cancellation call site forfeits, and says so", () => {
   // order holds an amount with no wallet and never wrote a wallet line at
   // placement, so forfeiting it would recognise income against cash the ledger
   // never saw — inventing revenue rather than retaining it.
-  assert.match(
-    cancel,
-    /canonicalWallet\(order\.depositWallet \?\? ""\)\s*\?/,
-    "a legacy order with no deposit wallet must forfeit nothing",
+  // The guard now gates BOTH dispositions — a legacy order must neither
+  // forfeit nor hold, because `order_placed` never banked the money for it.
+  // (This used to pin `canonicalWallet(...) ?` as a bare ternary; the call
+  // site grew a second condition and the assertion was pinning the spelling
+  // rather than the rule.)
+  const banked = cancel.match(/canonicalWallet\(order\.depositWallet \?\? ""\)/g) ?? [];
+  assert.ok(
+    banked.length >= 2,
+    "a legacy order with no deposit wallet must neither forfeit nor hold",
   );
+  assert.match(cancel, /pendingDeposit:/, "and the held disposition is wired");
   // The old field is gone from the type, so an old call site cannot compile.
   const builders = strip(read("../src/lib/ledger/orders.ts"));
   const iface = builders.slice(

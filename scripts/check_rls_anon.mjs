@@ -78,6 +78,7 @@ const TENANT_TABLES = [
   "purchase_invoices", "wholesale_clients", "wholesale_invoices",
   "return_records", "discount_codes", "branches", "shipping_rates",
   "ledger_events", "ledger_lines", "stores", "store_members", "store_licenses",
+  "courier_claims",
 ];
 
 /** A row shaped to pass NOT NULL, so only RLS can be what refuses it. */
@@ -100,6 +101,10 @@ const PROBE = {
   stores: { name: "RLS PROBE" },
   store_members: { role: "ADMIN", user_id: "00000000-0000-0000-0000-0000000000fe" },
   store_licenses: { license_key: "RLS-PROBE", plan_type: "PRO", valid_until: "2099-01-01T00:00:00Z" },
+  // Migration 039. A claim asserts that a shipping provider owes this shop
+  // money, so an anonymous caller writing one is exactly the shape this test
+  // exists to catch.
+  courier_claims: { order_id: "x", courier_id: "x", amount_piastres: 1 },
 };
 
 /** A store id nothing anonymous could ever belong to. */

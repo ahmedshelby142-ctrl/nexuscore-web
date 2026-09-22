@@ -1,5 +1,5 @@
 import { useRunOnce } from "@/hooks/useSubmitGate";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ShoppingBag,
   Truck,
@@ -49,6 +49,16 @@ import {
 } from "@/lib/shippingRates";
 import { storeIdentity } from "@/lib/pdfGenerator";
 import { refundOrderDeposit } from "@/services/depositResolution";
+import {
+  listClaims,
+  openClaim,
+  advanceClaim,
+  CLAIM_STATUS_LABELS,
+  CLAIM_TRANSITIONS,
+  type CourierClaim,
+  type ClaimStatus,
+} from "@/services/courierClaims";
+import { useEffect } from "react";
 import { toast } from "sonner";
 import { appendEvent } from "@/lib/ledger";
 import {
@@ -217,6 +227,49 @@ export function OrdersPage() {
   const [resolutionWallet, setResolutionWallet] = useState<WalletType>("inStoreSafe");
   const [resolutionNote, setResolutionNote] = useState("");
   const [resolutionError, setResolutionError] = useState<string | null>(null);
+  // Cancelling asks WHY. `customer` forfeits the deposit (Rule A); `courier`
+  // and `shop` do not — they open the incident path instead. Defaults to
+  // `customer`, which is the ordinary case and the one that needs no extra
+  // authority; the other two are refused server-side for a cashier.
+  const [cancelDialog, setCancelDialog] = useState<{ orderId: string; open: boolean }>({
+    orderId: "",
+    open: false,
+  });
+  const [cancelCause, setCancelCause] = useState<ReturnCause>("customer");
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  // Claims are read on demand rather than hydrated: a claim is looked at when
+  // an operator opens the panel, not cached into the 14 boot round-trips.
+  const [claims, setClaims] = useState<CourierClaim[]>([]);
+  const [claimDialog, setClaimDialog] = useState<{ orderId: string; open: boolean }>({
+    orderId: "",
+    open: false,
+  });
+  const [claimAmount, setClaimAmount] = useState("");
+  const [claimNotes, setClaimNotes] = useState("");
+  const [claimError, setClaimError] = useState<string | null>(null);
+
+  /**
+   * Read the claims once the screen is up, and after every change.
+   *
+   * A failed read leaves the list EMPTY and says so — it must never render as
+   * "no claim on this order", which is the sentence an operator reads before
+   * raising a second one.
+   */
+  const reloadClaims = useCallback(async () => {
+    try {
+      setClaims(await listClaims());
+      setClaimError(null);
+    } catch (e) {
+      setClaims([]);
+      setClaimError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadClaims();
+  }, [reloadClaims]);
+
+  const claimOf = (orderId: string) => claims.find((c) => c.order_id === orderId) ?? null;
   /** Cash out of the till now, or netted off the courier's account. See §5. */
   const [refundVia, setRefundVia] = useState<"wallet" | "courier">("wallet");
   // Editing a pending order. `draft` holds the new contents until saved; the
@@ -339,6 +392,7 @@ export function OrdersPage() {
    */
   const returningOrder = orders.find((o) => o.id === confirmDialog.orderId) ?? null;
   const resolutionOrder = orders.find((o) => o.id === resolutionDialog.orderId) ?? null;
+  const cancellingOrder = orders.find((o) => o.id === cancelDialog.orderId) ?? null;
   // The movement the dialog is about, derived the SAME way the handler derives
   // it (`movementFor`), so the wording the operator reads and the rule the
   // money follows cannot describe two different things.
@@ -585,7 +639,7 @@ export function OrdersPage() {
    * come back — without this event the units are gone from the shelf with
    * nothing pointing at them, and no screen would ever notice.
    */
-  const cancelOrder = async (orderId: string) => runOnce(async () => {
+  const cancelOrder = async (orderId: string, cause: ReturnCause) => runOnce(async () => {
     const order = currentOrder(orderId);
     if (!order) return;
     const claim = claimOrder(order.id, order.status, "cancel");
@@ -606,7 +660,9 @@ export function OrdersPage() {
         actor: "أونلاين",
         refType: "ecommerce_order",
         refId: order.orderNumber,
-        payload: { customerName: order.customerName },
+        // On the append-only event too, so a cancellation can never be
+        // re-read as customer-caused after the fact.
+        payload: { customerName: order.customerName, return_cause: cause },
         lines: buildOrderCancelledLines({
           items: (order.stockItems ?? []).map((line) => ({
             productId: line.productId,
@@ -644,9 +700,19 @@ export function OrdersPage() {
           // those would recognise income against cash the ledger never saw —
           // inventing revenue rather than retaining it. The old code skipped
           // the REFUND for exactly this reason; the forfeit has to skip too.
-          forfeitedDeposit: canonicalWallet(order.depositWallet ?? "")
-            ? Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0)
-            : 0,
+          // The cause decides, exactly as it does on a return. `customer` is
+          // Rule A and forfeits; a cancellation the COURIER manufactured —
+          // or one our own mistake forced — holds the money instead and
+          // opens the resolution. Neither auto-refunds.
+          forfeitedDeposit:
+            canonicalWallet(order.depositWallet ?? "") && depositDispositionOn(cause, "return") === "forfeit"
+              ? Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0)
+              : 0,
+          pendingDeposit:
+            canonicalWallet(order.depositWallet ?? "") &&
+            depositDispositionOn(cause, "return") === "pending_resolution"
+              ? Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0)
+              : 0,
           // Canonicalised on the way back OUT of the document. Three QA-STORE
           // orders still carry the legacy `instapay` spelling from before
           // `WALLET_LABELS` and the writers agreed; reading it through
@@ -665,10 +731,21 @@ export function OrdersPage() {
         })),
       );
       
+      // Persisted on the ORDER, not just in the event, because the
+      // resolution path reads it back days later — and the server trigger
+      // refuses a courier/shop cause from a role that may not assert one.
+      await updateOrder(orderId, { return_cause: cause } as never);
       await updateOrderStatus(orderId, "cancelled");
     } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e);
+      // The trigger speaks in codes so the wording lives here, in Arabic,
+      // next to the operator who has to act on it.
       setActionError(
-        `لم يُلغَ الطلب ولم يرجع المخزون. ${e instanceof Error ? e.message : String(e)}`,
+        raw.includes("NEXUS_CAUSE_NOT_AUTHORISED")
+          ? "تسجيل السبب ده محتاج صلاحية مدير أو محاسب — الطلب متلغاش."
+          : raw.includes("NEXUS_CAUSE_FROZEN_AFTER_RESOLUTION")
+            ? "العربون اتسوّى على الطلب ده خلاص — مش ممكن تغيّر السبب بعد كده."
+            : `لم يُلغَ الطلب ولم يرجع المخزون. ${raw}`,
       );
     } finally {
       releaseOrder(order.id);
@@ -696,6 +773,49 @@ export function OrdersPage() {
    * per-order advisory lock besides: two operators pressing together produce
    * one refund and one NEXUS_NOTHING_TO_REFUND.
    */
+  /**
+   * Raise the claim. Writes no ledger line — the `receivable_courier` the
+   * confirmation already booked IS the money. This records that we intend to
+   * collect it, and from whom.
+   */
+  const raiseClaim = async (order: EcommerceOrder) => runOnce(async () => {
+    const courierId = courierIdOf(order);
+    if (!courierId) {
+      setClaimError("الطلب ده مش متسجّل عليه مندوب — مش ممكن تطالب شركة من غير ما نعرف مين.");
+      return;
+    }
+    setIsWorking(true);
+    setClaimError(null);
+    try {
+      await openClaim({
+        orderId: order.id,
+        courierId,
+        amountEgp: Number(claimAmount),
+        notes: claimNotes.trim() || undefined,
+      });
+      await reloadClaims();
+      toast.success("اتفتحت مطالبة على شركة الشحن.");
+    } catch (e) {
+      setClaimError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsWorking(false);
+    }
+  });
+
+  /** Advance the claim. The database decides whether the move is legal. */
+  const moveClaim = async (claimId: string, to: ClaimStatus) => runOnce(async () => {
+    setIsWorking(true);
+    setClaimError(null);
+    try {
+      await advanceClaim({ claimId, to });
+      await reloadClaims();
+    } catch (e) {
+      setClaimError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsWorking(false);
+    }
+  });
+
   const resolveDeposit = async () => runOnce(async () => {
     const order = currentOrder(resolutionDialog.orderId);
     if (!order) return;
@@ -1866,6 +1986,33 @@ export function OrdersPage() {
                                 </Button>
                               )}
 
+                            {/* The CLAIM, which is a different matter from
+                                the deposit entirely: money the provider owes
+                                US, settled with them, on its own lifecycle. */}
+                            {order.returnConfirmedAt &&
+                              toReturnCause(order.return_cause) === "courier" && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={isWorking}
+                                  onClick={() => {
+                                    const existing = claimOf(order.id);
+                                    setClaimAmount(
+                                      existing
+                                        ? String(existing.amount_piastres / 100)
+                                        : String(rateFor(shippingRates, order.governorate, "return")),
+                                    );
+                                    setClaimNotes(existing?.notes ?? "");
+                                    setClaimError(null);
+                                    setClaimDialog({ orderId: order.id, open: true });
+                                  }}
+                                >
+                                  {claimOf(order.id)
+                                    ? `مطالبة الشحن — ${CLAIM_STATUS_LABELS[claimOf(order.id)!.status]}`
+                                    : "مطالبة شركة الشحن"}
+                                </Button>
+                              )}
+
                             {/* Money sent before the courier arrives. Only
                                 offered while something is still owed. */}
                             {actions.includes("pay") && order.expectedCod > 0 && (
@@ -1897,7 +2044,17 @@ export function OrdersPage() {
                                 variant="outline"
                                 size="sm"
                                 disabled={isWorking}
-                                onClick={() => void cancelOrder(order.id)}
+                                onClick={() => {
+                                  // Asked, not assumed. A courier that fails a
+                                  // delivery may report a cancellation the
+                                  // customer never made, and this used to
+                                  // record no cause at all — so the falsified
+                                  // one and the real one were the same row,
+                                  // and both forfeited the deposit.
+                                  setCancelCause("customer");
+                                  setCancelError(null);
+                                  setCancelDialog({ orderId: order.id, open: true });
+                                }}
                               >
                                 إلغاء الطلب
                               </Button>
@@ -2480,6 +2637,170 @@ export function OrdersPage() {
                 : returnClientId
                   ? "تأكيد المرتجع وتسوية الحساب"
                   : "تأكيد الاستلام وإرجاع المخزون"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── مطالبة شركة الشحن ──────────────────────────────────────────────
+          The claim lifecycle. Deliberately its OWN dialog, separate from رد
+          العربون: one is money a provider owes us, the other is money we owe
+          a customer, and nothing here settles the other. */}
+      <Dialog open={claimDialog.open} onOpenChange={(open) => setClaimDialog({ ...claimDialog, open })}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>مطالبة شركة الشحن</DialogTitle>
+            <DialogDescription>
+              تعويض عن رحلة ضاعت بغلطة الشحن. ده حساب مع الشركة، مش مع العميلة —
+              وقفل المطالبة مش بيرد أي عربون.
+            </DialogDescription>
+          </DialogHeader>
+          {(() => {
+            const claim = claimOf(claimDialog.orderId);
+            const order = orders.find((o) => o.id === claimDialog.orderId) ?? null;
+            return (
+              <div className="space-y-4 py-2">
+                {claim ? (
+                  <>
+                    <div className="rounded-xl border border-border p-3 text-sm space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">الحالة</span>
+                        <span className="font-semibold">{CLAIM_STATUS_LABELS[claim.status]}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">القيمة</span>
+                        <span className="font-semibold">{formatMoney(claim.amount_piastres / 100)}</span>
+                      </div>
+                    </div>
+                    {CLAIM_TRANSITIONS[claim.status].length === 0 ? (
+                      <p className="text-xs text-muted-foreground">المطالبة قُفلت.</p>
+                    ) : (
+                      <div className="flex gap-2 flex-wrap">
+                        {CLAIM_TRANSITIONS[claim.status].map((next) => (
+                          <Button
+                            key={next}
+                            size="sm"
+                            variant="outline"
+                            disabled={isWorking || next === "settled"}
+                            title={
+                              next === "settled"
+                                ? "القفل بيتم من تسوية المندوب، مش من هنا — لازم تسوية حقيقية"
+                                : undefined
+                            }
+                            onClick={() => void moveClaim(claim.id, next)}
+                          >
+                            {CLAIM_STATUS_LABELS[next]}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="space-y-2">
+                      <Label>قيمة المطالبة</Label>
+                      <input
+                        value={claimAmount}
+                        onChange={(e) => setClaimAmount(e.target.value)
+                        }
+                        inputMode="decimal"
+                        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        المبلغ ده صورة من سطر «مستحق على الشحن» في الدفتر — مش رصيد تاني.
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>ملاحظات (اختياري)</Label>
+                      <input
+                        value={claimNotes}
+                        onChange={(e) => setClaimNotes(e.target.value)}
+                        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <Button
+                      disabled={isWorking || !order}
+                      onClick={() => order && void raiseClaim(order)}
+                    >
+                      {isWorking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      فتح المطالبة
+                    </Button>
+                  </>
+                )}
+                {claimError && <p className="text-xs text-destructive">{claimError}</p>}
+              </div>
+            );
+          })()}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClaimDialog({ orderId: "", open: false })}>
+              إغلاق
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── إلغاء الطلب: مين السبب؟ ────────────────────────────────────────
+          A courier that fails a delivery may report a cancellation the
+          customer never made. This screen used to record no cause at all, so
+          the falsified one and the real one were the same row — and both
+          forfeited the deposit. The cause is asked here, written to the order
+          AND to the append-only event, and the server refuses a courier/shop
+          answer from a role that may not assert one. */}
+      <Dialog
+        open={cancelDialog.open}
+        onOpenChange={(open) => setCancelDialog({ ...cancelDialog, open })}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>إلغاء الطلب {cancellingOrder?.orderNumber}</DialogTitle>
+            <DialogDescription>
+              السبب هو اللي بيحدد العربون — فاختاره صح.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>سبب الإلغاء</Label>
+              <Select value={cancelCause} onValueChange={(v) => setCancelCause(v as ReturnCause)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="customer">العميلة لغت بنفسها</SelectItem>
+                  <SelectItem value="courier">المندوب / شركة الشحن</SelectItem>
+                  <SelectItem value="shop">خطأ من المحل</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {cancelCause === "customer"
+                  ? "إلغاء من العميلة — العربون ميترجعش."
+                  : "مش إلغاء من العميلة — العربون هيتحجز، وتقدر تعمل طلب بديل أو ترده بعد ما تتكلم معاها."}
+              </p>
+            </div>
+            {(cancelCause === "courier" || cancelCause === "shop") && (
+              <p className="text-xs text-muted-foreground rounded-lg border border-border p-2">
+                تسجيل السبب ده محتاج صلاحية مدير أو محاسب — الخادم هو اللي بيتحقق.
+              </p>
+            )}
+            {cancelError && <p className="text-xs text-destructive">{cancelError}</p>}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setCancelDialog({ ...cancelDialog, open: false })}
+              disabled={isWorking}
+            >
+              رجوع
+            </Button>
+            <Button
+              onClick={() => {
+                const id = cancelDialog.orderId;
+                setCancelDialog({ orderId: "", open: false });
+                void cancelOrder(id, cancelCause);
+              }}
+              disabled={isWorking}
+            >
+              {isWorking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              تأكيد الإلغاء
             </Button>
           </DialogFooter>
         </DialogContent>

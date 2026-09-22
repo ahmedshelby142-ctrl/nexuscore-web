@@ -145,7 +145,41 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
       const supabase = getSupabaseClient();
       if (!supabase) return;
       const { data } = supabase.auth.onAuthStateChange((event, session) => {
-        if (!session && (event === "SIGNED_OUT" || event === "TOKEN_REFRESHED")) {
+        // ── A session that APPEARS ──────────────────────────────────────────
+        //
+        // This branch did not exist, and its absence broke signing in.
+        //
+        // The effect above runs once, with `[]` deps. The listener was the
+        // only thing that could move the state afterwards, and it only ever
+        // moved it DOWN — `if (!session && …)`. A `SIGNED_IN` event always
+        // carries a session, so it matched nothing, and a boot that resolved
+        // to "unauthenticated" stayed that way until the page was reloaded.
+        //
+        // That was invisible while the return value was discarded. Once
+        // `ProtectedRoute` began gating on it, the sequence became:
+        //
+        //   boot, no session  → "unauthenticated"
+        //   user signs in     → isAuthenticated = true, navigate to "/"
+        //   ProtectedRoute    → sessionState !== "authenticated" → /login
+        //
+        // — correct credentials, bounced straight back to the login screen.
+        // Mobile did not bounce (its gate tests "unavailable") but ran without
+        // realtime until the next reload, from the same cause.
+        //
+        // Reporting the session is not a privilege grant. This says only
+        // "Supabase currently holds a session", which is the fact this hook
+        // exists to track; `ProtectedRoute` still requires `isAuthenticated`
+        // as well, and that is set by `establishSupabaseSession` only after
+        // membership has been resolved. A forged local flag still cannot
+        // conjure a session, and the next boot re-runs the full membership
+        // check and signs out anyone whose membership has gone.
+        if (session) {
+          setState("authenticated");
+          return;
+        }
+
+        // ── …and one that vanishes ─────────────────────────────────────────
+        if (event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
           if (useAuthStore.getState().isAuthenticated) useAuthStore.getState().logout();
           setState("unauthenticated");
         }

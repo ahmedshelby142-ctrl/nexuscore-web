@@ -180,6 +180,17 @@ test("the screen no longer tells staff to sign up on their own", () => {
  */
 
 const setPassword = strip(read("../src/pages/SetPassword.tsx"));
+/**
+ * The invitation's password-setup logic.
+ *
+ * It moved out of the screen and into `lib/auth/sessionWorkflow.ts`
+ * (`completePasswordSetup`) when desktop and mobile were given one shared auth
+ * path. The rules below follow it: what matters is that the flow never claims
+ * a store, reads the role from `store_members`, and holds the password to the
+ * signup standard — not which file performs it. That the screen still routes
+ * through it is asserted too, so the move cannot become a loss.
+ */
+const setupWorkflow = strip(read("../src/lib/auth/sessionWorkflow.ts"));
 const app = strip(read("../src/App.tsx"));
 
 test("an invitation link has somewhere to land", () => {
@@ -204,23 +215,35 @@ test("accepting an invitation never creates a second shop", () => {
   // ADMIN of it. /login calls it deliberately; calling it here would hand an
   // invited employee their own empty tenant — the exact failure the invitation
   // flow exists to prevent.
-  assert.ok(
-    !/claim_store/.test(setPassword),
-    "SetPassword must never call claim_store",
+  assert.ok(!/claim_store/.test(setPassword), "SetPassword must never call claim_store");
+  // The screen routes through the shared workflow rather than re-implementing
+  // the flow, so the rule is asserted where it now lives.
+  assert.match(setPassword, /completePasswordSetup\(/, "the screen uses the shared setup path");
+
+  const setup = setupWorkflow.slice(
+    setupWorkflow.indexOf("export async function completePasswordSetup"),
+    setupWorkflow.indexOf("export async function signOutCurrentSession"),
   );
+  assert.ok(setup.length > 0, "completePasswordSetup must be found");
+  assert.ok(!/claim_store/.test(setup), "the setup path must never claim a store");
   // No membership means they are not an invited employee. Say so; do not
   // improvise a store for them.
-  assert.match(setPassword, /if \(!membership\)/);
-
+  assert.match(setup, /if \(!membership\)/);
   // The role comes from the table RLS reads, never from the link.
-  assert.match(setPassword, /\.from\("store_members"\)[\s\S]{0,120}\.select\("role"\)/);
-  assert.match(setPassword, /toAppRole\(membership\.role\)/);
+  assert.match(setup, /\.from\("store_members"\)[\s\S]{0,120}\.select\("role"\)/);
+  assert.match(setup, /toAppRole\(membership\.role\)/);
 });
 
 test("the password set here is held to the same standard as signup", () => {
-  assert.match(setPassword, /await checkLeakedPassword\(password\)/);
+  const setup = setupWorkflow.slice(
+    setupWorkflow.indexOf("export async function completePasswordSetup"),
+    setupWorkflow.indexOf("export async function signOutCurrentSession"),
+  );
+  assert.match(setup, /await checkLeakedPassword\(password\)/);
+  assert.match(setup, /password\.length < 8/);
+  // The confirm-field comparison stays on the SCREEN, because that is where
+  // the second field exists — the workflow only ever receives one password.
   assert.match(setPassword, /password !== confirm/);
-  assert.match(setPassword, /password\.length < 8/);
 });
 
 test("the invitation link points at the screen that can consume it", () => {

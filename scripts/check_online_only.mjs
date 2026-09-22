@@ -28,6 +28,19 @@ const financial = read("../src/store/useFinancialStore.ts");
 const cloudData = read("../src/services/cloudData.ts");
 const hydrate = read("../src/services/cloudHydrate.ts");
 const boot = read("../src/hooks/useRealtimeSync.ts");
+/**
+ * The boot reconciliation itself.
+ *
+ * It used to live inline in `useRealtimeSync` and was EXTRACTED so the
+ * independent mobile entry could mount the same fail-closed session recovery
+ * without desktop hydration or realtime subscriptions.
+ *
+ * The assertions below follow the behaviour rather than pinning the file it
+ * left. What matters is that the app asks Supabase who this is on boot — not
+ * which module holds the call. That `useRealtimeSync` still MOUNTS it is
+ * asserted separately, so the extraction cannot become a deletion.
+ */
+const reconcile = read("../src/lib/auth/useSessionReconciliation.ts");
 const driver = read("../src/lib/ledger/driver.ts");
 
 const NL = String.fromCharCode(10);
@@ -810,9 +823,12 @@ test("the local auth flag is reconciled against the real Supabase session", () =
   // every read and write failed 401 — observed live in this project.
   //
   // The reconciliation may only ever sign the user OUT, never in.
-  assert.match(boot, /auth\.getSession\(\)/, "boot must ask Supabase for the real session");
-  assert.match(boot, /onAuthStateChange/, "a revoked or unrefreshable session must be noticed");
-  assert.match(boot, /logout\(\)/, "the only action taken is a local sign-out");
+  assert.match(reconcile, /auth\.getSession\(\)/, "boot must ask Supabase for the real session");
+  assert.match(reconcile, /onAuthStateChange/, "a revoked or unrefreshable session must be noticed");
+  assert.match(reconcile, /logout\(\)/, "a session that is gone must clear the local flag");
+  // …and the boot path must still MOUNT it, or the extraction would have
+  // quietly removed the behaviour rather than moved it.
+  assert.match(boot, /useSessionReconciliation\(\)/, "boot must still run the reconciliation");
 });
 
 test("an async handler that appends a ledger event is gated", () => {
@@ -954,8 +970,18 @@ test("logging out ends the Supabase session, not just the local flag", () => {
   assert.match(sidebar, /auth\.signOut\(\)/,
     "the logout button must end the Supabase session");
 
-  // And the reconciliation must stay one-directional about signing OUT: it may
-  // restore a session, but a real sign-out has to remove the token so there is
-  // nothing left to restore.
-  assert.match(boot, /auth\.getSession\(\)/, "boot still reconciles against the real session");
+  // And the reconciliation has to keep asking the server, so a real sign-out
+  // that removed the token cannot be undone by a leftover local flag.
+  //
+  // It is NOT one-directional any more, and that was a bug rather than a
+  // property: the watcher only ever moved the state DOWN, so a session
+  // appearing after boot — which is exactly what signing in does — was never
+  // noticed, and `ProtectedRoute` bounced a freshly-authenticated user back to
+  // /login. See `check_login_regression.mjs`.
+  assert.match(reconcile, /auth\.getSession\(\)/, "boot still reconciles against the real session");
+  assert.match(
+    reconcile,
+    /if \(session\)[\s\S]{0,400}setState\("authenticated"\)/,
+    "…and a session that APPEARS is reported too",
+  );
 });

@@ -86,9 +86,17 @@ test("the login screen refuses instead of authenticating offline", () => {
 
 test("the only credential check left is Supabase Auth", () => {
   const src = code(login);
-  assert.match(src, /auth\.signInWithPassword/, "the real login must still be there");
-  assert.ok(
-    !/password\s*===|username\s*===\s*["']owner["']/.test(src),
-    "credentials are being compared against a literal in the client",
-  );
+  // The CALL moved into `lib/auth/sessionWorkflow.ts` when desktop and mobile
+  // were given one shared sign-in path. The invariant did not move: the only
+  // thing that may check a credential is Supabase, and nothing in the client
+  // may compare one against a literal.
+  const workflow = code(readFileSync(new URL("../src/lib/auth/sessionWorkflow.ts", import.meta.url), "utf8"));
+  assert.match(workflow, /auth\.signInWithPassword/, "the real login must still be there");
+  assert.match(src, /signInWithPassword\(/, "and the screen must still route through it");
+  for (const [name, text] of [["Login", src], ["sessionWorkflow", workflow]]) {
+    assert.ok(
+      !/password\s*===|username\s*===\s*["']owner["']/.test(text),
+      `${name}: credentials are being compared against a literal in the client`,
+    );
+  }
 });

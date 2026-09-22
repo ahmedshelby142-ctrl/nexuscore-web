@@ -196,7 +196,25 @@ Two different amounts, owed by and to different parties, settled by different
 mechanisms. The refund touches **no** courier account — asserted, because
 paying a customer must not quietly forgive the provider.
 
-### Where the choice lives
+### Where the choice lives — and it is TWO choices
+
+Identifying the courier as the cause says nothing about whether the customer
+still wants the goods. Most of the time they do, and the deposit carries
+straight into the replacement. So تسوية العميلة asks first:
+
+| Resolution | Effect on the deposit | Effect on the claim |
+|---|---|---|
+| **إنشاء طلب بديل** | stays **held** — a replacement is not a refund | unchanged |
+| **إنهاء الطلب ورد العربون** | refunded, once, by the RPC | unchanged |
+
+`رد العربون` is **not** offered on the click that identifies the cause. It is
+behind the second choice, with its own confirmation — putting it on the first
+screen made the refund the default answer to a question nobody had asked the
+customer yet.
+
+Resolution A navigates to the order-entry screen with `?exchangeOf=`, which
+writes `original_order_id` on Order B. It touches no money: Order A keeps its
+status, its cause, its claim and its held deposit.
 
 In the **incident**, not in Settings. الإعدادات states the fixed rule and
 offers no "refund deposits = ON" switch: that would be a way to configure an
@@ -294,18 +312,17 @@ Settling the claim left the deposit **still held at 30000 piastres**.
 Refunding the deposit left the claim **still `settled`, amount unchanged at
 4000**. Different counterparties, different money, different events.
 
-### Shop-caused: still a business decision
+### Shop-caused: SETTLED 2026-09-22
 
-The evidence determines that `shop` is **not forfeited** — `RETURN_CAUSE_HINTS`,
-the old `depositForfeitedOn` doc and migration 029 all say so. It does **not**
-determine refund-now versus hold, because the one source that said "refunded"
-is the same boolean this correction overrode for the courier case.
+**Owner decision: the same non-automatic principle as courier.** A shop-caused
+return holds the deposit and the employee chooses the resolution. No automatic
+refund exists and none may be invented.
 
-So `shop` is **held**: the only answer that moves no money and leaves both
-outcomes reachable. Not invented, and not settled either.
-
-**Decision still required:** on a shop-caused return, should the deposit be
-refunded automatically, or stay a case-by-case resolution as it is now?
+This closes what the previous pass flagged as an open question. The evidence
+had determined that `shop` is not *forfeited* — `RETURN_CAUSE_HINTS`, the old
+`depositForfeitedOn` doc and migration 029 all said so — but not refund-now
+versus hold. Hold was kept as the reversible answer; the owner has now made it
+the rule.
 
 Two hint strings promised «والعربون يرجع للعميل» — *the deposit goes back* —
 which stopped being true when the disposition became "held". Both corrected;

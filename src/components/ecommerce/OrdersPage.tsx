@@ -24,7 +24,7 @@ import {
   Calendar as CalendarIcon,
   MessageCircle,
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { nextDocumentNumber } from "@/services/documentNumber";
 import { cn } from "@/lib/utils";
 import { useOrderStore } from "@/store/useOrderStore";
@@ -227,6 +227,24 @@ export function OrdersPage() {
   const [resolutionWallet, setResolutionWallet] = useState<WalletType>("inStoreSafe");
   const [resolutionNote, setResolutionNote] = useState("");
   const [resolutionError, setResolutionError] = useState<string | null>(null);
+  // TWO decisions, not one. Identifying the courier as the cause does not
+  // mean the customer wants their money back — they may well want the goods.
+  // Offering رد العربون on the same click made the refund the default answer
+  // to a question nobody had asked them yet.
+  const [resolutionStep, setResolutionStep] = useState<"choose" | "refund">("choose");
+
+  const navigate = useNavigate();
+  /**
+   * Resolution A — the customer still wants the goods.
+   *
+   * Hands off to the order-entry screen, which already takes `?exchangeOf=`
+   * and writes `original_order_id` on the new document. Order A keeps its
+   * status, its cause, its claim and its HELD deposit: a replacement is not a
+   * refund, and raising one must never move the customer's money.
+   */
+  const navigateToReplacement = (orderId: string) => {
+    navigate(`/ecommerce-orders?exchangeOf=${encodeURIComponent(orderId)}`);
+  };
   // Cancelling asks WHY. `customer` forfeits the deposit (Rule A); `courier`
   // and `shop` do not — they open the incident path instead. Defaults to
   // `customer`, which is the ordinary case and the one that needs no extra
@@ -1979,10 +1997,11 @@ export function OrdersPage() {
                                     setResolutionError(null);
                                     setResolutionWallet("inStoreSafe");
                                     setResolutionNote("");
+                                    setResolutionStep("choose");
                                     setResolutionDialog({ orderId: order.id, open: true });
                                   }}
                                 >
-                                  تسوية العميلة — رد العربون
+                                  تسوية العميلة
                                 </Button>
                               )}
 
@@ -2817,15 +2836,68 @@ export function OrdersPage() {
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>تسوية العميلة — رد العربون</DialogTitle>
+            <DialogTitle>
+              {resolutionStep === "choose" ? "تسوية العميلة" : "إنهاء الطلب ورد العربون"}
+            </DialogTitle>
             <DialogDescription>
               المرتجع ده سببه{" "}
               {toReturnCause(resolutionOrder?.return_cause) === "courier"
                 ? "المندوب / شركة الشحن"
                 : "المحل"}
-              ، يعني مش إلغاء من العميلة. لو العميلة مش عايزة تكمل، تقدر ترد لها العربون.
+              ، يعني مش إلغاء من العميلة. اسأل العميلة الأول وبعدين اختار.
             </DialogDescription>
           </DialogHeader>
+
+          {/* ── STEP 1 · what does the customer want? ──────────────────────
+              The refund is NOT offered here. Identifying the courier as the
+              cause says nothing about whether the customer still wants the
+              goods — most of the time they do, and the deposit should carry
+              straight into the replacement. Putting رد العربون on this screen
+              made the refund the default answer to a question nobody had
+              asked the customer yet. */}
+          {resolutionStep === "choose" && (
+            <div className="space-y-3 py-2">
+              <div className="rounded-xl border border-border p-3 text-sm space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">الطلب</span>
+                  <span className="font-mono">{resolutionOrder?.orderNumber}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">العربون المحجوز</span>
+                  <span className="font-semibold">
+                    {formatMoney(resolutionOrder?.depositAmount ?? 0)}
+                  </span>
+                </div>
+              </div>
+              <Button
+                className="w-full"
+                variant="outline"
+                onClick={() => {
+                  // Order B is raised on the order-entry screen, linked by
+                  // `original_order_id`. Nothing here touches the deposit:
+                  // the customer is continuing, so the money they already
+                  // paid carries on working for them.
+                  setResolutionDialog({ orderId: "", open: false });
+                  navigateToReplacement(resolutionDialog.orderId);
+                }}
+              >
+                إنشاء طلب بديل — العربون يفضل محجوز
+              </Button>
+              <Button
+                className="w-full"
+                variant="outline"
+                onClick={() => setResolutionStep("refund")}
+              >
+                إنهاء الطلب ورد العربون
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                تعويض شركة الشحن حاجة تانية مستقلة — أياً كان اختيارك، المطالبة زي ما هي.
+              </p>
+            </div>
+          )}
+
+          {resolutionStep === "refund" && (
+          <>
           <div className="space-y-4 py-2">
             <div className="rounded-xl border border-border p-3 text-sm space-y-1">
               <div className="flex justify-between">
@@ -2878,16 +2950,18 @@ export function OrdersPage() {
           <DialogFooter className="gap-2">
             <Button
               variant="outline"
-              onClick={() => setResolutionDialog({ ...resolutionDialog, open: false })}
+              onClick={() => setResolutionStep("choose")}
               disabled={isWorking}
             >
-              إلغاء — نحتفظ بالعربون
+              رجوع — نحتفظ بالعربون
             </Button>
             <Button onClick={() => void resolveDeposit()} disabled={isWorking}>
               {isWorking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               تأكيد رد العربون
             </Button>
           </DialogFooter>
+          </>
+          )}
         </DialogContent>
       </Dialog>
 

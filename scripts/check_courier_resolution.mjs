@@ -163,7 +163,17 @@ test("S4 · LTV follows the money back out", () => {
 test("S5 · declining the refund writes nothing at all", () => {
   // There is no "keep" action, deliberately: holding is what already happened
   // at confirmation, so declining is simply not acting.
-  assert.match(ORDERS, /إلغاء — نحتفظ بالعربون/, "declining is explicit and inert");
+  //
+  // The wording moved from «إلغاء» to «رجوع» when the resolution became two
+  // steps — backing out now returns to the choice rather than closing the
+  // dialog, so the assertion matches the promise («نحتفظ بالعربون») instead of
+  // the button it happened to sit on.
+  assert.match(ORDERS, /نحتفظ بالعربون/, "declining is explicit and inert");
+  assert.match(
+    ORDERS,
+    /onClick=\{\(\) => setResolutionStep\("choose"\)\}/,
+    "and it goes back to the choice rather than acting",
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

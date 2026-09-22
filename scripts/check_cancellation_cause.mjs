@@ -303,3 +303,99 @@ test("shop-caused is held, which is the reversible answer while it is undecided"
   assert.equal(depositDispositionOn("shop", "return"), "pending_resolution");
   assert.notEqual(depositDispositionOn("shop", "return"), "forfeit");
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OWNER DECISION, 2026-09-22 — the resolution is TWO decisions
+//
+// Identifying the courier as the cause says nothing about whether the customer
+// still wants the goods. Most of the time they do, and the deposit should
+// carry straight into the replacement. Offering رد العربون on the same click
+// made the refund the default answer to a question nobody had asked them yet.
+// ═══════════════════════════════════════════════════════════════════════════
+
+test("the refund is not offered on the click that identifies the cause", () => {
+  // Step one names the two resolutions; the refund form is behind step two.
+  assert.match(ORDERS, /useState<"choose" \| "refund">\("choose"\)/, "two steps");
+  assert.match(ORDERS, /resolutionStep === "choose" &&/, "step one renders the choice");
+  assert.match(ORDERS, /resolutionStep === "refund" &&/, "the refund form is gated behind it");
+  // The entry button says تسوية العميلة, not رد العربون.
+  const entry = ORDERS.slice(0, ORDERS.indexOf("<Dialog"));
+  assert.ok(
+    !/تسوية العميلة — رد العربون/.test(ORDERS),
+    "the entry point must not name the refund",
+  );
+  // Opening the dialog always resets to the choice.
+  assert.match(ORDERS, /setResolutionStep\("choose"\);\s*\n?\s*setResolutionDialog\(\{ orderId: order\.id/);
+  void entry;
+});
+
+test("both resolutions are offered, in the owner's words", () => {
+  assert.match(ORDERS, /إنشاء طلب بديل/, "Resolution A");
+  assert.match(ORDERS, /إنهاء الطلب ورد العربون/, "Resolution B");
+});
+
+test("Resolution A · a replacement never refunds the deposit", () => {
+  // The button navigates to the order-entry screen and writes nothing.
+  assert.match(ORDERS, /navigateToReplacement\(resolutionDialog\.orderId\)/);
+  const nav = ORDERS.slice(
+    ORDERS.indexOf("const navigateToReplacement"),
+    ORDERS.indexOf("const navigateToReplacement") + 400,
+  );
+  assert.ok(!/refundOrderDeposit|appendEvent|buildOrder/.test(nav),
+    "raising a replacement must move no money at all");
+  assert.match(nav, /exchangeOf=/, "it hands off to the screen that links the two orders");
+  // …and it is labelled so the operator knows the deposit stays put.
+  assert.match(ORDERS, /إنشاء طلب بديل — العربون يفضل محجوز/);
+});
+
+test("Resolution A · the entry screen links B to A rather than editing A", () => {
+  const entry = strip(read("../src/routes/ecommerce-orders.tsx"));
+  assert.match(entry, /searchParams\.get\("exchangeOf"\)/, "it accepts the original");
+  assert.match(entry, /original_order_id: originalOrderId/, "and links the new document");
+  // Nothing on that screen refunds a deposit.
+  assert.ok(!/refundOrderDeposit/.test(entry), "the entry screen cannot refund");
+});
+
+test("Resolution B · declining step one writes nothing", () => {
+  // Backing out of the refund form returns to the choice; it does not act.
+  assert.match(ORDERS, /رجوع — نحتفظ بالعربون/);
+  assert.match(ORDERS, /onClick=\{\(\) => setResolutionStep\("choose"\)\}/);
+});
+
+test("the claim is stated as independent on BOTH steps", () => {
+  // Step one, where the operator is choosing…
+  assert.match(ORDERS, /تعويض شركة الشحن حاجة تانية مستقلة — أياً كان اختيارك/);
+  // …and step two, at the moment money moves.
+  assert.match(ORDERS, /تعويض شركة الشحن حاجة تانية مستقلة — رد العربون مش بيلغيه/);
+});
+
+test("OWNER DECISION · shop-caused follows the same non-automatic principle", () => {
+  // Settled 2026-09-22: the same rule as courier unless explicitly overridden.
+  // No automatic refund was invented, and none exists.
+  assert.equal(depositDispositionOn("shop", "return"), "pending_resolution");
+  assert.equal(depositDispositionOn("courier", "return"), "pending_resolution");
+  assert.equal(depositDispositionOn("customer", "return"), "forfeit");
+  // The resolution is offered for both, and only for those two.
+  assert.equal(depositRefundEligible("shop"), true);
+  assert.equal(depositRefundEligible("courier"), true);
+  assert.equal(depositRefundEligible("customer"), false);
+  assert.equal(depositRefundEligible("unknown"), false);
+});
+
+test("there is NO code path from a courier cause to an automatic refund", () => {
+  // The whole decision, asserted as an absence. `pending_resolution` is the
+  // only thing a courier- or shop-caused return can produce, and the single
+  // way out of it is the explicitly-authorised RPC.
+  for (const cause of ["courier", "shop"]) {
+    assert.notEqual(depositDispositionOn(cause, "return"), "none",
+      `${cause} must never resolve to "no deposit held"`);
+  }
+  // The builders have no automatic refund branch keyed on a cause: the only
+  // refund field is passed explicitly by a caller.
+  const builders = strip(read("../src/lib/ledger/orders.ts"));
+  assert.ok(!/depositDispositionOn|return_cause/.test(builders),
+    "the ledger builders must not decide a disposition for themselves");
+  // And the one refund path is the RPC, which requires an operator's call.
+  assert.ok(!/refund_order_deposit/.test(strip(read("../src/lib/shippingRates.ts"))),
+    "no policy function may invoke the refund");
+});

@@ -37,7 +37,8 @@ import {
   rateFor,
   clearsShippingDebt,
   countsAsWastedTrip,
-  depositForfeitedOn,
+  depositDispositionOn,
+  depositRefundEligible,
   shippingBorneBy,
   toReturnCause,
   RETURN_CAUSES,
@@ -47,6 +48,8 @@ import {
   type ReturnCause,
 } from "@/lib/shippingRates";
 import { storeIdentity } from "@/lib/pdfGenerator";
+import { refundOrderDeposit } from "@/services/depositResolution";
+import { toast } from "sonner";
 import { appendEvent } from "@/lib/ledger";
 import {
   buildOrderDeliveredLines,
@@ -204,6 +207,16 @@ export function OrdersPage() {
   // Who caused it. Defaults to "unknown" so a rushed confirmation never files
   // blame the operator did not actually enter.
   const [confirmCause, setConfirmCause] = useState<ReturnCause>("unknown");
+  // تسوية العميلة — the deposit resolution after a shop/courier-caused return.
+  // Its own dialog, because it happens DAYS after the confirmation: the
+  // customer has to be asked whether they still want the goods first.
+  const [resolutionDialog, setResolutionDialog] = useState<{ orderId: string; open: boolean }>({
+    orderId: "",
+    open: false,
+  });
+  const [resolutionWallet, setResolutionWallet] = useState<WalletType>("inStoreSafe");
+  const [resolutionNote, setResolutionNote] = useState("");
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
   /** Cash out of the till now, or netted off the courier's account. See §5. */
   const [refundVia, setRefundVia] = useState<"wallet" | "courier">("wallet");
   // Editing a pending order. `draft` holds the new contents until saved; the
@@ -325,6 +338,7 @@ export function OrdersPage() {
    * refunding cash — without it a trader would be handed money they never paid.
    */
   const returningOrder = orders.find((o) => o.id === confirmDialog.orderId) ?? null;
+  const resolutionOrder = orders.find((o) => o.id === resolutionDialog.orderId) ?? null;
   // The movement the dialog is about, derived the SAME way the handler derives
   // it (`movementFor`), so the wording the operator reads and the rule the
   // money follows cannot describe two different things.
@@ -668,6 +682,45 @@ export function OrdersPage() {
    * The typed name must match the order's — this is the human check the whole
    * pending/confirmed split exists for.
    */
+  /**
+   * Hand the held deposit back — the FINAL CANCELLATION resolution.
+   *
+   * Everything that makes this legitimate is decided in Postgres by
+   * `refund_order_deposit`: the cause, the amount, whether a deposit was ever
+   * banked, whether one has already gone back, and who is allowed to do it.
+   * This function sends an order id and a till and reports what the server
+   * said — deliberately no amount, so a patched client cannot ask for more
+   * than the customer left.
+   *
+   * Gated by `runOnce` like every other ledger write, and the server holds a
+   * per-order advisory lock besides: two operators pressing together produce
+   * one refund and one NEXUS_NOTHING_TO_REFUND.
+   */
+  const resolveDeposit = async () => runOnce(async () => {
+    const order = currentOrder(resolutionDialog.orderId);
+    if (!order) return;
+    setIsWorking(true);
+    setResolutionError(null);
+    try {
+      await refundOrderDeposit({
+        orderId: order.id,
+        wallet: resolutionWallet,
+        note: resolutionNote.trim() || undefined,
+      });
+      // The ledger moved, so every balance on screen is stale. Same refresh the
+      // confirm path does — there is no local arithmetic to update, by design.
+      refreshStock();
+      refreshDebt();
+      window.dispatchEvent(new CustomEvent("ledger-sync-pulled", { detail: { table: "ledger_events" } }));
+      setResolutionDialog({ orderId: "", open: false });
+      toast.success("تم رد العربون للعميلة وتسجيله في الدفتر.");
+    } catch (e) {
+      setResolutionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsWorking(false);
+    }
+  });
+
   const confirmReturn = async () => runOnce(async () => {
     const order = currentOrder(confirmDialog.orderId);
     if (!order) return;
@@ -754,9 +807,15 @@ export function OrdersPage() {
             // walked away. A refusal caused by the courier or by us is not the
             // customer's doing, and keeping their money for it was the policy
             // applied to the wrong person. Then it goes back out of the till.
-            ...(depositForfeitedOn(cause, movement)
+            // Three dispositions, and the third one moves nothing. The old
+            // `!keepsDeposit -> refund` shape sent every non-forfeit case down
+            // the refund branch, which is how an EXCHANGE — where the same
+            // money funds the replacement — handed the deposit back as well.
+            ...(depositDispositionOn(cause, movement) === "forfeit"
               ? { forfeitedDeposit: deposit }
-              : { refundedDeposit: deposit, wallet: targetWallet }),
+              : depositDispositionOn(cause, movement) === "pending_resolution"
+              ? { pendingDeposit: deposit }
+              : {}),
             customerId: customerId ?? undefined,
           }),
         });
@@ -908,10 +967,16 @@ export function OrdersPage() {
             // revenue/LTV net to the price difference — which is the whole
             // invariant. The courier's trip is still paid for, by the customer,
             // through the pass-through exchange fee below.
-            // `depositForfeitedOn` holds both halves of the rule: an exchange
-            // never forfeits (the money funds the replacement), and neither does
-            // a return we or the courier caused.
-            forfeitedDeposit: depositForfeitedOn(cause, movement)
+            // `depositDispositionOn` holds all three answers: an exchange
+            // resolves nothing (the money funds the replacement), a customer
+            // who walked away forfeits, and a return WE or the COURIER caused
+            // is HELD — neither earned nor handed back — until the customer
+            // says whether they still want the goods. That last one used to
+            // refund on the spot, which decided a question nobody had asked.
+            forfeitedDeposit: depositDispositionOn(cause, movement) === "forfeit"
+              ? Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0)
+              : 0,
+            pendingDeposit: depositDispositionOn(cause, movement) === "pending_resolution"
               ? Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0)
               : 0,
             // Cash now, or off the courier's account — see the picker in the
@@ -1769,6 +1834,38 @@ export function OrdersPage() {
                               </span>
                             )}
 
+                            {/* ── تسوية العميلة ────────────────────────────
+                                Only after a return the SHOP or the COURIER
+                                caused, and only once the goods are back. This
+                                is the case-by-case resolution, not a policy: a
+                                customer who takes the replacement keeps their
+                                deposit working for them, and one who walks away
+                                after our provider failed them may have it back.
+
+                                Offering it is a client-side courtesy.
+                                `refund_order_deposit` re-checks the cause, the
+                                deposit and the duplicate against the database
+                                under a lock, and the role gate is
+                                `insert_ledger_events` — so a button rendered by
+                                a patched bundle buys nothing. */}
+                            {order.returnConfirmedAt &&
+                              depositRefundEligible(toReturnCause(order.return_cause)) &&
+                              (order.depositAmount ?? 0) > 0 && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={isWorking}
+                                  onClick={() => {
+                                    setResolutionError(null);
+                                    setResolutionWallet("inStoreSafe");
+                                    setResolutionNote("");
+                                    setResolutionDialog({ orderId: order.id, open: true });
+                                  }}
+                                >
+                                  تسوية العميلة — رد العربون
+                                </Button>
+                              )}
+
                             {/* Money sent before the courier arrives. Only
                                 offered while something is still owed. */}
                             {actions.includes("pay") && order.expectedCod > 0 && (
@@ -2383,6 +2480,91 @@ export function OrdersPage() {
                 : returnClientId
                   ? "تأكيد المرتجع وتسوية الحساب"
                   : "تأكيد الاستلام وإرجاع المخزون"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── تسوية العميلة: رد العربون ─────────────────────────────────────
+          A dialog of its own, and a confirmation inside it, because this is
+          the one action on this screen that takes money OUT of the till on a
+          judgement call rather than on a rule. The amount is not editable and
+          is not even sent — the server refunds exactly what is still held. */}
+      <Dialog
+        open={resolutionDialog.open}
+        onOpenChange={(open) => setResolutionDialog({ ...resolutionDialog, open })}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>تسوية العميلة — رد العربون</DialogTitle>
+            <DialogDescription>
+              المرتجع ده سببه{" "}
+              {toReturnCause(resolutionOrder?.return_cause) === "courier"
+                ? "المندوب / شركة الشحن"
+                : "المحل"}
+              ، يعني مش إلغاء من العميلة. لو العميلة مش عايزة تكمل، تقدر ترد لها العربون.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="rounded-xl border border-border p-3 text-sm space-y-1">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">الطلب</span>
+                <span className="font-mono">{resolutionOrder?.orderNumber}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">العربون المحجوز</span>
+                <span className="font-semibold">
+                  {formatMoney(resolutionOrder?.depositAmount ?? 0)}
+                </span>
+              </div>
+              {/* Said plainly: the claim is a separate matter and is not
+                  cancelled, reduced or settled by handing the deposit back. */}
+              <p className="text-xs text-muted-foreground pt-1">
+                تعويض شركة الشحن حاجة تانية مستقلة — رد العربون مش بيلغيه ولا بيقلّله.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>الخزينة اللي العربون هيترد منها</Label>
+              <Select
+                value={resolutionWallet}
+                onValueChange={(v) => setResolutionWallet(v as WalletType)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(WALLET_LABELS).map(([key, label]) => (
+                    <SelectItem key={key} value={key}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>سبب التسوية (اختياري)</Label>
+              <input
+                value={resolutionNote}
+                onChange={(e) => setResolutionNote(e.target.value)}
+                placeholder="مثال: العميلة مش عايزة تستنى شحنة تانية"
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+            </div>
+            {resolutionError && (
+              <p className="text-xs text-destructive">{resolutionError}</p>
+            )}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setResolutionDialog({ ...resolutionDialog, open: false })}
+              disabled={isWorking}
+            >
+              إلغاء — نحتفظ بالعربون
+            </Button>
+            <Button onClick={() => void resolveDeposit()} disabled={isWorking}>
+              {isWorking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              تأكيد رد العربون
             </Button>
           </DialogFooter>
         </DialogContent>

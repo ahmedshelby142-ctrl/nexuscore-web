@@ -20,7 +20,7 @@ import {
   buildReturnConfirmedLines,
   buildOrderRTOLines,
 } from "../src/lib/ledger/orders.ts";
-import { shippingBorneBy, depositForfeitedOn } from "../src/lib/shippingRates.ts";
+import { shippingBorneBy, depositDispositionOn } from "../src/lib/shippingRates.ts";
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 
@@ -131,7 +131,7 @@ test("an unclassified return keeps the pre-026 accounting exactly", () => {
 // ── §4 the deposit, by cause ────────────────────────────────────────────────
 
 test("an RTO the customer caused keeps the deposit and books it as income", () => {
-  assert.equal(depositForfeitedOn("customer", "return"), true);
+  assert.equal(depositDispositionOn("customer", "return"), "forfeit");
   const lines = buildOrderRTOLines({
     items: base.items,
     forfeitedDeposit: 50,
@@ -141,8 +141,8 @@ test("an RTO the customer caused keeps the deposit and books it as income", () =
   assert.equal(amountOn(lines, "wallet"), 0, "the money never moved — it was already ours");
 });
 
-test("an RTO the courier caused gives the deposit back", () => {
-  assert.equal(depositForfeitedOn("courier", "return"), false);
+test("an RTO the courier caused does NOT book the deposit as income", () => {
+  assert.equal(depositDispositionOn("courier", "return"), "pending_resolution");
   const lines = buildOrderRTOLines({
     items: base.items,
     refundedDeposit: 50,
@@ -153,8 +153,8 @@ test("an RTO the courier caused gives the deposit back", () => {
   assert.equal(amountOn(lines, "revenue", "forfeited_deposit"), 0);
 });
 
-test("an RTO the shop caused gives the deposit back too", () => {
-  assert.equal(depositForfeitedOn("shop", "return"), false);
+test("an RTO the shop caused holds it too", () => {
+  assert.equal(depositDispositionOn("shop", "return"), "pending_resolution");
 });
 
 // ── the screens must actually ask ───────────────────────────────────────────

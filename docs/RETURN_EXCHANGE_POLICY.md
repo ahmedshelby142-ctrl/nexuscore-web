@@ -62,8 +62,8 @@ prices the trip; the cause decides who carries it.**
 
 | Cause | Bearer | Ledger effect | Deposit |
 |---|---|---|---|
-| `shop` | shop | `expense / shipping_return +fee` | **refunded** (not forfeited) |
-| `courier` | courier | `payable_courier +fee` **and** `receivable_courier +fee` — nets to zero for the shop; the provider compensates us | **refunded** |
+| `shop` | shop | `expense / shipping_return +fee` | **held** pending resolution — §6 |
+| `courier` | courier | `payable_courier +fee` **and** `receivable_courier +fee` — nets to zero for the shop; the provider compensates us | **held** pending resolution — §6 |
 | `customer` | customer | `payable_courier +fee` and `receivable_courier +fee` — the courier collects it on our behalf | **forfeited** on a return; untouched on an exchange |
 
 A courier-caused and a customer-caused movement produce **identical ledger
@@ -82,17 +82,20 @@ replacement.
 Deposit 200, goods 500, courier fee 40, EGP. Produced by running the real
 builders — see the changelog entry for the full dump.
 
-| # | Scenario | Bearer | Deposit kept | Wasted trip | Compensation |
+| # | Scenario | Bearer | Deposit | Wasted trip | Compensation |
 |---|---|---|---|---|---|
-| 1 | customer cancels | — | **yes** | — | — |
-| 2 | company-caused return | shop | no | no | — |
-| 3 | courier-caused return | courier | no | no | **courier** |
-| 4 | customer-caused return | customer | **yes** | yes | — |
-| 5 | company-caused exchange | shop | no | no | — |
-| 6 | courier-caused exchange | courier | no | no | **courier** |
-| 7 | **voluntary** customer exchange | customer | no | no | — |
-| 8 | exchange, company fault | shop | no | no | — |
-| 9 | exchange, product defect | shop | no | no | — |
+| 1 | customer cancels | — | **forfeited** | — | — |
+| 2 | company-caused return | shop | **held** | no | — |
+| 3 | courier-caused return | courier | **held** | no | **courier** |
+| 4 | customer-caused return | customer | **forfeited** | yes | — |
+| 5 | company-caused exchange | shop | untouched | no | — |
+| 6 | courier-caused exchange | courier | untouched | no | **courier** |
+| 7 | **voluntary** customer exchange | customer | untouched | no | — |
+| 8 | exchange, company fault | shop | untouched | no | — |
+| 9 | exchange, product defect | shop | untouched | no | — |
+
+"Held" means `revenue / deposit_pending_resolution`: the cash stays in the till
+and the decision is still open. §6 is what closes it.
 
 Scenario 1 writes **no wallet line at all** — the cash is already in the till
 from `order_placed`, and cancelling is the moment it stops being a holding and
@@ -142,27 +145,90 @@ retaining it. The call site passes neither field for those.
 
 ---
 
-## 6. Open business decision — the deposit on a shop- or courier-caused return
+## 6. The courier-caused return, and the deposit exception
 
-**Current behaviour: the deposit is REFUNDED when the shop or the courier
-caused the return.** `depositForfeitedOn` returns false for both.
+**Resolved 2026-09-22.** §6 previously recorded this as an open question. It is
+now answered, and the answer is neither "always keep" nor "always refund".
 
-The P0 brief is internally inconsistent here and this audit did not resolve it
-unilaterally:
+### A courier-caused return is NOT a customer cancellation
 
-* Rule 3A says a company-caused return "is NOT charged to the customer" —
-  forfeiting their deposit *is* charging them.
-* Scenario 2 says "deposit is NOT refunded", which points the other way.
+They are different business events and the system must never file one as the
+other. A courier that fails a delivery — or records a customer cancellation
+that never happened — has not caused the customer to walk away.
 
-Keeping the current behaviour is the conservative reading: a shop that keeps
-the customer's money on its own mistake is profiting from it, and reversing
-that later is a policy change, whereas taking money now is an irreversible
-entry in an append-only ledger.
+| | Deposit at confirmation | Later resolution |
+|---|---|---|
+| customer cancelled / caused the return | **forfeited** — Rule A, final | none |
+| shop or courier caused it | **held** | optional, case-by-case |
+| any exchange | untouched | none |
 
-**Decision required** before this can be called settled: on a return the shop
-or courier caused, does the customer's deposit come back?
+### Held, not refunded
 
----
+The old code answered this with a boolean and refunded **automatically** on a
+shop- or courier-caused return. That is a blanket refund rule, and it is wrong
+for the same reason the blanket forfeit was: it decides a question nobody has
+asked yet. The customer has not said whether they still want the goods.
+
+So a non-customer cause now books the deposit to
+`revenue / deposit_pending_resolution` — the cash is in the till and the
+balance must be explained, but the subject says the decision is not final.
+`forfeited_deposit` stays reserved for money that is genuinely earned.
+
+### The sequence
+
+```
+Order A → courier-caused return
+            ├── claim: receivable_courier +fee, no expense   (settles at the courier batch)
+            └── deposit: revenue/deposit_pending_resolution  (held)
+                   │
+                   ├── customer still wants it → Order B, its own shipment,
+                   │     its own costs. Order A is never overwritten; the link
+                   │     is orders.original_order_id.
+                   │
+                   └── customer declines → تسوية العميلة
+                         ├── keep   → nothing is written; holding already happened
+                         └── refund → deposit_refunded: wallet −, revenue −, LTV −
+```
+
+### Compensation ≠ deposit refund
+
+Two different amounts, owed by and to different parties, settled by different
+mechanisms. The refund touches **no** courier account — asserted, because
+paying a customer must not quietly forgive the provider.
+
+### Where the choice lives
+
+In the **incident**, not in Settings. الإعدادات states the fixed rule and
+offers no "refund deposits = ON" switch: that would be a way to configure an
+invalid financial policy. The button appears on a confirmed, eligible return
+and needs an explicit confirmation.
+
+### Why the exception also covers `shop`
+
+The brief names only the courier case. The same mechanism covers a
+shop-caused return because both are "not a customer cancellation", and the
+alternative was leaving shop-caused on the blanket auto-refund this correction
+exists to remove. **Flagged as an extension of the stated rule**, not as a
+finding — if a shop-caused return should instead forfeit, that is a one-line
+change in `depositDispositionOn`.
+
+### Server authorization
+
+`refund_order_deposit` (migration 038), SECURITY **INVOKER** so the existing
+policies are the gate rather than a hand-copied imitation of them:
+
+| Check | Enforced by |
+|---|---|
+| is this order mine | `select_orders` → `is_store_member` |
+| may this user refund | `insert_ledger_events`, with `deposit_refunded` moved to the ADMIN/ACCOUNTANT branch |
+| is the shop licensed | `insert_ledger_lines` → `store_licensed` |
+| does the cause qualify | `NEXUS_CAUSE_NOT_ELIGIBLE` |
+| was a deposit banked / already refunded | the standing balance; `NEXUS_NOTHING_TO_REFUND` |
+| two operators at once | `pg_advisory_xact_lock` per order |
+
+The client sends **no amount**. There is no `depositRefundedAt` column: the
+balance is both the entitlement and the duplicate guard, and the ledger cannot
+be updated or deleted by any client role, so the guard cannot be edited away.
 
 ## 7. Data facts, 2026-09-21 (read-only, nothing executed)
 

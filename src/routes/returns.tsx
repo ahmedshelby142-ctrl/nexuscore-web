@@ -49,7 +49,7 @@ import {
 import {
   rateFor,
   countsAsWastedTrip,
-  depositForfeitedOn,
+  depositDispositionOn,
   shippingBorneBy,
   causeLabelsFor,
   blockingCauseReason,
@@ -200,9 +200,13 @@ export function Returns() {
       const feeBorneBy = shippingBorneBy(cause, movement);
       // One deposit decision for both branches below. Store policy keeps it
       // when the CUSTOMER walked away; a refusal the courier or the shop caused
-      // gives it back — see `depositForfeitedOn`.
+      // HOLDS it, pending the customer resolution.
       const deposit = Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0);
-      const keepsDeposit = depositForfeitedOn(cause, movement);
+      // Three answers now, not two — see `depositDispositionOn`. "held" is the
+      // one that used to be an automatic refund.
+      const disposition = depositDispositionOn(cause, movement);
+      const keepsDeposit = disposition === "forfeit";
+      const holdsDeposit = disposition === "pending_resolution";
 
       if (returnType === "rto") {
         await appendEvent({
@@ -228,9 +232,15 @@ export function Returns() {
             courierId: courierIdOf(order),
             // Store policy keeps the deposit when the customer walked away —
             // and only then.
+            // The third disposition moves nothing: on an exchange the same
+            // money funds the replacement. Sending it down the refund branch —
+            // which `!keepsDeposit` used to do — gave the deposit back AND let
+            // the replacement order collect a second one.
             ...(keepsDeposit
               ? { forfeitedDeposit: deposit }
-              : { refundedDeposit: deposit, wallet: "inStoreSafe" }),
+              : holdsDeposit
+              ? { pendingDeposit: deposit }
+              : {}),
           }),
         });
       } else {
@@ -279,9 +289,11 @@ export function Returns() {
             // back to "default", which is the subject every other screen books
             // this courier under. The raw field is often undefined.
             courierId: courierIdOf(order),
-            // The deposit stays with the shop — but only on a return the
-            // customer caused. See `depositForfeitedOn`.
+            // The deposit stays with the shop — finally when the customer
+            // caused it, provisionally when we or the courier did. See
+            // `depositDispositionOn`.
             forfeitedDeposit: keepsDeposit ? deposit : 0,
+            pendingDeposit: holdsDeposit ? deposit : 0,
             customerId: customerId || undefined,
             channel: "ecommerce",
           }),

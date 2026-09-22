@@ -43,7 +43,7 @@ import {
 import { buildSaleLines } from "../src/lib/ledger/sales.ts";
 import {
   countsAsWastedTrip,
-  depositForfeitedOn,
+  depositDispositionOn,
   shippingFeeFor,
   shippingBorneBy,
   toReturnCause,
@@ -672,18 +672,53 @@ test("a courier-caused failure is billed to the courier, never to the shop", () 
   assert.equal(shippingBorneBy("courier", "exchange"), "courier");
 });
 
-test("the deposit is kept only when the CUSTOMER walked away", () => {
-  // The established rule, and the three cases it was being misapplied to.
-  assert.equal(depositForfeitedOn("customer", "return"), true);
-  assert.equal(depositForfeitedOn("unknown", "return"), true, "pre-026 default must not move");
-  assert.equal(depositForfeitedOn("shop", "return"), false, "our mistake, their money back");
-  assert.equal(depositForfeitedOn("courier", "return"), false, "courier's fault, their money back");
+test("the deposit is FORFEITED only when the CUSTOMER walked away", () => {
+  // Three answers now, not two. `false` used to mean "refund it, immediately
+  // and automatically", which decided a question nobody had asked — the
+  // customer had not yet said whether they still wanted the goods. A
+  // shop- or courier-caused return HOLDS the deposit instead, and
+  // `refund_order_deposit` is what may later hand it back.
+  assert.equal(depositDispositionOn("customer", "return"), "forfeit");
+  assert.equal(
+    depositDispositionOn("unknown", "return"),
+    "forfeit",
+    "pre-026 default must not move",
+  );
+  assert.equal(depositDispositionOn("shop", "return"), "pending_resolution", "our mistake, held");
+  assert.equal(
+    depositDispositionOn("courier", "return"),
+    "pending_resolution",
+    "courier's fault, held",
+  );
   for (const c of RETURN_CAUSES) {
-    assert.equal(depositForfeitedOn(c, "exchange"), false, `${c} exchange funds the replacement`);
+    assert.equal(depositDispositionOn(c, "exchange"), "none", `${c} exchange funds the replacement`);
   }
 });
 
-test("a courier-caused RTO refunds the deposit instead of booking it as income", () => {
+test("a courier-caused RTO HOLDS the deposit — it neither earns nor refunds it", () => {
+  // Retitled. This used to read "…refunds the deposit instead of booking it as
+  // income", and that is what the code did: an automatic refund at the moment
+  // of confirmation, before anyone had asked the customer whether they still
+  // wanted the goods. Held is the honest third answer, and
+  // `refund_order_deposit` is what may later hand it back.
+  const lines = buildOrderRTOLines({
+    items: [{ productId: "A", quantity: 1, unitPrice: 300, unitCost: 100 }],
+    pendingDeposit: 50,
+    wallet: "inStoreSafe",
+    customerId: "c1",
+  });
+  assert.equal(
+    lines.filter((l) => l.subjectId === "deposit_pending_resolution").length,
+    1,
+    "booked to its own subject, visibly not final",
+  );
+  assert.ok(
+    !lines.some((l) => l.account === "wallet"),
+    "and no cash moves at the confirmation",
+  );
+});
+
+test("an explicit refund on an RTO still moves the cash — the rollback path", () => {
   const lines = buildOrderRTOLines({
     items: [{ productId: "A", quantity: 1, unitPrice: 300, unitCost: 100 }],
     refundedDeposit: 50,

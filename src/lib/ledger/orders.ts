@@ -70,6 +70,15 @@ export interface OrderCancelledInput {
    * out. Requires a wallet, because it moves real cash.
    */
   refundedDeposit?: number;
+  /**
+   * The deposit HELD pending a customer resolution, EGP.
+   *
+   * A cancellation the COURIER caused — the classic case is a provider that
+   * records a customer cancellation that never happened — is not the customer
+   * walking away, so Rule A does not apply to it. The cash stays put and waits
+   * for the resolution. See `depositDispositionOn`.
+   */
+  pendingDeposit?: number;
   /** The till a refunded deposit leaves, or that a forfeited one stays in. */
   wallet?: string;
   /** Whose LTV keeps a forfeited deposit. Omit for a guest order. */
@@ -363,7 +372,12 @@ export function buildOrderCancelledLines(order: OrderCancelledInput): NewLine[] 
     lines.push(...stockLinesFor(item, 1));
   }
 
-  const forfeited = order.forfeitedDeposit ?? 0;
+  const heldPending = order.pendingDeposit ?? 0;
+  if (heldPending < 0) throw new Error("cancel: pending deposit cannot be negative");
+  if ((order.forfeitedDeposit ?? 0) > 0 && heldPending > 0) {
+    throw new Error("cancel: a deposit cannot be both forfeited and pending resolution");
+  }
+  const forfeited = (order.forfeitedDeposit ?? 0) + heldPending;
   const refunded = order.refundedDeposit ?? 0;
   if (forfeited < 0) throw new Error("cancel: forfeited deposit cannot be negative");
   if (refunded < 0) throw new Error("cancel: refunded deposit cannot be negative");
@@ -386,7 +400,11 @@ export function buildOrderCancelledLines(order: OrderCancelledInput): NewLine[] 
     // becomes income — recognised under its own subject so صافي الربح can
     // report retained deposits separately from goods sold, because they are
     // not a sale.
-    lines.push({ account: "revenue", subjectId: "forfeited_deposit", amount: forfeited });
+    lines.push({
+      account: "revenue",
+      subjectId: heldPending > 0 ? "deposit_pending_resolution" : "forfeited_deposit",
+      amount: forfeited,
+    });
     if (order.customerId) {
       // LTV mirrors revenue. The customer really did leave that money with us.
       lines.push({ account: "customer_ltv", subjectId: order.customerId, amount: forfeited });
@@ -485,6 +503,21 @@ export interface ReturnConfirmedInput {
    * separately from goods sold, because it is not a sale.
    */
   forfeitedDeposit?: number;
+  /**
+   * The deposit the shop is HOLDING pending a customer resolution, EGP.
+   *
+   * A shop- or courier-caused return is not the customer walking away, so the
+   * deposit is neither earned nor owed back yet — it waits for the customer to
+   * say whether they still want the goods. Booked to
+   * `revenue / deposit_pending_resolution` so the till balance is explained
+   * while staying visibly provisional, and reversed by `refund_order_deposit`
+   * (migration 038) if the resolution is to hand it back.
+   *
+   * Withheld from the refund exactly as a forfeit is: the customer does not
+   * get it today either way. Mutually exclusive with `forfeitedDeposit` — the
+   * same money cannot be both finally earned and still undecided.
+   */
+  pendingDeposit?: number;
   /** The till the refund comes out of. Required when `refundVia` is "wallet". */
   wallet: string;
   /**
@@ -575,7 +608,16 @@ export function buildReturnConfirmedLines(ret: ReturnConfirmedInput): NewLine[] 
     throw new Error("return: refund cannot be negative");
   }
 
-  const forfeited = ret.forfeitedDeposit ?? 0;
+  const pending = ret.pendingDeposit ?? 0;
+  if (pending < 0) {
+    throw new Error("return: pending deposit cannot be negative");
+  }
+  if ((ret.forfeitedDeposit ?? 0) > 0 && pending > 0) {
+    throw new Error("return: a deposit cannot be both forfeited and pending resolution");
+  }
+  // One number from here down: both dispositions withhold the same cash from
+  // the refund, and differ only in which subject explains it.
+  const forfeited = (ret.forfeitedDeposit ?? 0) + pending;
   if (forfeited < 0) {
     throw new Error("return: forfeited deposit cannot be negative");
   }
@@ -614,7 +656,15 @@ export function buildReturnConfirmedLines(ret: ReturnConfirmedInput): NewLine[] 
   // into the line above would hide it inside "reversed sales", where no report
   // could ever tell earned-and-kept from never-earned.
   if (forfeited > 0) {
-    lines.push({ account: "revenue", subjectId: "forfeited_deposit", amount: forfeited });
+    lines.push({
+      account: "revenue",
+      // `deposit_pending_resolution` when the shop or the courier caused it:
+      // same cash, same till, but a subject that says the decision has not
+      // been made. `forfeited_deposit` is final by policy and must not absorb
+      // money that may yet go back.
+      subjectId: pending > 0 ? "deposit_pending_resolution" : "forfeited_deposit",
+      amount: forfeited,
+    });
   }
 
   const fee = ret.returnFee ?? 0;
@@ -696,6 +746,15 @@ export interface OrderRTOInput {
    * the same money cannot be both kept and returned.
    */
   refundedDeposit?: number;
+  /**
+   * The deposit HELD pending a customer resolution, EGP.
+   *
+   * The third answer. A refusal the courier or the shop caused is not the
+   * customer walking away, so the money is neither earned nor owed back yet —
+   * it waits for the customer to say whether they still want the goods. See
+   * `depositDispositionOn`. Mutually exclusive with the other two.
+   */
+  pendingDeposit?: number;
   /** The till a refunded deposit leaves. Required when one is refunded. */
   wallet?: string;
   /** Whose LTV keeps the forfeited amount. Omit for a guest order. */
@@ -739,7 +798,16 @@ export function buildOrderRTOLines(rto: OrderRTOInput): NewLine[] {
     }
   }
 
-  const forfeited = rto.forfeitedDeposit ?? 0;
+  const heldPending = rto.pendingDeposit ?? 0;
+  if (heldPending < 0) {
+    throw new Error("RTO: pending deposit cannot be negative");
+  }
+  if ((rto.forfeitedDeposit ?? 0) > 0 && heldPending > 0) {
+    throw new Error("RTO: a deposit cannot be both forfeited and pending resolution");
+  }
+  // Both retentions keep the same cash in the same till; only the subject
+  // differs, so the arithmetic below is shared.
+  const forfeited = (rto.forfeitedDeposit ?? 0) + heldPending;
   if (forfeited < 0) {
     throw new Error("RTO: forfeited deposit cannot be negative");
   }
@@ -760,8 +828,14 @@ export function buildOrderRTOLines(rto: OrderRTOInput): NewLine[] {
 
   if (forfeited > 0) {
     // No wallet line: the money never left, so nothing moves. This only names
-    // what the cash already sitting in the till is FOR.
-    lines.push({ account: "revenue", subjectId: "forfeited_deposit", amount: forfeited });
+    // what the cash already sitting in the till is FOR — and whether that
+    // naming is final. `deposit_pending_resolution` is the provisional one and
+    // is what `refund_order_deposit` later reverses.
+    lines.push({
+      account: "revenue",
+      subjectId: heldPending > 0 ? "deposit_pending_resolution" : "forfeited_deposit",
+      amount: forfeited,
+    });
     if (rto.customerId) {
       lines.push({ account: "customer_ltv", subjectId: rto.customerId, amount: forfeited });
     }

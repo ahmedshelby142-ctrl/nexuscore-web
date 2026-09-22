@@ -272,29 +272,79 @@ export function shippingBorneBy(
 }
 
 /**
- * Does the shop keep the deposit on this movement?
+ * What happens to the deposit when this movement is confirmed.
  *
- * The established rule is that a deposit is NOT refundable when the customer
- * walks away: the courier trip was still made and still paid for, so the money
- * is earned. That rule is about the CUSTOMER'S choice, and it was being applied
- * to every return regardless of who caused it — so a delivery that failed
- * because we sent the wrong item, or because the courier never showed up, kept
- * the customer's money anyway.
+ * ## Three answers, not two
  *
- * `"unknown"` keeps forfeiting, exactly as it does today. Every row written
- * before the cause axis existed defaults to `'unknown'`, and flipping it would
- * move historical figures; not knowing who was at fault is not a finding that
- * the shop was.
+ * This used to be `depositForfeitedOn`, a boolean: keep it, or give it back.
+ * `false` meant the refund happened **immediately and automatically**, so a
+ * courier-caused return handed the customer's money back with nobody deciding
+ * and nothing recording that a decision had been made.
  *
- * An exchange never forfeits — the same money funds the replacement. See the
- * long note at the `forfeitedDeposit` call site in شاشة الطلبات.
+ * That is a blanket refund rule, and it is wrong for the same reason the
+ * blanket forfeit was wrong: it answers a question nobody asked. The real
+ * sequence has days in the middle of it —
+ *
+ *   the courier causes the return
+ *     → the shop claims compensation from them
+ *     → the customer says whether they still want the goods
+ *     → ONLY THEN is the deposit resolved
+ *
+ * A customer who takes the replacement keeps their deposit working for them.
+ * A customer who walks away after our provider failed them MAY have it back,
+ * as a case-by-case resolution someone chooses and signs for.
+ *
+ * So the confirmation cannot resolve it, and must not pretend to:
+ *
+ *   "forfeit"             the customer walked away. Final — Rule A. Booked to
+ *                         `revenue / forfeited_deposit`.
+ *   "pending_resolution"  the shop or the courier caused it. The cash stays in
+ *                         the till for now, booked to
+ *                         `revenue / deposit_pending_resolution` so it is
+ *                         visibly NOT final, and `refund_order_deposit`
+ *                         (migration 038) is what may later hand it back.
+ *   "none"                an exchange. The same money funds the replacement.
+ *
+ * ## Why "pending" is booked as income at all
+ *
+ * Because the cash IS in the till — `order_placed` banked it — and a till
+ * holding money no income line explains is the "ghost in the till" the RTO
+ * builder was fixed to remove. Booking it to its own subject keeps the balance
+ * honest AND keeps the two reportable apart, which a single `forfeited_deposit`
+ * subject could not: one is earned, the other is merely held.
+ *
+ * ## `"unknown"` still forfeits
+ *
+ * Every row written before the cause axis existed defaults to `'unknown'`, and
+ * flipping it would move historical figures. Not knowing who was at fault is
+ * not a finding that the shop was. New rows cannot be `'unknown'` —
+ * `blockingCauseReason` refuses the confirmation.
  */
-export function depositForfeitedOn(
+export type DepositDisposition = "forfeit" | "pending_resolution" | "none";
+
+export function depositDispositionOn(
   cause: ReturnCause,
   movement: "return" | "exchange",
-): boolean {
-  if (movement === "exchange") return false;
-  return cause !== "shop" && cause !== "courier";
+): DepositDisposition {
+  if (movement === "exchange") return "none";
+  return cause === "shop" || cause === "courier" ? "pending_resolution" : "forfeit";
+}
+
+/**
+ * May this order's deposit be refunded as a case-by-case resolution?
+ *
+ * The CLIENT half of the eligibility rule in `refund_order_deposit`. It decides
+ * whether to offer the button; the function decides whether the money moves,
+ * and re-checks every one of these against the database — a customer-caused
+ * cause, a deposit that was never banked and a second refund are each refused
+ * server-side with their own error code.
+ *
+ * Deliberately not a mirror of the whole rule. "Has it already been refunded"
+ * is a question about the ledger, and asking it here would be a second, stale
+ * answer to something the server settles atomically under a lock.
+ */
+export function depositRefundEligible(cause: ReturnCause): boolean {
+  return cause === "courier" || cause === "shop";
 }
 
 /**

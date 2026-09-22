@@ -28,7 +28,8 @@ import {
 } from "../src/lib/ledger/orders.ts";
 import {
   shippingBorneBy,
-  depositForfeitedOn,
+  depositDispositionOn,
+  depositRefundEligible,
   countsAsWastedTrip,
   blockingCauseReason,
   compensationExpectedFrom,
@@ -51,6 +52,9 @@ const on = (lines, account, subject) =>
     .filter((l) => l.account === account && (subject === undefined || l.subjectId === subject))
     .reduce((sum, l) => sum + (l.amount ?? 0), 0);
 
+/** The migration that moved the deposit decision out of the confirmation. */
+const MIGRATION = read("../docs/migrations/038_courier_return_deposit_resolution.sql");
+
 const ITEM = { productId: "A", quantity: 1, unitPrice: 500, unitCost: 300 };
 
 /** A confirmed return, parameterised by the two things that decide the money. */
@@ -65,7 +69,9 @@ function bookReturn({ cause, movement, deposit = 0, fee = 40 }) {
     returnFee: fee,
     movement,
     feeBorneBy: shippingBorneBy(cause, movement),
-    forfeitedDeposit: depositForfeitedOn(cause, movement) ? deposit : 0,
+    forfeitedDeposit: depositDispositionOn(cause, movement) === "forfeit" ? deposit : 0,
+    pendingDeposit:
+      depositDispositionOn(cause, movement) === "pending_resolution" ? deposit : 0,
   });
 }
 
@@ -188,7 +194,7 @@ test("S3 · a COURIER-caused return raises compensation, not an expense", () => 
 test("S4 · a CUSTOMER-caused return keeps the deposit and charges the trip", () => {
   const lines = bookReturn({ cause: "customer", movement: "return", deposit: 200 });
   assert.equal(shippingBorneBy("customer", "return"), "customer");
-  assert.equal(depositForfeitedOn("customer", "return"), true, "the deposit is NOT refunded");
+  assert.equal(depositDispositionOn("customer", "return"), "forfeit", "the deposit is NOT refunded");
   assert.equal(on(lines, "revenue", "forfeited_deposit"), 200, "…and is booked as income");
   assert.equal(on(lines, "expense"), 0, "the trip is not the shop's cost");
   assert.equal(countsAsWastedTrip("customer", "return"), true, "the wasted trip is theirs");
@@ -196,12 +202,21 @@ test("S4 · a CUSTOMER-caused return keeps the deposit and charges the trip", ()
   assert.equal(on(lines, "wallet", "inStoreSafe"), -300, "500 paid − 200 kept = 300 out");
 });
 
-test("S2/S3 · a deposit is only ever kept on a movement the customer caused", () => {
-  assert.equal(depositForfeitedOn("shop", "return"), false);
-  assert.equal(depositForfeitedOn("courier", "return"), false);
-  // Forfeiting on our own mistake would mean profiting from it.
+test("S2/S3 · a deposit is only ever FORFEITED on a movement the customer caused", () => {
+  assert.equal(depositDispositionOn("shop", "return"), "pending_resolution");
+  assert.equal(depositDispositionOn("courier", "return"), "pending_resolution");
+  assert.equal(depositDispositionOn("customer", "return"), "forfeit");
+  assert.equal(depositDispositionOn("unknown", "return"), "forfeit");
+  // Forfeiting on our own mistake would mean profiting from it — but handing
+  // it back on the spot decides a question nobody asked. It is HELD.
   const shopReturn = bookReturn({ cause: "shop", movement: "return", deposit: 200 });
-  assert.equal(on(shopReturn, "revenue", "forfeited_deposit"), 0);
+  assert.equal(on(shopReturn, "revenue", "forfeited_deposit"), 0, "not final");
+  assert.equal(
+    on(shopReturn, "revenue", "deposit_pending_resolution"),
+    200,
+    "held under its own subject, awaiting the customer's answer",
+  );
+  assert.equal(on(shopReturn, "wallet", "inStoreSafe"), -300, "and withheld from the refund");
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -249,10 +264,18 @@ test("S8/S9 · company fault and product defect are the SAME cause, and not the 
   assert.equal(on(bookReturn({ cause: "shop", movement: "exchange" }), "expense"), 40);
 });
 
-test("an exchange never forfeits the deposit — the same money funds the swap", () => {
+test("an exchange resolves nothing — the same money funds the swap", () => {
   for (const cause of ["customer", "courier", "shop", "unknown"]) {
-    assert.equal(depositForfeitedOn(cause, "exchange"), false, cause);
+    assert.equal(depositDispositionOn(cause, "exchange"), "none", cause);
   }
+  // …and "none" must move no money in either direction. The old
+  // `!keepsDeposit -> refund` shape sent every non-forfeit case down the
+  // refund branch, so an exchange handed the deposit back AND the replacement
+  // order collected a second one.
+  const swap = bookReturn({ cause: "shop", movement: "exchange", deposit: 200 });
+  assert.equal(on(swap, "revenue", "forfeited_deposit"), 0);
+  assert.equal(on(swap, "revenue", "deposit_pending_resolution"), 0);
+  assert.equal(on(swap, "wallet", "inStoreSafe"), -500, "the full goods value, deposit untouched");
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

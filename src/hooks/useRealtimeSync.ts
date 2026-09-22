@@ -5,6 +5,8 @@ import { useEffect } from 'react';
 import { useBusinessStore } from '../store/useBusinessStore';
 import { useOrderStore } from '../store/useOrderStore';
 import { useFinancialStore } from '../store/useFinancialStore';
+import { useCustomerStore } from '../store/useCustomerStore';
+import { useShippingRatesStore } from '../store/useShippingRatesStore';
 import { getSupabaseClient, isCloudSyncMode } from '../lib/supabase';
 import { getDeviceId } from '../services/api/storeContext';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
@@ -122,7 +124,92 @@ const TABLE_HANDLERS: Record<string, {
       }));
     },
   },
+  ...reference({
+    // ── The reference tables ────────────────────────────────────────────────
+    //
+    // Sixteen tables are in `supabase_realtime`; five were listened to. The
+    // other eleven were published and then ignored, which is the worst of the
+    // two states: the write is broadcast to every tab and every tab drops it,
+    // so a second device shows yesterday's data with no indication that it is
+    // stale and no error to notice. The desktop is a multi-device product —
+    // till, office, phone — and «افتح تاني» is not a sync strategy.
+    //
+    // Each of these is subscribed because a REAL desktop screen reads it and a
+    // second device can change it while that screen is open. The four below
+    // are deliberately NOT subscribed, and the reasons belong here rather than
+    // in a commit message:
+    //
+    //   ledger_lines  every line arrives with its event, and the
+    //                 `ledger_events` INSERT above already pulses the screens
+    //                 that read a balance. Subscribing would fire the same
+    //                 pulse once per line of every sale.
+    //   stores        licence and identity. A change here is re-authentication
+    //                 territory — `useSessionReconciliation` owns it, and a
+    //                 silent merge into a store would be the app deciding on
+    //                 its own that the licence changed.
+    //   branches      structural. Created once and then left alone; a screen
+    //                 open across a branch being added is not a case worth
+    //                 code.
+    //   couriers      not in the publication at all. Nothing to subscribe to.
+    customers: [useCustomerStore, "customers"],
+    suppliers: [useBusinessStore, "suppliers"],
+    purchase_invoices: [useBusinessStore, "purchaseInvoices"],
+    return_records: [useBusinessStore, "returnRecords"],
+    // The local field is `promoDiscounts`; the table is `discount_codes`.
+    // Usage counts move under `claimDiscountUse` from any till, so a stale
+    // copy is a code that looks spendable and is not.
+    discount_codes: [useBusinessStore, "promoDiscounts"],
+    wholesale_clients: [useBusinessStore, "wholesaleClients"],
+    wholesale_invoices: [useBusinessStore, "wholesaleInvoices"],
+    // Priced shipping. An admin editing a governorate's rate while a till has
+    // the order form open is the case migration 016 published these for.
+    shipping_rates: [useShippingRatesStore, "rows"],
+  }),
 };
+
+/**
+ * One handler per reference table, because they all merge the same way.
+ *
+ * Eight copies of the products handler with the field name changed is eight
+ * chances to get the Last-Write-Wins comparison subtly different, which is
+ * exactly what `orders` (camelCase `updatedAt`, parsed as a Date) and
+ * `products` (snake_case `updated_at`, compared as strings) already are. The
+ * four handlers above are left exactly as they were — they are load-bearing
+ * and this is not the change to rewrite them in — but nothing new joins them
+ * by hand.
+ *
+ * `updated_at` is the epoch-ms sync clock every cloud table carries (BIGINT,
+ * NOT NULL DEFAULT 0), not the human `updatedAt`. Numbers, so `>=` means what
+ * it looks like.
+ */
+function reference(
+  tables: Record<string, [{ getState: () => any; setState: (patch: any) => void }, string]>,
+) {
+  const handlers: Record<string, { getAll: () => any[]; merge: (row: any) => void; remove: (id: string) => void }> = {};
+  for (const [table, [store, field]] of Object.entries(tables)) {
+    const rows = (): any[] => store.getState()[field] ?? [];
+    handlers[table] = {
+      getAll: rows,
+      merge: (incoming: any) => {
+        const existing = rows().find((r: any) => r.id === incoming.id);
+        // Last Write Wins. An echo of a row we already hold a newer copy of is
+        // dropped rather than applied — otherwise a slow broadcast overwrites
+        // the edit that came after it.
+        if (existing && Number(existing.updated_at) >= Number(incoming.updated_at)) return;
+        const next = rows();
+        store.setState({
+          [field]: existing
+            ? next.map((r: any) => (r.id === incoming.id ? { ...r, ...incoming } : r))
+            : [...next, incoming],
+        });
+      },
+      remove: (id: string) => {
+        store.setState({ [field]: rows().filter((r: any) => r.id !== id) });
+      },
+    };
+  }
+  return handlers;
+}
 
 /**
  * Global Real-Time Sync Hook
@@ -210,27 +297,20 @@ export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
       const supabase = getSupabaseClient();
       if (supabase) {
 
-        const channel = supabase
-          .channel('global-sync')
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'products' },
-            (payload: RealtimePostgresChangesPayload<any>) => handleChange('products', payload),
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'orders' },
-            (payload: RealtimePostgresChangesPayload<any>) => handleChange('orders', payload),
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'transactions' },
-            (payload: RealtimePostgresChangesPayload<any>) => handleChange('transactions', payload),
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'expenses' },
-            (payload: RealtimePostgresChangesPayload<any>) => handleChange('expenses', payload),
+        // One listener per handler, driven by the map itself. Listing the
+        // tables a second time by hand is how `products`/`orders`/
+        // `transactions`/`expenses` stayed the whole of realtime while the
+        // publication grew to sixteen: a handler that nobody subscribes to
+        // looks exactly like a working one from the code.
+        const channel = Object.keys(TABLE_HANDLERS)
+          .reduce(
+            (ch, table) =>
+              ch.on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table },
+                (payload: RealtimePostgresChangesPayload<any>) => handleChange(table, payload),
+              ),
+            supabase.channel('global-sync') as any,
           )
           // Stock and money are SUMs over the ledger, and those sums are read
           // straight from Supabase. So an event landing from another device

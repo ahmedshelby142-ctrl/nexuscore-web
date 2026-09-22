@@ -29,7 +29,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(new RegExp("//[^\\n]*", "g"), "");
@@ -41,17 +41,58 @@ const sidebarCode = strip(sidebar);
 const syncStatus = read("../src/store/useSyncStatus.ts");
 const initSql = read("../docs/full_supabase_init.sql");
 const migration036 = read("../docs/migrations/036_realtime_publication_gap.sql");
+/** Every migration, concatenated — the publication is built across all of them. */
+const allMigrations = readdirSync(new URL("../docs/migrations", import.meta.url))
+  .filter((f) => f.endsWith(".sql"))
+  .map((f) => read(`../docs/migrations/${f}`))
+  .join("\n");
 
-/** Tables the client actually opens a postgres_changes listener on. */
+/**
+ * Tables the client actually opens a postgres_changes listener on.
+ *
+ * The listeners are no longer written out one by one — the channel is built by
+ * reducing over `TABLE_HANDLERS`, so a table is subscribed exactly when it has
+ * a handler. Reading the handler map IS reading the subscription list, and
+ * that is the point: the old hand-written list is how four listeners stayed
+ * the whole of realtime while the publication grew to sixteen.
+ *
+ * `ledger_events` is matched separately — it is a pulse with no handler, not a
+ * merge.
+ */
+const HANDLERS_AT = realtimeCode.indexOf("const TABLE_HANDLERS");
+// From the object LITERAL, not from the declaration: the inline
+// `Record<string, { getAll; merge; remove }>` annotation above it has keys at
+// the same indentation, and they are not tables.
+const HANDLER_BLOCK = realtimeCode.slice(
+  realtimeCode.indexOf("}> = {", HANDLERS_AT),
+  realtimeCode.indexOf("\n};", HANDLERS_AT),
+);
+const REFERENCE_BLOCK = HANDLER_BLOCK.slice(HANDLER_BLOCK.indexOf("...reference({"));
 const SUBSCRIBED = [
-  ...new Set([...realtimeCode.matchAll(/table:\s*'([a-z_]+)'/g)].map((m) => m[1])),
+  ...new Set([
+    // The four hand-written handlers, at two spaces of indentation.
+    ...[...HANDLER_BLOCK.matchAll(/^ {2}([a-z_]+):/gm)].map((m) => m[1]),
+    // The reference tables, at four, inside `reference({ … })`.
+    ...[...REFERENCE_BLOCK.matchAll(/^ {4}([a-z_]+): \[/gm)].map((m) => m[1]),
+    // Anything still named as a literal — today just the ledger pulse.
+    ...[...realtimeCode.matchAll(/table:\s*'([a-z_]+)'/g)].map((m) => m[1]),
+  ]),
 ].sort();
 
-/** Tables the repo's SQL puts in the realtime publication. */
+/**
+ * Tables the repo's SQL puts in the realtime publication.
+ *
+ * Every migration, not just the init file and 036: `wholesale_clients` and
+ * `wholesale_invoices` are published by 016, and a check that only reads two
+ * files would call them unpublished and fail a subscription that is correct.
+ */
 const PUBLISHED = [
   ...new Set(
-    [...(initSql + migration036).matchAll(/ALTER PUBLICATION supabase_realtime ADD TABLE public\.([a-z_]+)/g)]
-      .map((m) => m[1]),
+    [
+      ...(initSql + migration036 + allMigrations).matchAll(
+        /ALTER PUBLICATION supabase_realtime ADD TABLE public\.([a-z_]+)/g,
+      ),
+    ].map((m) => m[1]),
   ),
 ].sort();
 
@@ -60,7 +101,14 @@ const PUBLISHED = [
 // ═══════════════════════════════════════════════════════════════════════════
 
 test("every table the client subscribes to is actually published", () => {
-  assert.ok(SUBSCRIBED.length >= 5, `expected the five listeners, found ${SUBSCRIBED.length}`);
+  // A floor, not a count. It was five; P1-C raised it to thirteen — the twelve
+  // merged tables plus the `ledger_events` pulse — by subscribing every
+  // published table that a desktop screen actually reads. Adding another is
+  // fine; silently losing them is not.
+  assert.ok(
+    SUBSCRIBED.length >= 13,
+    `realtime coverage went backwards: expected at least 13 tables, found ${SUBSCRIBED.length} (${SUBSCRIBED.join(", ")})`,
+  );
   const silent = SUBSCRIBED.filter((t) => !PUBLISHED.includes(t));
   assert.deepEqual(
     silent,

@@ -1,3 +1,4 @@
+import { stockIsAuthoritative } from "@/lib/ledger/stockSnapshot";
 import { useState, useMemo, useEffect } from "react";
 import { formatMoney, formatBalance, discountAmountFor, subtract, includedVat, round } from "@/lib/math";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
@@ -589,6 +590,16 @@ export function WholesalePage() {
     }
     const client = wholesaleClients.find((c) => c.id === invoiceForm.clientId);
     if (!client) return;
+
+    // Checked against the LEDGER only. Until an aggregation lands,
+    // `getVariantStock` falls back to this device's `products.quantity`
+    // mirror — last updated by whatever this browser itself moved — and an
+    // invoice accepted against that is an invoice for goods another till may
+    // already have sold.
+    if (!stockIsAuthoritative()) {
+      toast.error("المخزون لسه بيتحمّل من السحابة. جرّب تاني بعد لحظة.");
+      return;
+    }
 
     // A line the user knowingly accepted as نواقص is allowed through short —
     // that is the whole point of the confirmation. Everything else is not.

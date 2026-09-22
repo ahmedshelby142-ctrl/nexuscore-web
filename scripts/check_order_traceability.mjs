@@ -48,11 +48,20 @@ function eventBlock(src, kind) {
 
 test("the order number is allocated BEFORE the ledger event", () => {
   const placedAt = ECO.indexOf('kind: "order_placed"');
-  const allocAt = ECO.indexOf("const orderNumber = `ECO-");
-  assert.ok(allocAt > 0, "the route must mint the number itself");
+  // The route must HOLD a number before it appends. It no longer mints one —
+  // it draws it from the store counter (migration 042), because a number the
+  // browser invents from `Date.now()` is a device-clock reading that two tills
+  // can produce at once. What this test has always been about is unchanged:
+  // the number has to exist before the event that reserves the stock.
+  const allocAt = ECO.indexOf('nextDocumentNumber("ecommerce_order", "ECO-")');
+  assert.ok(allocAt > 0, "the route must obtain the number from the counter");
   assert.ok(
     allocAt < placedAt,
     "allocating it after the event is what made the event untraceable",
+  );
+  assert.ok(
+    !/orderNumber = `ECO-\$\{/.test(ECO),
+    "the route is minting its own number again",
   );
 });
 
@@ -73,10 +82,27 @@ test("the compensating cancel names the same order", () => {
 });
 
 test("the store uses the number the caller already published to the ledger", () => {
+  // The caller's number WINS. That is the whole invariant: `order_placed` has
+  // already gone to the ledger carrying it, so a document that numbered itself
+  // independently would point away from its own opening event.
   assert.match(
     ORDER_STORE,
-    /orderNumber: orderData\.orderNumber \|\| `ECO-\$\{Date\.now\(\)\}`/,
+    /orderData\.orderNumber \|\| \(await nextDocumentNumber\("ecommerce_order", "ECO-"\)\)/,
     "a second, different number would point the document away from its own event",
+  );
+  // And when there is no caller number, the fallback is the same counter —
+  // never a locally minted one. The جملة caller relies on this branch.
+  //
+  // Comments stripped: the file EXPLAINS the removed `ECO-${Date.now()}` by
+  // quoting it, so the raw text would trip this on the prose alone.
+  const stripped = ORDER_STORE
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("//"))
+    .join("\n");
+  assert.ok(
+    !/`ECO-\$\{/.test(stripped),
+    "the clock is back in the fallback; two tills would mint the same document number",
   );
   // Still optional, so the wholesale caller is unaffected.
   assert.match(ORDER_STORE, /orderNumber\?: string;/);

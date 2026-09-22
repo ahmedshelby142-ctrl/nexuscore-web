@@ -1,3 +1,4 @@
+import { stockIsAuthoritative } from "@/lib/ledger/stockSnapshot";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { nextDocumentNumber } from "@/services/documentNumber";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
@@ -557,6 +558,15 @@ export default function CheckoutForm() {
 
     // Re-check against current stock, not against what the screen was
     // rendered with — the cart may have sat open while the same stock moved.
+    //
+    // And only against the LEDGER. Until an aggregation lands, `sellableStock`
+    // is reporting this device's `products.quantity` mirror, which is as old as
+    // the last time this browser moved stock itself — so the check below would
+    // be comparing the cart against a number another till has already spent.
+    if (!isReturnMode && !stockIsAuthoritative()) {
+      setResult({ success: false, message: "المخزون لسه بيتحمّل من السحابة. جرّب تاني بعد لحظة." });
+      return;
+    }
     const stockOfLine = (item: (typeof cart)[number]) =>
       sellableStock(products.find((p) => p.id === item.productId), products, item.variantName);
     const short = cart.find((item) => item.quantity > stockOfLine(item));

@@ -12,6 +12,7 @@ import type {
   SyncAction,
 } from "@/types";
 import { writeThrough } from "@/services/cloudData";
+import { nextDocumentNumber } from "@/services/documentNumber";
 
 
 /**
@@ -28,6 +29,20 @@ type CreateEcommerceOrder = Omit<
   EcommerceOrder,
   "id" | "orderNumber" | "status" | "createdAt" | "updatedAt" | "revenueLogged" | "stockItems"
 > & {
+  /**
+   * The order number, when the caller has already allocated it.
+   *
+   * It needs to be allocatable BEFORE this call because `order_placed` is
+   * appended to the ledger first — that event reserves the stock and banks the
+   * deposit — and a ledger event that cannot name its document is a movement
+   * nobody can trace. Every other event in an order's life carries
+   * `refId: orderNumber`; this is what lets the opening one carry it too.
+   *
+   * Optional so the جملة caller, which appends no `order_placed` and so needs
+   * no link, is unaffected — `addOrder` draws its number from the same counter
+   * on its behalf.
+   */
+  orderNumber?: string;
   items: OrderItemInput[];
   status?: EcommerceOrderStatus;
   /**
@@ -151,10 +166,37 @@ export const useOrderStore = create<OrderState>()(
       addOrder: async (orderData) => {
         const now = new Date();
         const orderId = crypto.randomUUID();
+
+        // Allocated by Postgres when the caller has not already drawn one —
+        // the same counter `FJ-`, `FM-` and `SP-` come from (migration 016),
+        // now with an `ecommerce_order` sequence and a unique index behind it
+        // (migration 042).
+        //
+        // It used to be `ECO-${Date.now()}`: a DEVICE clock reading, so a till
+        // set a day back issued numbers that sorted before yesterday's orders,
+        // two tills in the same millisecond produced the same document number,
+        // and nothing in the database said no. Read down a phone it was
+        // thirteen digits of nothing.
+        //
+        // Failing here refuses the order rather than falling back to a local
+        // guess, for the reason `nextDocumentNumber` gives: a number two
+        // documents might share is worse than a document that was not created.
+        // Reported as a `reason`, not thrown — the جملة caller does not wrap
+        // this call, and an unhandled rejection there would be silence.
+        let orderNumber: string;
+        try {
+          orderNumber = orderData.orderNumber || (await nextDocumentNumber("ecommerce_order", "ECO-"));
+        } catch (e) {
+          return {
+            success: false as const,
+            reason: e instanceof Error ? e.message : String(e),
+          };
+        }
+
         const order: EcommerceOrder = {
           ...orderData,
           id: orderId,
-          orderNumber: `ECO-${Date.now()}`,
+          orderNumber,
           status: orderData.status || "pending",
           items: orderData.items.map((item) => ({
             ...item,

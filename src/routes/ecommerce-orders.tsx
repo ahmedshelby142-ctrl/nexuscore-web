@@ -1,3 +1,4 @@
+import { stockIsAuthoritative } from "@/lib/ledger/stockSnapshot";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { CourierSelect } from "@/components/shipping/CourierSelect";
@@ -53,6 +54,7 @@ import { productPrice, activeProducts, getVariantStock } from "@/lib/product";
 import { formatMoney, formatQty, discountAmountFor } from "@/lib/math";
 import { applyDiscountCode } from "@/lib/discounts";
 import { claimDiscountUse, releaseDiscountUse } from "@/services/discountUsage";
+import { nextDocumentNumber } from "@/services/documentNumber";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import type { EcommerceOrderItem, WalletType } from "@/types";
 import { WALLET_LABELS, canonicalWallet } from "@/types";
@@ -699,6 +701,18 @@ function EcommerceOrdersInner() {
     const backordered = new Set(
       rows.filter((r) => r.backorder && r.product_id).map((r) => r.product_id as string),
     );
+    // Against the LEDGER only. `getVariantStock` falls back to this device's
+    // `products.quantity` mirror until an aggregation lands, and an order
+    // accepted against that mirror is an order accepted against what this
+    // browser last happened to see — not against what is on the shelf.
+    if (!stockIsAuthoritative()) {
+      setResult({
+        success: false,
+        message: "المخزون لسه بيتحمّل من السحابة. جرّب تاني بعد لحظة.",
+      });
+      return;
+    }
+
     const needed = new Map<string, number>();
     for (const line of stockItems) {
       needed.set(line.productId, (needed.get(line.productId) ?? 0) + line.quantity);
@@ -744,9 +758,31 @@ function EcommerceOrdersInner() {
     // Every other event in an order's life carries `refId: orderNumber`;
     // measured on QA-STORE, every client-written `order_placed` carried none —
     // so a per-order ledger reconciliation was missing the one event that
-    // opens the order. Same shape the store used, so nothing about the number
-    // itself changes.
-    const orderNumber = `ECO-${Date.now()}`;
+    // opens the order.
+    //
+    // Drawn from Postgres, not from `Date.now()`: the counter is serialised by
+    // a row lock, so two tills taking an order in the same millisecond get
+    // different numbers instead of one number twice. Migration 042 seeds the
+    // sequence and puts a unique index behind it.
+    //
+    // A number is spent even if the order below is refused, which leaves gaps.
+    // That is the same trade جملة and الشراء already make, and the right one:
+    // a gap is a question someone can answer, a duplicate is a document you
+    // cannot trust.
+    let orderNumber: string;
+    try {
+      orderNumber = await nextDocumentNumber("ecommerce_order", "ECO-");
+    } catch (e) {
+      // Nothing has moved yet except the discount claim, which goes back.
+      if (claimedDiscount) {
+        await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+      }
+      setResult({
+        success: false,
+        message: `لم يُسجَّل الطلب ولم يتغيّر المخزون. ${e instanceof Error ? e.message : String(e)}`,
+      });
+      return;
+    }
 
     try {
       await appendEvent({

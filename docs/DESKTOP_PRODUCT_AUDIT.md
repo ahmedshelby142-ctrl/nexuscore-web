@@ -475,36 +475,147 @@ stores that start empty. During that window — and permanently after a failed
 read — `/products` says "لا توجد منتجات" to a shop with 134 products.
 `useSyncStatus` exists and only the Sidebar reads it.
 
-### P1-2 — E-commerce order numbers are a client timestamp
+### P1-2 — E-commerce order numbers are a client timestamp — **FIXED**
 
-`ECO-${Date.now()}` (`useOrderStore.ts:170`), with no unique index on
-`orders."orderNumber"`. `next_document_number` was built precisely for this
-and orders were never migrated onto it. `purchase_invoices` and
-`wholesale_invoices` both have `…_number_per_store` unique indexes; orders
-have none.
+**Was:** `ECO-${Date.now()}` in two places (`useOrderStore.ts:170` and
+`routes/ecommerce-orders.tsx:749`), with no unique index on
+`orders."orderNumber"`. A device-clock reading, so a till set a day back issued
+numbers that sorted before yesterday's orders, two tills in the same
+millisecond produced the same document number, and the database did not object.
+`next_document_number` was built precisely for this in migration 016 and orders
+were never migrated onto it.
 
-### P1-3 — `products.quantity` is a stale mirror read on a live path
+**Now:** both sites draw `nextDocumentNumber("ecommerce_order", "ECO-")`.
+Migration `042_order_number_from_counter.sql` adds the unique index
+`orders_number_per_store (store_id, "orderNumber")` — the same shape
+`wholesale_invoices` and `purchase_invoices` already had — and seeds the
+counter. Applied to `oczgqpxeixlrufvevitz`.
 
-Measured this pass: **3 of 7** products in the QA tenant disagree with the
-ledger.
+**History is not renumbered.** The 22 existing `ECO-<13 digits>` orders keep the
+numbers they shipped under. The counter is seeded from canonical numbers only
+(`^ECO-[0-9]{1,9}$`, so all six stores start at 0); seeding the way 016 does —
+`MAX` of every digit in the column — would have read a millisecond timestamp
+and started the sequence at 1.75 trillion, putting the clock straight back into
+the numbering, one increment at a time.
 
-| Product | `products.quantity` | `SUM(qty_delta)` |
+**A refused order still burns a number.** Gaps, not duplicates — the same trade
+جملة and الشراء already make, and the right one: a gap is a question someone can
+answer, a duplicate is a document nobody can trust.
+
+**Runtime proof** — self-aborting `DO` block on the live project, impersonating
+a real ADMIN and a real POS_ECOMMERCE through `request.jwt.claims`. Production
+counts (321 events / 678 lines / 36 orders / 141 products) verified unchanged
+afterwards, with 0 probe rows left behind and every `ecommerce_order` counter
+back at 0:
+
+| # | Property | Result |
 |---|---|---|
-| QA-UAT-PROBE2 | 0 | 14 |
-| غسول سيرافي | 51 | 50 |
-| QA-UAT-WIDGET | 24 | 22 |
+| 1 | Three sequential draws | `ECO-0001` / `ECO-0002` / `ECO-0003` — distinct, monotonic |
+| 2 | Shape | matches `^ECO-[0-9]{4,}$` |
+| 3 | Per-store | store A advanced by exactly 2, store B unchanged |
+| 4 | Legacy collision | `ECO-1789426501524` (17 chars) vs `ECO-0001` (8) — cannot meet |
+| 5 | Duplicate within a store | **refused** by the unique index |
+| 6 | `POS_ECOMMERCE` may draw | yes (`ECO-0004`) |
+| 7 | Non-member may draw | **refused**, SQLSTATE 42501 |
+| 8 | Rows of `store_counters` a client can read | **0** — the sequence cannot be rewound from a browser |
 
-The production store agrees on all 132 products that have ledger lines, so
-this is not (yet) a production number. It matters because
-`lib/product.ts:getActualStock` **falls through to the mirror** whenever
-`ledgerQty()` is `null` — i.e. on every cold render before the stock snapshot
-lands. The fallback is correct in intent (null ≠ zero) and wrong in effect
-when the mirror has drifted.
+**Deliberately not changed:** `CheckoutForm.tsx:886`, `original_order_id:
+pos_<Date.now()>`. That is a synthetic foreign key for a walk-in POS return with
+no originating order — not a number anybody reads, sorts by, or speaks down a
+phone. `check_desktop_p1.mjs` excludes it by pattern and says why.
 
-### P1-4 — Eleven realtime-published tables have no Desktop subscriber
+### P1-3 — `products.quantity` is a stale mirror read on a live path — **FIXED**
 
-See §J. A second device adding a customer, supplier, purchase invoice,
-wholesale invoice, branch or shipping rate does not appear until reload.
+**Classification of every live `products.quantity` read.** The codebase is
+already disciplined here: mobile never reads it (`mobileReaders.ts:198`),
+valuation is ledger-derived (`StockSummaryCards.tsx:10`), and `StockAuditPage`
+reads it *deliberately*, as the thing being audited. Exactly two live readers
+remained:
+
+| Site | Kind | Verdict |
+|---|---|---|
+| `lib/stockMirror.ts:153` | the mirror's own writer | legitimate — leave |
+| `lib/product.ts:168` (`getActualStock` fallback) | **authoritative path** | the defect |
+
+`getActualStock` prefers the ledger and falls through to the mirror when
+`ledgerQty()` returns `null`. The fallback is right in intent — `null` means
+"not loaded yet", not zero, and turning it into zero would paint a sold-out
+shop on every cold start — and wrong in effect at the three places that
+**commit** against stock, which cannot tell a ledger number from a mirror
+number.
+
+**Now:** `stockIsAuthoritative()` (`lib/ledger/stockSnapshot.ts`) reports
+whether an aggregation has landed. The three commit paths ask first and refuse
+rather than validate against a number they cannot vouch for:
+
+| Path | File |
+|---|---|
+| نقاط البيع cart | `components/sales/CheckoutForm.tsx` |
+| فاتورة جملة | `components/wholesale/WholesalePage.tsx` |
+| الطلبات أونلاين | `routes/ecommerce-orders.tsx` |
+
+The mirror is **not** deleted — it is what lets 200 products render without 200
+aggregations — and the ~48 display callers are untouched, which
+`check_desktop_p1.mjs` pins in both directions.
+
+**Measured drift, this pass.** This corrects the earlier reading in this
+document, which reported "3 of 7" without separating the tenants:
+
+| Store | Products with ledger stock | Disagree with mirror |
+|---|---|---|
+| المحل التجاري (production) | 132 | **0** |
+| QA-STORE (disposable) | 6 | **3** — QA-UAT-PROBE2 0/14, QA-UAT-WIDGET 24/22, غسول سيرافي 51/50 |
+
+The drift is demonstrated to occur, and has **not** occurred in the production
+tenant. This fix closes the path; it does not repair a live number. Nothing was
+written to correct the QA drift — the mirror is derived, and `applyStockMoves` /
+`hydrateAll` rebuild it.
+
+**Not attempted: a database-level oversell guard.** Backorders are legitimate —
+`ecommerce-orders.tsx` skips the stock check for backordered lines and تقرير
+النواقص sums the deficit — so a constraint refusing a negative `SUM(qty_delta)`
+would refuse real business. The client stays the gate; this change makes the
+gate ask an authoritative question.
+
+### P1-4 — Eleven realtime-published tables have no Desktop subscriber — **FIXED**
+
+16 tables are in `supabase_realtime`; 5 were listened to. The other 11 were
+published and then ignored — the worst of the two states, because the write is
+broadcast to every tab and every tab drops it: no error, no indication, just a
+second device quietly showing yesterday's data.
+
+**All 16 classified:**
+
+| Table | Subscribed | Why |
+|---|---|---|
+| products, orders, transactions, expenses | ✅ was | unchanged — handlers left exactly as they were |
+| ledger_events | ✅ was | pulse only; balances are re-read, not merged |
+| customers | ✅ **new** | CRM, and the order form writes one per order |
+| suppliers | ✅ **new** | الشراء |
+| purchase_invoices | ✅ **new** | الشراء |
+| return_records | ✅ **new** | المرتجعات |
+| discount_codes | ✅ **new** | `claimDiscountUse` moves counts from any till; stale = a code that looks spendable and is not |
+| wholesale_clients | ✅ **new** | جملة, till vs office — 016's stated reason for publishing it |
+| wholesale_invoices | ✅ **new** | جملة |
+| shipping_rates | ✅ **new** | an admin repricing a governorate while a till has the order form open |
+| ledger_lines | ❌ | arrives with its event; `ledger_events` already pulses the readers. Subscribing re-fires that once per line of every sale |
+| stores | ❌ | licence and identity — `useSessionReconciliation` owns it; a silent merge would be the app deciding on its own that the licence changed |
+| branches | ❌ | structural; created once and then left alone |
+| couriers | ❌ | not in the publication at all |
+
+**Shape.** Still one channel (`global-sync`), but the listeners are now built by
+reducing over `TABLE_HANDLERS` instead of being written out by hand — in source
+a handler nobody subscribes to is indistinguishable from a working one, which
+is exactly how four listeners stayed the whole of realtime while the
+publication grew to sixteen. The eight new handlers come from one factory:
+eight hand-copied merges would be eight chances to get Last-Write-Wins subtly
+different, which `orders` (camelCase `updatedAt`, parsed as a Date) and
+`products` (snake_case `updated_at`, compared as strings) already are.
+
+**The auth gate from `1cb38ce` is preserved**, and pinned by test: the channel
+is still opened only under `isCloudSyncMode() && authenticated`, the boot
+hydrate still returns early on `!authenticated`, and the hook still returns
+`sessionState` to `ProtectedRoute`. Three separate mutations confirm each.
 
 ### P1-5 — Two implementations of owner financials, never compared
 
@@ -614,9 +725,15 @@ Nothing below is invented. Each is a real fork the code and data leave open.
 
 ### H-1 Stock mirror drift — measured
 
-Query and result in §P1-3. Production store: 0 disagreements across 132
-products with ledger lines; 2 products have no stock lines at all and read the
-mirror permanently.
+Query and per-tenant result in §P1-3. Production store (المحل التجاري): **0
+disagreements** across 132 products with ledger lines. QA-STORE: 3 of 6. Two
+production products have no stock lines at all and therefore read the mirror
+permanently.
+
+Closed as a *path* by P1-3 — the three commit sites no longer accept a mirror
+number — but the mirror itself is still derived state that can drift between
+`applyStockMoves` and the next hydrate. That is by design; `StockAuditPage`
+exists to show it.
 
 ### H-2 Owner financials computed twice
 
@@ -710,27 +827,34 @@ bodies and the Supabase security advisor.
 
 ## J. Realtime findings
 
-**Publication `supabase_realtime` carries 16 tables.** Desktop subscribes to
-**5**, on one channel `global-sync` (`hooks/useRealtimeSync.ts:188`).
+**Publication `supabase_realtime` carries 16 tables.** Desktop now subscribes
+to **13** of them on one channel `global-sync` (`hooks/useRealtimeSync.ts`) —
+12 merged through `TABLE_HANDLERS` plus the `ledger_events` pulse. It was 5;
+P1-4 closed the gap, and the three still excluded are excluded on purpose.
 
 | Table | Published | Desktop subscriber | Effect |
 |---|---|---|---|
 | products | ✅ | ✅ `*` | merged, LWW on `updated_at` |
 | orders | ✅ | ✅ `*` | merged, LWW on `updatedAt` |
 | transactions | ✅ | ✅ `*` | merged into a store with 0 rows in production |
-| expenses | ✅ | ✅ `*` | merged, **no LWW guard** — unconditional overwrite |
+| expenses | ✅ | ✅ `*` | merged, **no LWW guard** — unconditional overwrite (unchanged; see below) |
 | ledger_events | ✅ | ✅ INSERT | fires a `ledger-sync-pulled` window event; consumed by `useStock` and `useBalances` |
-| ledger_lines | ✅ | ❌ | — |
-| customers | ✅ | ❌ | stale until reload |
-| suppliers | ✅ | ❌ | stale until reload |
-| purchase_invoices | ✅ | ❌ | stale until reload |
-| wholesale_invoices | ✅ | ❌ | stale until reload |
-| wholesale_clients | ✅ | ❌ | stale until reload |
-| return_records | ✅ | ❌ | stale until reload |
-| discount_codes | ✅ | ❌ | stale until reload |
-| shipping_rates | ✅ | ❌ | stale until reload |
-| branches | ✅ | ❌ | stale until reload |
-| stores | ✅ | ❌ | settings stale until reload |
+| customers | ✅ | ✅ `*` | merged, LWW on `updated_at` |
+| suppliers | ✅ | ✅ `*` | merged, LWW on `updated_at` |
+| purchase_invoices | ✅ | ✅ `*` | merged, LWW on `updated_at` |
+| wholesale_invoices | ✅ | ✅ `*` | merged, LWW on `updated_at` |
+| wholesale_clients | ✅ | ✅ `*` | merged, LWW on `updated_at` |
+| return_records | ✅ | ✅ `*` | merged, LWW on `updated_at` |
+| discount_codes | ✅ | ✅ `*` | merged, LWW on `updated_at` |
+| shipping_rates | ✅ | ✅ `*` | merged, LWW on `updated_at` |
+| ledger_lines | ✅ | ❌ **by decision** | arrives with its event; `ledger_events` already pulses the readers |
+| stores | ✅ | ❌ **by decision** | licence and identity — `useSessionReconciliation` owns it |
+| branches | ✅ | ❌ **by decision** | structural; created once and then left alone |
+
+**`expenses` still has no Last-Write-Wins guard.** It is a pre-existing
+asymmetry, it is not new, and it was left alone rather than folded into this
+wave: the four original handlers are load-bearing and the point of P1-4 was
+coverage, not rewriting merges that work. Carried forward as P2.
 
 ### Other findings
 
@@ -777,8 +901,11 @@ downloads a `.html` file. Every "PDF" button is one of those two.
 
 ### Document numbering
 
-`next_document_number(p_store, p_name, p_prefix)` — SECURITY DEFINER,
-`is_store_member` checked, single `INSERT … ON CONFLICT DO UPDATE … RETURNING`
+`next_document_number(p_store, p_name, p_prefix)` — SECURITY DEFINER. The
+LIVE definition checks `has_role(store, ADMIN | POS_ECOMMERCE | ECOMMERCE_ONLY
+| ACCOUNTANT)`, which is tighter than the `is_store_member` in the repo copy of
+migration 016 and is exactly the set of roles that may take an order — so
+orders needed no change to the function. A single `INSERT … ON CONFLICT DO UPDATE … RETURNING`
 so concurrent callers serialise on a row lock.
 
 | Document | Prefix | Allocator | Unique index |
@@ -786,7 +913,7 @@ so concurrent callers serialise on a row lock.
 | Purchase invoice | `FM-` | ✅ RPC | ✅ `(store_id, "invoiceNumber")` |
 | Wholesale invoice | `FJ-` | ✅ RPC | ✅ `(store_id, "invoiceNumber")` |
 | Supplier payment | `SP-` | ✅ RPC | n/a (ledger ref) |
-| **E-commerce order** | `ECO-` | 🔴 `Date.now()` in the client | 🔴 **none** |
+| **E-commerce order** | `ECO-` | ✅ RPC (migration 042) | ✅ `(store_id, "orderNumber")` |
 | POS sale receipt | — | ❌ | ❌ |
 | Return document | — | ❌ | ❌ |
 
@@ -997,6 +1124,38 @@ opt-in P0-1 live check). The 5 failures are **the same 5 stale pre-existing
 ones** classified in O-1 below — unchanged in count, name and cause. Zero NEW
 failures.
 
+**After P1 Wave 1 (2026-09-22):**
+
+```
+  tests 1309 · pass 1303 · fail 0 · skipped 6 · cancelled 0 · todo 0
+```
+
++13 tests (`scripts/check_desktop_p1.mjs`). **Zero failures.**
+
+Three pre-existing tests failed mid-wave and were repointed, not weakened —
+each pinned a real invariant through a marker this wave replaced:
+
+| Test | Marker that moved | Invariant, restated |
+|---|---|---|
+| `check_order_traceability` · *allocated BEFORE the ledger event* | `const orderNumber = \`ECO-` | now finds the `nextDocumentNumber` call, **and** asserts the route mints nothing itself |
+| `check_order_traceability` · *the store uses the caller's number* | the `\`ECO-${Date.now()}\`` fallback | now asserts the fallback is the same counter, on comment-stripped source |
+| `check_sync_layer` · *every subscribed table is published* | a hand-written `table: '…'` list | now reads `TABLE_HANDLERS` itself, and scans **every** migration for the publication rather than only the init file and 036 |
+
+The last one also had its floor raised from 5 to 13, so losing realtime
+coverage again fails loudly instead of passing.
+
+**Mutation-tested: 22 mutations, 22 caught.** Two escapes were found and both
+were real test defects, fixed before the wave closed:
+
+* *the mirror is read before the ledger again* — the test pinned source ORDER,
+  which survives falsifying the condition around the ledger read. It now pins
+  the condition and the return.
+* *the eight reference handlers are discarded* — the test grepped for table
+  names, which survive inside a call whose result is thrown away. It now
+  asserts the handlers are spread into `TABLE_HANDLERS`. This one was caught
+  the hard way: a crashed mutation run left the mutated file on disk and the
+  suite still passed on it.
+
 One pre-existing test needed repointing because this wave changed the code it
 reads: `check_invite_staff.mjs` matched `<ProtectedRoute />` verbatim, and the
 guard now takes the reconciled session as a prop. It matches the tag name
@@ -1064,14 +1223,14 @@ Each step is independently shippable and leaves the suite green.
 | ~~2~~ | ~~**P0-2** wire the header to `useAuthStore`~~ | ✅ **DONE** 2026-09-21 — `SessionIdentity`, shared by both headers |
 | ~~3~~ | ~~**P0-4 / I-1** gate `ProtectedRoute` on `SessionReconciliationState`~~ | ✅ **DONE** 2026-09-21 — plus the membership re-read and the realtime gate |
 | ~~4~~ | ~~**P0-3 / H-4** default the two flags on~~ | ✅ **DONE** 2026-09-21 — default + `version: 1` migration |
-| 5 | **O-1** repoint the 5 stale tests | **NEXT.** Gets to green before anything else moves. Do it before step 6 |
+| ~~5~~ | ~~**O-1** repoint the 5 stale tests~~ | ✅ **DONE** 2026-09-21 — suite green |
 | 6 | **P1-1 / C-71** one boot gate driven by `useSyncStatus` | Fixes "empty vs loading vs failed" for all 21 screens at once |
-| 7 | **P1-2 / K** move order numbers onto `next_document_number("ecommerce_order","ECO-")` + add the unique index | Migration + one call site. Existing rows keep their timestamps |
-| 8 | **P1-4 / J** subscribe the 11 unsubscribed tables (or unpublish the ones nobody wants) | One `.on()` per table on the existing channel |
+| ~~7~~ | ~~**P1-2 / K** move order numbers onto `next_document_number("ecommerce_order","ECO-")` + add the unique index~~ | ✅ **DONE** 2026-09-22 — migration 042, two call sites (the route and the store fallback), history untouched |
+| ~~8~~ | ~~**P1-4 / J** subscribe the 11 unsubscribed tables (or unpublish the ones nobody wants)~~ | ✅ **DONE** 2026-09-22 — 8 subscribed, 3 excluded with reasons, listeners now driven by the handler map |
 | 9 | **O-2** get the 4 live tests running in CI | Prerequisite for trusting steps 10–11 |
 | 10 | **P1-5 / H-2** assert Desktop `fetchPnl` == SQL `owner_financial_summary` on one real period | Needs step 9 |
 | 11 | **I-2 / I-3** narrow `insert_ledger_lines` by kind; collapse the two `products` policies | Needs step 9 to prove no role loses a write it needs |
-| 12 | **P1-3 / H-1** decide whether the mirror stays; if it does, add a reconciliation check | Behind steps 6 and 9 — the boot gate shrinks the window the stale read is visible in |
+| ~~12~~ | ~~**P1-3 / H-1** decide whether the mirror stays; if it does, add a reconciliation check~~ | ✅ **DONE** 2026-09-22 — the mirror STAYS (it is what makes a 200-row list cheap); the three commit paths now refuse to decide on it |
 | 13 | **F-1 / F-2** logos → SVG/WebP, `manualChunks`, parallel hydrate | Pure performance, no behaviour change |
 | 14 | **F-4 – F-8** delete the dead router stack, dead modules, URL-only duplicates, `*.server.ts` | Safe once nothing above depends on reading them |
 | 15 | **P1-6** restore the 66 `any` types, highest-traffic first | Largest and least urgent; do it with tests green |

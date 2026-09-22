@@ -51,6 +51,30 @@ export function ledgerQty(productId: string): number | null {
   return snapshot.get(productId) ?? 0;
 }
 
+/**
+ * Has an aggregation landed at all?
+ *
+ * `getActualStock` falls back to the `products.quantity` mirror while this is
+ * false, and for RENDERING that is right — a shop drawn from a cache for one
+ * frame beats a shop drawn as sold out. For a decision it is not. The mirror is
+ * whatever the last `applyStockMoves` on THIS device left behind: a till that
+ * has not hydrated since another till sold the last six units still holds six,
+ * and a screen that cannot tell a mirror number from a ledger number will
+ * cheerfully accept the order.
+ *
+ * So the three places that COMMIT against stock — the POS cart, the جملة
+ * invoice and the online order form — ask this first and refuse rather than
+ * validate against a number they cannot vouch for. It is a half-second wait on
+ * a cold start, once, against selling goods that are not there.
+ *
+ * Deliberately not folded into `getActualStock`: that function has 48 callers
+ * and almost all of them are drawing a label. Making them all handle `null`
+ * would be a large change in service of three call sites.
+ */
+export function stockIsAuthoritative(): boolean {
+  return snapshot !== null;
+}
+
 /** Drop it. Called when the signed-in store changes — see `clearCloudOwnedState`. */
 export function clearStockSnapshot(): void {
   snapshot = null;

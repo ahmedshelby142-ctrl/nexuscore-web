@@ -143,6 +143,23 @@ export function claimOrder(
   return "ok";
 }
 
+/**
+ * Were this order's goods already SOLD on a wholesale invoice?
+ *
+ * شاشة الجملة books the whole sale when it issues the invoice — goods, stock,
+ * COGS, the trader's receivable, the shipping charge and the courier cost, in
+ * one `sale` event — and, when the goods need a courier, opens an order in
+ * إدارة الطلبات for the delivery RUN. That order is logistics, not a second
+ * sale. Its lines carry the invoice id (the same link the /orders conversion
+ * writes), and this is how every later step recognises it: delivering it books
+ * nothing, and returning it goes through the trader path against the invoice.
+ */
+export function soldOnWholesaleInvoice(order: {
+  stockItems?: readonly { wholesaleInvoiceId?: string }[] | null;
+}): boolean {
+  return (order.stockItems ?? []).some((line) => Boolean(line.wholesaleInvoiceId));
+}
+
 /** Release a claim. Always from a `finally`, or the row stays stuck. */
 export function releaseOrder(orderId: string): void {
   inFlight.delete(orderId);

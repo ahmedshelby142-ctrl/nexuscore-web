@@ -31,6 +31,12 @@
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { deleteThrough } from "@/services/cloudData";
 import { invoiceCredits, runWholesaleReturn } from "@/lib/wholesaleReturnTxn";
+import { useAuthStore } from "@/store/useAuthStore";
+import { canReturnWholesale } from "@/lib/roles";
+
+/** What a role that may not complete a trader return is told — before anything moves. */
+export const WHOLESALE_RETURN_FORBIDDEN =
+  "تسوية مرتجع حساب تاجر لمدير المحل بس — الصلاحية دي مش متاحة لحسابك. محدش سجّل حاجة.";
 import {
   WHOLESALE_RETURN_TYPE,
   type ResolvedWholesaleReturn,
@@ -90,6 +96,13 @@ export async function commitWholesaleReturn(
   // recorded. See `runWholesaleReturn` for the order and the undo.
   const store = () => useBusinessStore.getState();
   await runWholesaleReturn(invoiceCredits(resolved.lines), {
+    // The one choke point all three screens pass through, so the permission
+    // is asked once, here, before the first write — not per screen.
+    authorize: () => {
+      if (!canReturnWholesale(useAuthStore.getState().userRole)) {
+        throw new Error(WHOLESALE_RETURN_FORBIDDEN);
+      }
+    },
     writeRecords: () => writeReturnRecords(resolved, client, paidNow, notes),
     deleteRecord: async (id) => {
       await deleteThrough("return_records", id);

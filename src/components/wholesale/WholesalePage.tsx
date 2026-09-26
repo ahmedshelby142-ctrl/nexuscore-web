@@ -102,7 +102,8 @@ const emptyInvoiceForm = {
 
 function getInvoiceStatus(
   status: string,
-  dueDate: string,
+  // `due_date` is nullable in the table; a missing one is "not overdue".
+  dueDate: string | null | undefined,
   remaining: number,
 ): { label: string; variant: "default" | "secondary" | "destructive" | "outline" } {
   if (remaining <= 0) return { label: "مدفوع", variant: "default" };
@@ -111,6 +112,21 @@ function getInvoiceStatus(
   if (remaining < 0) return { label: "مدفوع", variant: "default" };
   return { label: "متبقي " + formatMoney(remaining), variant: "secondary" };
 }
+
+/**
+ * A line on the invoice being drafted. Every field here is filled in by
+ * `addItem`, so — unlike a stored line, which may predate some of them —
+ * none is optional.
+ */
+type DraftLine = WholesaleInvoiceItem & {
+  id: string;
+  productName: string;
+  wholesalePrice: number;
+  sku: string;
+  total: number;
+  backorder: boolean;
+  shortfall: number;
+};
 
 export function WholesalePage() {
   const {
@@ -146,7 +162,7 @@ export function WholesalePage() {
 
   const [isInvoiceOpen, setIsInvoiceOpen] = useDraftState("wholesale:invoiceOpen", false);
   const [invoiceForm, setInvoiceForm] = useDraftState("wholesale:invoiceForm", emptyInvoiceForm);
-  const [invoiceItems, setInvoiceItems] = useDraftState<WholesaleInvoiceItem[]>(
+  const [invoiceItems, setInvoiceItems] = useDraftState<DraftLine[]>(
     "wholesale:invoiceItems",
     [],
   );
@@ -178,10 +194,13 @@ export function WholesalePage() {
   const [newAddress, setNewAddress] = useState({ governorate: "", city: "", region: "", details: "" });
   
   const selectedInvoiceClientData = wholesaleClients.find((c) => c.id === invoiceForm.clientId);
-  const clientAddresses: any[] = useMemo(
-    () => selectedInvoiceClientData?.addresses ?? [],
-    [selectedInvoiceClientData],
-  );
+  // There is no saved-address store: `wholesale_clients` has no addresses
+  // column and nothing writes one, so this read of `client.addresses` has
+  // always answered []. Kept as the empty list it always was — the picker
+  // offers "new address" only — rather than reading a field that does not
+  // exist. (Audit §F-15: a saved-address feature with no source.)
+  const clientAddresses: any[] = [];
+  void selectedInvoiceClientData;
 
 
   const [isNewClientOpen, setIsNewClientOpen] = useState(false);
@@ -714,7 +733,7 @@ export function WholesalePage() {
       })),
     );
 
-    await addWholesaleInvoice({
+    const savedInvoice = await addWholesaleInvoice({
       invoiceNumber: invNum,
       clientId: invoiceForm.clientId,
       clientName: client.companyName,
@@ -762,11 +781,19 @@ export function WholesalePage() {
         }
       }
 
-      await useOrderStore.getState().addOrder({
+      // The delivery RUN for goods the `sale` event above already sold. It is
+      // linked to the trader and — per line — to the invoice, so إدارة الطلبات
+      // knows not to book the sale again on delivery (`soldOnWholesaleInvoice`)
+      // and a return on it resolves against this invoice's prices and ceiling.
+      const shipment = await useOrderStore.getState().addOrder({
         customerName: client.companyName,
         customerPhone: client.phone || "",
-        customerAddress: fullAddress,
+        // `address` is the column. This was `customerAddress`, a field the
+        // sync whitelist drops, so every wholesale delivery reached the courier
+        // with an empty address.
+        address: fullAddress,
         governorate: activeGov,
+        wholesaleClientId: client.id,
         items: invoiceItems.map((i: any) => ({
           productId: i.productId,
           productName: i.productName,
@@ -777,25 +804,36 @@ export function WholesalePage() {
         })),
         // `variantName` and `shortfall` ride along: the first is what every
         // restock path keys on, the second is what تقرير النواقص sums.
-        stockItems: invoiceItems.map((i: any) => ({
-          id: crypto.randomUUID(),
+        // Same line ids as the invoice: a trader return started from the order
+        // keys its ceiling on them, exactly as the /orders conversion does.
+        stockItems: invoiceItems.map((i, at) => ({
+          id: i.id,
           productId: i.productId,
           productName: i.productName,
           sku: i.sku || "",
           quantity: i.quantity,
           unitPrice: i.wholesalePrice,
+          unitCost: ledgerItems[at].unitCost,
           variantName: i.variantName,
           shortfall: i.shortfall,
+          wholesaleInvoiceId: savedInvoice.id,
         })),
         totalAmount: invoiceTotal,
         shippingFee: shippingInfo.customerCharge,
         courierFee: shippingInfo.actualCost,
         status: "pending",
-        source: "wholesale",
-        notes: `فاتورة جملة ${invNum} - ${client.companyName}`,
         cogsAmount: invoiceItems.reduce((sum, i) => sum + i.quantity * costOf(i.productId), 0),
       });
-      toast.success(`تم إنشاء طلب شحن في إدارة الطلبات للفاتورة ${invNum}`);
+      // `addOrder` reports failure in its result; this used to announce success
+      // regardless. The invoice and the sale ARE recorded — only the delivery
+      // order is missing, and the operator has to know to open it by hand.
+      if (shipment.success) {
+        toast.success(`تم إنشاء طلب شحن في إدارة الطلبات للفاتورة ${invNum}`);
+      } else {
+        toast.error(
+          `الفاتورة ${invNum} اتسجلت، لكن طلب الشحن ما اتعملش — افتحه يدوي من إدارة الطلبات. ${shipment.reason}`,
+        );
+      }
     }
 
     setIsSubmitting(false);

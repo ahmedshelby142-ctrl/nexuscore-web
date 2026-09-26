@@ -372,7 +372,11 @@ export function CourierLedgerPage() {
       // The documents follow the ledger. Only the orders in THIS batch are
       // stamped — everything left unticked stays open for the next transfer.
       for (const order of live) {
-        await updateOrder(order.id, { codSettledAt: new Date(), codSettlementId: settlementId });
+        // `codSettledAt` is the column that keeps an order out of the next
+        // batch. The link to THIS settlement is not stored on the order: the
+        // settlement's own ledger event lists its `orderNumbers`, and a reprint
+        // reads it from there (below).
+        await updateOrder(order.id, { codSettledAt: new Date() });
       }
 
       // ── the claims close against THIS transfer ──────────────────────────
@@ -938,7 +942,11 @@ export function CourierLedgerPage() {
         <CourierSettlementReport
           settlement={printSettlement}
           orders={orders
-            .filter((o) => o.codSettlementId === printSettlement.id)
+            // The orders this transfer covered, from its append-only ledger
+            // event. It used to match `order.codSettlementId` — a field with no
+            // column, dropped on every write — so after any reload a reprinted
+            // statement listed NO orders under a real settlement amount.
+            .filter((o) => printSettlement.orderNumbers.includes(o.orderNumber))
             .map((o) => ({
               orderNumber: o.orderNumber,
               expectedCod: o.expectedCod,

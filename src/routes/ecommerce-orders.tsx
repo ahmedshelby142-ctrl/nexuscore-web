@@ -852,11 +852,6 @@ function EcommerceOrdersInner() {
       // composed into `address` above — but the dedicated column stayed null
       // on every order ever placed, so anything filtering by city found none.
       city,
-      metadata: {
-        governorate,
-        city,
-        address: detailedAddress,
-      },
       // TOP-LEVEL, not inside `metadata`. `orders.original_order_id` is a real
       // column and IS whitelisted in `cloudSchema`, but the link was only ever
       // written into `metadata`, which is not a column — so `toRemoteRow`

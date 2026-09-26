@@ -1,0 +1,40 @@
+# Verify what is COMMITTED, on every push and pull request to main.
+#
+# Why this exists (audit §O-2): nothing checked the committed tree before. Vercel
+# builds with Vite, which neither typechecks nor runs a test, and the suite had
+# only ever been run on a working tree that carried uncommitted work — which is
+# how committed `main` came to call a store method that was never committed
+# (P0-5). A clean checkout here is exactly the check that was missing.
+#
+# No secrets. The live-database tests self-skip without SUPABASE_URL /
+# SUPABASE_SERVICE_ROLE_KEY, and they must stay skipped here until they point at
+# a dedicated QA project: the service-role key bypasses RLS, and it must never
+# be handed to CI for the production project.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Unit and source-contract suite
+        run: npm test
+      - name: Desktop build
+        run: npm run build

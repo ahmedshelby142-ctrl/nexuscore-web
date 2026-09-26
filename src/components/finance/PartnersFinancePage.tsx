@@ -474,6 +474,7 @@ export function PartnersFinancePage() {
     getMonthlyDepreciationExpense,
     getBudgetSpending,
     getCategorySpending,
+    checkExpenseBudget,
   } = financialStore;
 
   // ── Reactive income statement ──
@@ -704,6 +705,27 @@ export function PartnersFinancePage() {
     // After validation, so a refused submit does not leave the gate held.
     if (!expenseGate.enter()) return;
 
+    // The budget is asked BEFORE any money moves. It used to be asked after
+    // the ledger event, so an over-cap expense was booked and paid and only
+    // then "refused" — see `checkExpenseBudget`.
+    setSpendError(null);
+    const budget = checkExpenseBudget(expenseForm.category, amount);
+    if (!budget.ok) {
+      if (budget.reason === "over_budget") {
+        setOverBudgetAlert({
+          category: expenseForm.category,
+          cap: budget.capAmount,
+          current: budget.currentTotal,
+        });
+      } else {
+        setSpendError(
+          "المصروفات المسجلة لسه ما اتقرتش من السحابة، فمش هنقدر نتأكد من سقف الميزانية — مفيش حاجة اتسجلت. جرّب تاني بعد لحظة.",
+        );
+      }
+      expenseGate.exit();
+      return;
+    }
+
     // ONE event first: the cost and the cash that paid it, together. Recording
     // the document without this is what let the till keep the rent money.
     setSpendError(null);
@@ -736,18 +758,21 @@ export function PartnersFinancePage() {
     refreshWallets();
     refreshExpenses();
 
-    const result = await addExpense({
-      category: expenseForm.category as ExpenseCategory,
-      amount,
-      description: expenseForm.description || undefined,
-      date: new Date(expenseForm.date),
-    });
-    if (!result.success) {
-      setOverBudgetAlert({
-        category: expenseForm.category,
-        cap: result.capAmount,
-        current: result.currentTotal,
+    // The document follows the money. If its write fails the expense IS on
+    // the ledger and out of the wallet — say that, rather than an unhandled
+    // rejection that left this form's gate held until a reload.
+    try {
+      await addExpense({
+        category: expenseForm.category as ExpenseCategory,
+        amount,
+        description: expenseForm.description || undefined,
+        date: new Date(expenseForm.date),
       });
+    } catch (e) {
+      setSpendError(
+        `المصروف اتسجّل في الدفتر وخرج من الخزنة، لكن مستنده ما اتحفظش — ماتسجّلوش تاني. ${e instanceof Error ? e.message : String(e)}`,
+      );
+      expenseGate.exit();
       return;
     }
     setExpenseForm({

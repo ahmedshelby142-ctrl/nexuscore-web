@@ -30,7 +30,8 @@ function key(governorate: string): string {
  */
 export function rateFor(
   rows: ShippingRateRow[],
-  governorate: string | undefined,
+  // Nullable in `orders`; a missing one prices at 0 below, as it always did.
+  governorate: string | null | undefined,
   movement: ShipmentMovement,
 ): number {
   if (!governorate) return 0;

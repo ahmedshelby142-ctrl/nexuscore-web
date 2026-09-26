@@ -6,6 +6,7 @@ import { useCourierStore } from "./useCourierStore";
 import { useFinancialStore } from "./useFinancialStore";
 import type {
   EcommerceOrder,
+  NewEcommerceOrder,
   EcommerceOrderItem,
   EcommerceOrderStatus,
   WalletType,
@@ -26,8 +27,11 @@ export type OrderItemInput = Omit<EcommerceOrderItem, "id"> & {
 };
 
 type CreateEcommerceOrder = Omit<
-  EcommerceOrder,
-  "id" | "orderNumber" | "status" | "createdAt" | "updatedAt" | "revenueLogged" | "stockItems"
+  NewEcommerceOrder,
+  // `items` too: the input lines have no ids yet (`OrderItemInput`), and
+  // intersecting them with the stored `EcommerceOrderItem[]` demanded ids the
+  // caller cannot have.
+  "id" | "orderNumber" | "status" | "createdAt" | "updatedAt" | "revenueLogged" | "stockItems" | "items"
 > & {
   /**
    * The order number, when the caller has already allocated it.
@@ -84,7 +88,9 @@ interface OrderState {
  */
 async function saveOrder(
   set: (fn: (state: any) => any) => void,
-  order: EcommerceOrder,
+  // A new order may leave the defaulted columns to Postgres; what comes back
+  // (and what the store keeps) is the full stored row.
+  order: NewEcommerceOrder,
 ): Promise<EcommerceOrder> {
   const saved = (await writeThrough("orders", order)) as EcommerceOrder;
   set((state: any) => {
@@ -193,7 +199,7 @@ export const useOrderStore = create<OrderState>()(
           };
         }
 
-        const order: EcommerceOrder = {
+        const order: NewEcommerceOrder = {
           ...orderData,
           id: orderId,
           orderNumber,

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { upsertTarget } from "@/lib/customers";
-import type { CustomerProfile, EcommerceOrder } from "@/types";
+import type { CustomerProfile, EcommerceOrder, NewEcommerceOrder } from "@/types";
 import { writeThrough, deleteThrough } from "@/services/cloudData";
 
 /**
@@ -33,10 +33,9 @@ interface CustomerState {
   customers: CustomerProfile[];
   /** Register someone by hand, from قاعدة العملاء. Returns the new id. */
   addCustomer: (
-    customer: Omit<
-      CustomerProfile,
-      "id" | "deleted_at"
-    >,
+    // What the form supplies. The id, the returns count and the sync clock
+    // are this store's to set.
+    customer: Pick<CustomerProfile, "name" | "phone" | "address">,
   ) => Promise<string>;
   /** Correct a customer's details. Reference write — no ledger event. */
   updateCustomer: (id: string, updates: Partial<CustomerProfile>) => Promise<void>;
@@ -78,7 +77,8 @@ interface CustomerState {
    * The `customer_ltv` line is written by `order_delivered`, keyed to the id
    * this returns.
    */
-  upsertCustomerFromOrder: (order: EcommerceOrder) => Promise<string>;
+  // Called on the order being CREATED, before Postgres fills its defaults.
+  upsertCustomerFromOrder: (order: NewEcommerceOrder) => Promise<string>;
 }
 
 export const useCustomerStore = create<CustomerState>()(
@@ -186,7 +186,11 @@ export const useCustomerStore = create<CustomerState>()(
           id: crypto.randomUUID(),
           name: order.customerName,
           phone: order.customerPhone,
-          address: order.address,
+          // `customers.address` is NOT NULL with no default: an order without
+          // an address used to send `undefined` here, the insert was refused,
+          // and the order behind it failed with it.
+          address: order.address ?? "",
+          returned_orders_count: 0,
           deleted_at: null,
           updated_at: Date.now(),
         });

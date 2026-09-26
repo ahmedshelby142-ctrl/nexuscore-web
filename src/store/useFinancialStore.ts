@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useSyncStatus } from "./useSyncStatus";
 import { persist } from "zustand/middleware";
 import { add, multiply, divide } from "@/lib/math";
 import type { OwnerBudget } from "@/lib/ledger/ownerDraw";
@@ -22,6 +23,13 @@ import { SyncService } from "@/services/api/SyncService";
 
 
 import { WALLET_LABELS } from "@/types";
+
+/** The answer to "may this expense be recorded?" — unknown is not "yes". */
+export type ExpenseBudgetCheck =
+  | { ok: true }
+  | { ok: false; reason: "over_budget"; capAmount: number; currentTotal: number }
+  | { ok: false; reason: "spending_unknown" };
+
 
 /**
  * Central Financial Engine — General Ledger
@@ -66,12 +74,13 @@ interface FinancialState {
   courierReceivables: CourierReceivable[];
 
   // ── Actions ────────────────────────────────────────────────────
-  addExpense: (
-    record: Omit<ExpenseRecord, "id">,
-  ) => Promise<
-    | { success: true }
-    | { success: false; reason: "over_budget"; capAmount: number; currentTotal: number }
-  >;
+  /**
+   * May an expense of `amount` in `category` be recorded? Asked BEFORE the
+   * ledger event — see `checkExpenseBudget` below for why it moved.
+   */
+  checkExpenseBudget: (category: string, amount: number) => ExpenseBudgetCheck;
+  /** Record the expense DOCUMENT. The budget is checked before, not here. */
+  addExpense: (record: Omit<ExpenseRecord, "id">) => Promise<{ success: true }>;
   removeExpense: (id: string) => Promise<void>;
   addPayroll: (record: Omit<PayrollRecord, "id">) => void;
   removePayroll: (id: string) => void;
@@ -199,20 +208,28 @@ export const useFinancialStore = create<FinancialState>()(
       courierReceivables: [],
 
       // ── Expense (with budget-cap enforcement) ──────────────────
-      addExpense: async (record) => {
-        const categoryBudget = get().budgetCaps.find((b) => b.category === record.category);
-        if (categoryBudget) {
-          const currentTotal = get().getCategorySpending(record.category);
-          const newTotal = add(currentTotal, record.amount);
-          if (newTotal > categoryBudget.capAmount) {
-            return {
-              success: false as const,
-              reason: "over_budget" as const,
-              capAmount: categoryBudget.capAmount,
-              currentTotal,
-            };
-          }
+      // The cap check used to live INSIDE `addExpense`, and الشركاء والمالية
+      // calls `addExpense` AFTER appending the `expense` ledger event. So an
+      // over-budget expense moved the money out of the wallet first, and was
+      // then "refused" with «لا يمكن تجاوز الحد المسموح» — while the ledger
+      // had already booked it and no document was kept. And the spending it
+      // compared against is the hydrated `expenses` list, which reads as 0
+      // before it loads or after it fails — so a failed read waved any expense
+      // through a cap. Asked first now, and "unknown" is its own answer.
+      checkExpenseBudget: (category, amount) => {
+        const cap = get().budgetCaps.find((b) => b.category === category);
+        if (!cap) return { ok: true };
+        if (useSyncStatus.getState().tables.expenses !== "ready") {
+          return { ok: false, reason: "spending_unknown" };
         }
+        const currentTotal = get().getCategorySpending(category);
+        if (add(currentTotal, amount) > cap.capAmount) {
+          return { ok: false, reason: "over_budget", capAmount: cap.capAmount, currentTotal };
+        }
+        return { ok: true };
+      },
+
+      addExpense: async (record) => {
         const expense: ExpenseRecord = {
           ...record,
           id: crypto.randomUUID(),

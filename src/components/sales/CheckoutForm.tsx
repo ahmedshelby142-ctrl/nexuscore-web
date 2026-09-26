@@ -839,7 +839,7 @@ export default function CheckoutForm() {
             discountAmount: appliedDiscount ? discountAmount : undefined,
             customerId: client.id,
             customerPhone: client.phone,
-            customerName: client.name || client.companyName,
+            customerName: client.companyName,
             items: cart.map((i) => ({ productId: i.productId, productName: i.productName, unitPrice: i.unitPrice, quantity: i.quantity, variantName: i.variantName })),
           },
           lines: buildWholesaleInvoiceLines({

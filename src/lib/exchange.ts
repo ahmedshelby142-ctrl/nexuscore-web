@@ -185,7 +185,9 @@ export function canExchange(
  * `totalAmount` is somehow the larger number — never a factor above 1, which
  * would refund MORE than list.
  */
-export function discountFactor(order: ExchangeableOrder): number {
+// Reads only the lines and the paid total, and says so: the returns screen
+// values an empty selection against `{}`, which is factor 1 — no discount.
+export function discountFactor(order: Pick<ExchangeableOrder, "stockItems" | "totalAmount">): number {
   const listTotal = (order.stockItems ?? []).reduce(
     (sum, line) => sum + line.unitPrice * line.quantity,
     0,
@@ -210,7 +212,10 @@ export interface ReturnedLine {
  * This is the authoritative valuation. A screen that adds up displayed prices
  * instead will disagree with the ledger the moment a promo code is involved.
  */
-export function returnedValue(order: ExchangeableOrder, lines: readonly ReturnedLine[]): number {
+export function returnedValue(
+  order: Pick<ExchangeableOrder, "stockItems" | "totalAmount">,
+  lines: readonly ReturnedLine[],
+): number {
   const factor = discountFactor(order);
   return lines.reduce((sum, line) => sum + line.quantity * line.unitPrice * factor, 0);
 }

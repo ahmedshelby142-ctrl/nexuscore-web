@@ -16,6 +16,10 @@
  *
  * So every DOCUMENT is written first and the ledger event is the last step:
  *
+ *   0. authorize        — may this caller finish a trader return at all? Asked
+ *                         BEFORE anything is written, so a role the database
+ *                         would refuse halfway through (audit §G-14) is
+ *                         refused with nothing to undo
  *   1. return records   — the returnable ceiling (see `commitWholesaleReturn`)
  *   2. invoice credits  — each source invoice's open balance
  *   3. ledger event     — the money. Last. If it lands, the return is done.
@@ -35,6 +39,8 @@ export interface InvoiceCredit {
 }
 
 export interface WholesaleReturnSteps {
+  /** Throw if the caller may not complete a trader return. Runs before any write. */
+  authorize: () => void;
   /** Write the return records; resolve with their ids. Throws → nothing written. */
   writeRecords: () => Promise<string[]>;
   deleteRecord: (id: string) => Promise<void>;
@@ -85,6 +91,7 @@ export async function runWholesaleReturn(
   credits: InvoiceCredit[],
   steps: WholesaleReturnSteps,
 ): Promise<void> {
+  steps.authorize();
   const recordIds = await steps.writeRecords();
   const credited: Array<{ invoiceId: string; before: number }> = [];
   try {

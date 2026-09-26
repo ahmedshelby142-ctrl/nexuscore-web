@@ -49,7 +49,9 @@ export interface ArchivableCustomer {
 
 /** The fields of an order this module needs. */
 export interface CustomerBearingOrder {
-  customerId?: string;
+  // `orders.customerId` is nullable, and a hydrated row carries `null`, not
+  // `undefined`. Every reader below tests truthiness, so both are handled.
+  customerId?: string | null;
   customerName?: string;
   customerPhone?: string;
 }

@@ -17,6 +17,8 @@
  */
 
 import { useEffect, useState } from "react";
+import { figureOr, moneyFigure, statusOf } from "@/lib/figure";
+import { LoadError } from "@/components/ui/load-error";
 import { PiggyBank, AlertTriangle, HandCoins, RotateCcw } from "lucide-react";
 import { balances, appendEvent } from "@/lib/ledger";
 import {
@@ -70,6 +72,10 @@ export function OwnerBudgetCard() {
 
   const [spent, setSpent] = useState(0);
   const [readError, setReadError] = useState<string | null>(null);
+  // `spent` starts at 0 and STAYS 0 on a failed read — which painted «الباقي»
+  // as the whole budget, in green, beside a note saying the numbers were not
+  // reliable. The figures now wait for the read instead.
+  const [readLoaded, setReadLoaded] = useState(false);
   const [tick, setTick] = useState(0);
 
   const [isSetupOpen, setIsSetupOpen] = useState(false);
@@ -109,6 +115,7 @@ export function OwnerBudgetCard() {
         setSpent(ownerSpent(rows));
         setBreakdown(drawBreakdown(rows));
         setReadError(null);
+        setReadLoaded(true);
       } catch (e) {
         if (cancelled) return;
         // A failed read must not render as "nothing spent yet".
@@ -121,6 +128,8 @@ export function OwnerBudgetCard() {
   }, [ownerBudget, tick]);
 
   const status = budgetStatus(ownerBudget?.limit ?? 0, spent);
+  const spentRead = { loading: !readLoaded && !readError, error: readError };
+  const spentKnown = statusOf(spentRead) === "ready";
 
   async function recordDraw() {
     const amount = parseFloat(drawForm.amount);
@@ -247,9 +256,11 @@ export function OwnerBudgetCard() {
       </div>
 
       {readError && (
-        <p className="text-sm text-destructive">
-          مقدرناش نقرأ المسحوبات من الدفتر، فالأرقام دي مش مضمونة. ({readError})
-        </p>
+        <LoadError
+          message="مقدرناش نقرأ المسحوبات من الدفتر، فالمسحوب والباقي مش معروضين."
+          detail={readError}
+          onRetry={() => setTick((t) => t + 1)}
+        />
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -259,17 +270,21 @@ export function OwnerBudgetCard() {
         </div>
         <div className="rounded-xl border border-border bg-muted/30 p-4">
           <p className="text-xs text-muted-foreground">اتسحب في الفترة</p>
-          <p className="text-2xl font-bold mt-1">{formatMoney(status.spent)}</p>
+          <p className="text-2xl font-bold mt-1">{moneyFigure(status.spent, spentRead)}</p>
         </div>
         <div className="rounded-xl border border-border bg-muted/30 p-4">
           <p className="text-xs text-muted-foreground">الباقي</p>
           <p
             className={cn(
               "text-2xl font-bold mt-1",
-              status.remaining < 0 ? "text-destructive" : "text-green-600",
+              !spentKnown
+                ? "text-muted-foreground"
+                : status.remaining < 0
+                  ? "text-destructive"
+                  : "text-green-600",
             )}
           >
-            {formatMoney(status.remaining)}
+            {moneyFigure(status.remaining, spentRead)}
           </p>
         </div>
       </div>
@@ -279,11 +294,11 @@ export function OwnerBudgetCard() {
         <div className="h-3 w-full rounded-full bg-muted overflow-hidden">
           <div
             className={cn("h-full rounded-full transition-all", barColor)}
-            style={{ width: `${Math.min(100, Math.max(0, status.percent))}%` }}
+            style={{ width: `${spentKnown ? Math.min(100, Math.max(0, status.percent)) : 0}%` }}
           />
         </div>
         <p className="text-xs text-muted-foreground mt-1">
-          {Math.round(status.percent)}% من الميزانية
+          {figureOr(() => `${Math.round(status.percent)}%`, spentRead)} من الميزانية
         </p>
       </div>
 
@@ -312,7 +327,7 @@ export function OwnerBudgetCard() {
         </div>
       )}
 
-      {status.level !== "ok" && (
+      {spentKnown && status.level !== "ok" && (
         <div
           className={cn(
             "rounded-xl border p-4 flex items-start gap-3",
@@ -488,7 +503,8 @@ export function OwnerBudgetCard() {
             </div>
 
             {/* Warn before, not after — but never refuse. */}
-            {ownerDraw && amount > 0 && after.level !== "ok" && (
+            {/* Previewed from the spent-so-far read — so only once it answered. */}
+            {ownerDraw && amount > 0 && spentKnown && after.level !== "ok" && (
               <p
                 className={cn(
                   "text-sm",

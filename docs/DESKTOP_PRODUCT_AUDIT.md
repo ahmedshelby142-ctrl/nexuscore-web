@@ -806,12 +806,123 @@ forfeited_deposit 130000, exchange 90000, ecommerce −60000).
 (§M-2), so no one can read it through the ADMIN-gated RPC. That is the
 existing M-2 finding, unchanged.
 
-### P1-6 — 66 domain types are `any`
+### P1-6 — 66 domain types are `any` — **FIXED for the financial core** (2026-09-26; 45 retained, each with a reason)
 
-`src/types/index.ts`. The file's own header calls it known debt from a data
-loss. Practical effect this pass: `orderLifecycle.ts`'s
-`Record<EcommerceOrderStatus, …>` — the state machine the whole order flow
-rests on — is `Record<any, …>` and exhaustiveness is unchecked.
+**66 → 45.** Every replacement came from the **live schema** (columns,
+nullability, CHECK constraints) or an existing canonical type; nothing was
+invented to silence TypeScript.
+
+| Replaced (21) | Source of truth |
+|---|---|
+| `Account` `Balance` `BalanceQuery` `EventKind` `EventQuery` `Identity` `LedgerEvent` `NewEvent` `NewLine` `SyncStatus` | re-exported from `lib/ledger/types` — they had been **re-declared as `any`**, shadowing the real definitions |
+| `EcommerceOrderStatus` | `orders_status_check` → the order state machine's table is now proven exhaustive |
+| `EcommerceOrder`, `EcommerceOrderItem` (+ `NewEcommerceOrder`, `OrderPaymentMethod`) | `orders` (40 columns); NOT NULL+DEFAULT fields required on a stored order, optional on a new one |
+| `WholesaleInvoice`, `WholesaleInvoiceItem`, `WholesaleClient` | `wholesale_*` + the resolver's `WholesaleInvoiceLine` |
+| `ReturnRecord` (+ `ReturnedItem`, `ReplacementItem`) | `return_records` + all three writers |
+| `PurchaseInvoice` (+ `PurchaseInvoiceItem`), `Supplier` | `purchase_invoices` / `suppliers` + `commitReceipt` |
+| `PromoDiscount`, `CustomerProfile` | `discount_codes` / `customers` |
+
+**What the types found** — real defects, all fixed (§P1-8 … P1-11 below) — which
+is the argument for the work:
+
+* the Wholesale screen's shipping order wrote its address to `customerAddress`,
+  a field the sync whitelist drops;
+* that same order could be **sold a second time** on delivery;
+* an item added while editing a pending order was priced from `product.price`
+  and costed from `product.cost` — neither exists;
+* a courier statement reprint matched on `codSettlementId`, which has no column;
+* `customers.address` is NOT NULL with no default, and an order without an
+  address sent `undefined` into it.
+
+Smaller, also fixed: `client.name` (the column is `companyName`); discount
+`createdAt` rendering «Invalid Date» when null; `getInvoiceStatus` and three
+helpers declared `undefined` where the column delivers `null` (all already
+null-safe in their bodies); a wrongly-intersected `CreateEcommerceOrder.items`.
+
+**Retained (45), deliberately:**
+
+| Category | Types | Why |
+|---|---|---|
+| Large structural refactor | `Product` | Typing it makes the shared search/filter helpers generic across every product screen — 81 errors, all structural, none a defect. The bug class it would catch (`product.price` / `product.cost`) is pinned by `check_p1_closure.mjs` instead |
+| External / integration boundary | `OnlineOrder*`, `Paymob*`, `Shipping*`, `ShipmentMovement`, `IntegrationAdapter` | payloads of features with no live backend |
+| Dead code / dead concept | `License*` (F-8), `BusinessProfile` `BusinessPersona` `GatedFeature` (F-5), `SessionRecord` `UserRecord` `PublicSession` (legacy auth), `SyncAction` (removed queue), `Transaction` `EcommerceRevenueLedgerEntry` `StockLog` `StockActionType` `Audit*` (superseded by the ledger) | typing dead code is effort with no reader |
+| Local document stores the ledger supersedes for money | `Wallet*`, `Partner*`, `Expense*`, `Payroll`, `FixedAsset`, `BudgetCap`, `Branch*`, `Backup*`, `Customer` | not a money authority; lower value |
+| Excluded work | `CourierAccount`, `CourierReceivable` | their store carries uncommitted courier work this phase must not touch |
+
+A test (`the any count only goes down`) pins 45 as a ceiling.
+
+### P1-8 — A wholesale shipment could be sold twice, and lost its address — **FIXED**
+
+شاشة الجملة books the whole sale when it issues an invoice — goods, stock,
+COGS, receivable, the customer's shipping charge and the courier cost, in one
+`sale` event — and, when the goods need a courier, opens an order in إدارة
+الطلبات for the delivery run. That order carried no link to the sale it
+belonged to (its `source: "wholesale"` marker is not a column and was
+dropped), so إدارة الطلبات treated it as a new sale:
+
+* **retail** delivery refused on the COD check (deposit 0 + COD 0 ≠ goods);
+* **wholesale** delivery — the natural next click — appended a **second
+  `sale`** and opened a **second invoice** for the same goods: revenue and the
+  trader's receivable doubled;
+* a return on it ran as a RETAIL return, not against the invoice;
+* its delivery address went to `customerAddress`, dropped by the whitelist —
+  the courier got an order with no address;
+* a failed `addOrder` was announced as «تم إنشاء طلب شحن».
+
+**Fix**, with the link the /orders conversion already uses: the shipment is
+written with `address`, `wholesaleClientId`, and `wholesaleInvoiceId` on every
+line (line ids equal to the invoice's). `soldOnWholesaleInvoice(order)`
+recognises it; delivering it moves the document only. The addOrder result is
+checked.
+
+### P1-9 — Items added while editing an order were priced and costed at 0 — **FIXED**
+
+`addItemToDraft` read `product.price` and `product.cost ?? 0`. Products have
+`unitPrice` and no cost column, so an edited-in line went in at price 0 — left
+out of the order total and the COD — and reserved stock at cost 0, understating
+inventory value and delivery COGS. Now `productPrice(product)` and the ledger's
+`costOf(product.id)`, as the code's own comment always claimed.
+
+### P1-10 — An over-budget expense was paid, then "refused" — **FIXED**
+
+The budget cap was checked inside `addExpense`, which الشركاء والمالية calls
+AFTER appending the `expense` ledger event. An over-cap expense moved the
+money, then showed «لا يمكن تجاوز الحد المسموح» with no document kept — and
+left the form's gate held until a reload. The spending it compared against is
+the hydrated `expenses` list, which reads 0 before it loads or after it fails.
+`checkExpenseBudget` now runs BEFORE the ledger and answers `spending_unknown`
+rather than "within budget" when the list has not loaded; a document failure
+after the ledger is reported and releases the gate.
+
+### P1-11 — Smaller integrity fixes found in the sweep — **FIXED**
+
+* **Courier statement reprint** matched orders on `codSettlementId` (no
+  column): every reprint after a reload listed NO orders under a real amount.
+  It now reads the settlement event's own `orderNumbers`.
+* **Owner budget card** showed «الباقي» as the whole budget, in green, on a
+  failed read — and previewed "after this draw" from that 0. Now `— ج.م` with
+  a retry, and no preview until the read answers.
+* **Customer from an address-less order** was refused by NOT NULL.
+
+### P1-12 — Failed read → 0 → mutation: the sweep
+
+Every Desktop money mutation that consults a read before writing:
+
+| Path | Verdict |
+|---|---|
+| Supplier return · trader return (×3) · جرد · dividend | SAFE — fixed in P1-D |
+| Expense against a budget cap | **FIX REQUIRED → fixed (P1-10)** |
+| Wallet transfer | SAFE — P1-D refuses on an unread balance |
+| Opening balance | SAFE — additive, never consults the balance (label ambiguity → P2 F-16) |
+| Owner draw | SAFE for the mutation (advisory budget); display fixed (P1-11) |
+| Supplier payment | SAFE — books the amount entered; invoice documents are best-effort and reported |
+| Trader payment | SAFE — validated against the invoice document |
+| Courier batch settlement | SAFE — eligibility on `codSettledAt` (a column); amounts from order documents |
+| Per-order courier settle · retail return · exchange · deposit | SAFE — order documents; deposit refund is a server RPC |
+| Order placement | SAFE — P1-B `stockIsAuthoritative` |
+| Order edit | SAFE — additions are refused when `qtyOf` has not answered (it answers 0 → insufficient) |
+| Purchase receipt | SAFE — cost is an operator-typed, visible field |
+| Courier claim settlement | SAFE — server trigger (migrations 040/041) |
 
 ### P1-7 — Five test files assert against code that moved — **FIXED** (2026-09-22)
 
@@ -875,6 +986,20 @@ deleted or weakened, and the suite has been fully green since.
   `useRealtimeSync`, which already compares `updated_at`. Left out of Wave 2
   on purpose: it would reopen P1-C's handlers for a risk nothing triggers.
   Do it together with any expense-edit feature.
+  *Re-verified 2026-09-26:* still insert-only (new UUID per record) and hard
+  delete — still latent, still P2.
+* **F-15** *(P1-6)* The trader "saved addresses" picker has never had a source:
+  `wholesale_clients` has no addresses column and nothing writes one. It always
+  offers "new address" only. A feature to build or remove.
+* **F-16** *(P1-12)* The wallet opening balance is additive, but its field is
+  labelled «المبلغ الموجود حالياً» ("the amount present now"), which reads as a
+  TOTAL. On a till that already has sales, an owner could enter the total and
+  double it. Wording, or reconcile against the displayed balance.
+* **F-17** *(P1-6)* `Product` typing — the generic-helper refactor described in
+  §P1-6.
+* **F-18** *(O-2)* The live-database tests need a dedicated QA Supabase project
+  (or branch) with its own secrets before CI can run them — never the
+  production service-role key.
 
 ---
 
@@ -897,7 +1022,7 @@ Nothing below is invented. Each is a real fork the code and data leave open.
 | G-11 | Business profiles | Keep and wire up (8 placeholder modules), or delete the concept and the routes? |
 | G-12 | Feature toggles | Per-device localStorage, or a store-level setting in `stores`? Today two of them hide core navigation |
 | G-13 | Business-data backup/restore | `KNOWN_LIMITATIONS.md` #1. Supabase PITR plan, out-of-band `pg_dump`, or an in-app tenant export? |
-| G-14 | Who may complete a trader return | §P0-5. Live RLS lets only ADMIN write all three things a trader return needs. POS_ECOMMERCE / ECOMMERCE_ONLY reach it on `/orders` and are now refused cleanly. Allow them to credit `wholesale_invoices` (a policy change), or hide the action from them? |
+| G-14 | Who may complete a trader return | **Consistency FIXED 2026-09-26**: `canReturnWholesale` (ADMIN — the intersection of the three live policies) is asked by `commitWholesaleReturn` BEFORE any write, and `/orders` shows the refusal and disables the button. Proven at runtime: ADMIN completes (records → invoice → ledger, one each); POS/ECOM/ACCOUNTANT/MODERATOR make zero writes. **Still a decision:** should POS/e-commerce staff be able to complete these? If yes, `write_wholesale_invoices` must change — then `canReturnWholesale`. No documentation says they should, so nothing was widened. |
 
 ---
 
@@ -1015,12 +1140,94 @@ bodies and the Supabase security advisor.
 | # | Gap | Severity |
 |---|---|---|
 | I-1 | ~~Desktop does not gate on session reconciliation~~ **CLOSED 2026-09-21** (§P0-4) | was HIGH |
-| I-2 | `insert_ledger_lines` allows all four writing roles with **no kind-based restriction**, while `insert_ledger_events` restricts `expense`/`payroll`/`owner_draw`/`wallet_transfer`/`purchase`/`supplier_payment`/`stock_adjustment` to ADMIN+ACCOUNTANT. A POS_ECOMMERCE session can therefore append lines to an **existing** ADMIN-created event. No UI does this; nothing prevents it | MEDIUM |
-| I-3 | `products` carries two overlapping policies: `write_products` (ALL, ADMIN+ACCOUNTANT) and `update_products` (UPDATE, all four roles, `with_check` NULL). Permissive policies OR, so POS/ECOM can UPDATE products; only the `products_guard_definition_columns` trigger narrows which columns. Correct in effect, fragile in shape | MEDIUM |
+| I-2 | `insert_ledger_lines` allows all four writing roles with **no kind-based restriction**, while `insert_ledger_events` restricts `expense`/`payroll`/`owner_draw`/`wallet_transfer`/`purchase`/`supplier_payment`/`stock_adjustment` to ADMIN+ACCOUNTANT. A POS_ECOMMERCE session can therefore append lines to an **existing** ADMIN-created event. **PROVEN 2026-09-26: +1,000,000 EGP minted into a till** (rolled back) | **HIGH — REQUIRES SUPABASE ACTION** (see *Supabase notes* below) |
+| I-3 | `products` carries two overlapping policies: `write_products` (ALL, ADMIN+ACCOUNTANT) and `update_products` (UPDATE, all four roles, `with_check` NULL). Permissive policies OR, so POS/ECOM can UPDATE products; only the `products_guard_definition_columns` trigger narrows which columns. **PROVEN 2026-09-26:** prices and definition columns are refused (42501), stock-mirror moves are allowed (intended) — but **`id` is not guarded**: POS can re-key a product | **MEDIUM — REQUIRES SUPABASE ACTION** (see below) |
 | I-4 | An access token keeps reading for its ~1 h lifetime after logout (stateless JWT). Carried from `KNOWN_LIMITATIONS.md` #11 | LOW, no code fix |
 | I-5 | Leaked-password protection is off at the project level; the client-side HIBP check guards the form, not the API, and fails open | LOW |
 | I-6 | Client-side privilege assumptions in `localStorage`: `isAuthenticated`, `userRole`, `isProPlan`, `feature-storage`. Only `isProPlan` and the feature flags change what is *offered*; role and auth are re-checked by Postgres | LOW |
 | I-7 | An expired licence still permits reads (§G-1) | DECISION |
+
+### SUPABASE NOTES FOR CLAUDE CODE
+
+Neither change below was applied. Both are **production migrations required:
+YES**. Both were proven against the live project with self-aborting
+transactions; nothing persisted.
+
+#### I-2 — `ledger_lines` accepts lines for events it did not create
+
+* **Table / policy:** `public.ledger_lines` · `insert_ledger_lines` (INSERT).
+* **Current:** `WITH CHECK (has_role(store_id, 'ADMIN','POS_ECOMMERCE','ECOMMERCE_ONLY','ACCOUNTANT'))`
+  — role and store only. Nothing ties a line to an event the caller may create.
+* **Exploit, reproduced:** as a real POS_ECOMMERCE member of QA-STORE —
+  (1) inserting a `purchase` event → **refused 42501** (the events policy
+  restricts that kind); (2) inserting a `wallet +100,000,000 piastres` line
+  whose `event_id` is an existing ADMIN `purchase` event → **ACCEPTED**. The
+  till's SUM went 646,000 → 100,646,000. The lowest writing role can mint money
+  and unbalance any posted event, bypassing the kind restriction entirely.
+* **Why RLS is insufficient today:** the events policy is kind-aware; the lines
+  policy is not, and lines are the money.
+* **Proposed fix** — lines may attach only to an event created in the SAME
+  transaction. `ledger_append` (the only client write path — `driver.ts`
+  calls nothing else) inserts the event and its lines in one statement
+  sequence with no exception sub-block, so the event row's `xmin` is the
+  current transaction id:
+
+  ```sql
+  DROP POLICY IF EXISTS insert_ledger_lines ON public.ledger_lines;
+  CREATE POLICY insert_ledger_lines ON public.ledger_lines
+    FOR INSERT
+    WITH CHECK (
+      has_role(store_id, VARIADIC ARRAY['ADMIN','POS_ECOMMERCE','ECOMMERCE_ONLY','ACCOUNTANT'])
+      AND EXISTS (
+        SELECT 1 FROM public.ledger_events e
+        WHERE e.id = ledger_lines.event_id
+          AND e.store_id = ledger_lines.store_id
+          AND e.xmin = pg_current_xact_id()::xid
+      )
+    );
+  ```
+* **Why legitimate writes survive:** the event was inserted moments earlier
+  in the same `ledger_append` call, under `insert_ledger_events` — so kind
+  authorization is inherited from the event, and only its own lines pass.
+  Service-role writers (Edge Functions) bypass RLS and are unaffected.
+* **Validated (dry run, PostgreSQL 17.6, not installed):** as POS_ECOMMERCE,
+  the predicate evaluated **true** for lines of an event `ledger_append` had
+  just created, and **false** for the existing ADMIN event.
+* **Caveat to check before applying:** if `ledger_append` ever gains a
+  `BEGIN … EXCEPTION` block, the event is inserted in a subtransaction and its
+  `xmin` differs from the top-level id — the policy would then refuse every
+  write. Keep the function free of exception blocks, or switch the predicate.
+* **Regression required:** (a) a normal `ledger_append` by each writing role
+  succeeds; (b) the reproduction above is refused 42501; (c) an ADMIN appending
+  a line to an OLD event is refused too; (d) balances unchanged.
+
+#### I-3 — a POS user can re-key a product
+
+* **Table / guard:** `public.products` · trigger function
+  `products_guard_definition_columns` (SECURITY DEFINER). It refuses non-ADMIN/
+  ACCOUNTANT changes to name, sku, barcode, category, description, image_url,
+  unitPrice, wholesale_price, min/maxStockLevel, isActive, isBundle,
+  bundleItems, deleted_at and store_id — but **not `id`**.
+* **Reproduced** as POS_ECOMMERCE: `unitPrice` change → refused 42501 ✓;
+  stock-mirror `quantity` update → allowed ✓ (intended); **`UPDATE products
+  SET id = id || '-rekeyed'` → 1 row**.
+* **Risk:** ledger lines, order lines and invoice lines reference a product by
+  id (text, no foreign key). A re-keyed product silently loses its entire stock
+  and cost history; sales against the new id start from zero.
+* **Proposed fix:** refuse an id change for EVERYONE, ahead of the role
+  bypass — the app never changes an id (every write upserts ON CONFLICT (id)):
+
+  ```sql
+  -- inside products_guard_definition_columns, before the ADMIN/ACCOUNTANT RETURN:
+  IF NEW.id IS DISTINCT FROM OLD.id THEN
+    RAISE EXCEPTION 'a product id cannot change' USING ERRCODE = '42501';
+  END IF;
+  ```
+* **Why stock operations stay allowed:** `quantity` and `metadata` (the stock
+  mirror) are untouched by the new check.
+* **Regression required:** POS / ADMIN id change → refused; POS quantity
+  update → allowed; POS price change → still refused.
+
 
 ---
 
@@ -1181,7 +1388,15 @@ proposals are labelled and **NOT EXECUTED**.
 | `c58d76ab…` | متجري | 1 (ADMIN) | 0 | 0 | 0 | active → 2027-09-19 |
 | `b73ca66a…` | متجري | 1 (ADMIN) | 0 | 0 | 0 | suspended |
 
-### M-2 FACT — the store holding the real dataset has no members
+### M-2 FACT — the store holding the real dataset has no members — **BLOCKED / OPERATIONAL, not an application bug** (re-verified 2026-09-26)
+
+Re-verified: still 0 members; activity from 2026-08-30 to 2026-09-11 across 7
+devices, then none. The application handles it **fail-closed**: every read
+policy is `is_store_member`, so nothing leaks, and session reconciliation
+signs out a member-less non-owner on boot. It blocks runtime verification on
+production data only — QA-STORE covers that. No production membership was
+created; recovery is the owner's decision (which user — constrained by the
+one-store-per-user index).
 
 `c1c919f9…` "المحل التجاري" holds 134 products, 154 ledger events and an
 active licence valid to 2027-08-30, and **zero rows in `store_members`**.
@@ -1322,6 +1537,27 @@ opt-in P0-1 live check). The 5 failures are **the same 5 stale pre-existing
 ones** classified in O-1 below — unchanged in count, name and cause. Zero NEW
 failures.
 
+**After P1 closure (2026-09-26):**
+
+```
+  working tree   tests 1388 · pass 1382 · fail 0 · skipped 6
+```
+
++19 tests: `check_p1_closure.mjs` (15) and 4 G-14 tests in
+`check_wholesale_return_txn.mjs`. **19 mutations, 19 caught** (one escaped
+first — a real test defect, fixed). No pre-existing test needed changing.
+
+**O-2 — CI: PARTIALLY FIXED.** There was no CI at all; Vercel builds with Vite,
+which neither typechecks nor tests, so nothing verified the committed tree.
+`.github/workflows/ci.yml` now runs `npm ci`, `tsc --noEmit`, `npm test` and
+the Desktop build on every push/PR to main — no secrets. It WILL report the 2
+known committed-tree failures (courier sink; stale `dist-mobile` artifact)
+until that excluded work is committed: that is the check doing its job. The 6
+live tests (`check_desktop_p0` needs `NEXUS_PUBLIC_URL`;
+`check_ledger_atomicity`, `check_moderator_role`, `check_owner_financials`,
+`check_supabase_integrity` need `SUPABASE_URL` + the SERVICE-ROLE key) stay
+skipped in CI — see F-18.
+
 **After P0-5, the wholesale-return fix (2026-09-26):**
 
 ```
@@ -1346,7 +1582,7 @@ depend on work excluded from commits by instruction:
   sink and `useCourierStore` change;
 * *P2-6 · the home screen is no longer named a placeholder* — a stale
   COMMITTED build artifact, `dist-mobile/assets/index-6LGpkZa9.js.map`, still
-  names `MobileHomePlaceholder`. The working tree already deletes it;
+  names the mobile home screen's pre-rename component. The working tree already deletes it;
   `dist-mobile/**` is excluded from commits.
 
 **After P1 Wave 2 (2026-09-26):**
@@ -1470,15 +1706,15 @@ Each step is independently shippable and leaves the suite green.
 | ~~6~~ | ~~**P1-1 / C-71** one boot gate driven by `useSyncStatus`~~ | ✅ **DONE** 2026-09-26 (P1-D) — per-table status + `CollectionGate` + the figure rule, all 21 screens; five commit paths that decided on unread zeros now refuse |
 | ~~7~~ | ~~**P1-2 / K** move order numbers onto `next_document_number("ecommerce_order","ECO-")` + add the unique index~~ | ✅ **DONE** 2026-09-22 — migration 042, two call sites (the route and the store fallback), history untouched |
 | ~~8~~ | ~~**P1-4 / J** subscribe the 11 unsubscribed tables (or unpublish the ones nobody wants)~~ | ✅ **DONE** 2026-09-22 — 8 subscribed, 3 excluded with reasons, listeners now driven by the handler map |
-| 9 | **O-2** get the 4 live tests running in CI | Prerequisite for trusting steps 10–11 |
+| 9 | **O-2** get the 4 live tests running in CI | ◐ **PARTIAL** 2026-09-26 — CI now verifies the committed tree (tsc, suite, build); the live tests need a QA project (F-18) |
 | ~~10~~ | ~~**P1-5 / H-2** assert Desktop `fetchPnl` == SQL `owner_financial_summary` on one real period~~ | ✅ **DONE** 2026-09-26 (P1-E) — 65 live comparisons, 0 mismatches; one client profit definition; cockpit on the RPC. The CI-run of the live test (step 9) is still open |
-| 11 | **I-2 / I-3** narrow `insert_ledger_lines` by kind; collapse the two `products` policies | Needs step 9 to prove no role loses a write it needs |
+| 11 | **I-2 / I-3** — the exact changes are in *SUPABASE NOTES FOR CLAUDE CODE* (§I) | **NEXT, and the only open P1.** I-2 is a proven money-minting path. Apply through the migration workflow with the listed regressions |
 | ~~12~~ | ~~**P1-3 / H-1** decide whether the mirror stays; if it does, add a reconciliation check~~ | ✅ **DONE** 2026-09-22 — the mirror STAYS (it is what makes a 200-row list cheap); the three commit paths now refuse to decide on it |
 | 13 | **F-1 / F-2** logos → SVG/WebP, `manualChunks`, parallel hydrate | Pure performance, no behaviour change |
 | 14 | **F-4 – F-8** delete the dead router stack, dead modules, URL-only duplicates, `*.server.ts` | Safe once nothing above depends on reading them |
-| 15 | **P1-6** restore the 66 `any` types, highest-traffic first | Largest and least urgent; do it with tests green |
+| ~~15~~ | ~~**P1-6** restore the 66 `any` types, highest-traffic first~~ | ✅ **DONE for the financial core** 2026-09-26 — 66 → 45, retained ones classified; found and fixed P1-8 … P1-11 |
 | 16 | **M-2** decide and execute the orphan-store recovery | Needs an owner decision, not an engineering one |
-| 17 | Answer **G-1 … G-13** | Feeds the next roadmap, not this one |
+| 17 | Answer **G-1 … G-14** | Feeds the next roadmap, not this one |
 
 **Not in this order, by explicit instruction:** Offline-First (out of product
 scope), Shipping API (§G-9), Final UX/UI Pro Max pass, Mobile lint debt.

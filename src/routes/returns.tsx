@@ -264,7 +264,7 @@ export function Returns() {
               depositAmount: order.depositAmount,
               wallet: "inStoreSafe",
               codAmount: order.expectedCod,
-              courierId: order.courierId,
+              courierId: order.courierId ?? undefined,
               customerId: customerId ?? undefined,
               channel: "ecommerce",
             }),

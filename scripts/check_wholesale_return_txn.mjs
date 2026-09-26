@@ -39,6 +39,7 @@ import {
   WHOLESALE_RETURN_TYPE,
 } from "../src/lib/ledger/wholesale.ts";
 import { claimOrder, releaseOrder } from "../src/lib/orderLifecycle.ts";
+import { canReturnWholesale, canSellWholesale } from "../src/lib/roles.ts";
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 const code = (s) =>
@@ -63,6 +64,10 @@ function world({ invoices, failOn = new Set() } = {}) {
   };
   let nextId = 0;
   w.steps = (resolved) => ({
+    authorize: () => {
+      w.order.push("authorize");
+      if (failOn.has("authorize")) throw new Error("forbidden");
+    },
     writeRecords: async () => {
       w.order.push("records");
       if (failOn.has("records")) throw new Error("records refused");
@@ -137,7 +142,7 @@ test("a return writes records, credits each invoice, then the ledger — in that
   const resolved = twoInvoiceReturn();
   const w = world();
   await runWholesaleReturn(invoiceCredits(resolved.lines), w.steps(resolved));
-  assert.deepEqual(w.order, ["records", "credit:a", "credit:b", "ledger"]);
+  assert.deepEqual(w.order, ["authorize", "records", "credit:a", "credit:b", "ledger"]);
   assert.ok(
     w.order.indexOf("ledger") === w.order.length - 1,
     "the ledger event must be the LAST step — nothing that can fail may follow an append-only write",
@@ -245,7 +250,7 @@ test("a refused record write moves nothing at all", async () => {
   const resolved = twoInvoiceReturn();
   const w = world({ failOn: new Set(["records"]) });
   await assert.rejects(runWholesaleReturn(invoiceCredits(resolved.lines), w.steps(resolved)), /records refused/);
-  assert.deepEqual(w.order, ["records"]);
+  assert.deepEqual(w.order, ["authorize", "records"]);
   assert.equal(w.invoices.get("a"), 1000);
 });
 
@@ -298,4 +303,59 @@ test("the retail return and exchange path does not go through the wholesale comm
   assert.match(s, /original_order_id: `pos_\$\{Date\.now\(\)\}`/);
   const retail = s.slice(s.indexOf("const negativeItems = cart.filter"));
   assert.ok(!/commitWholesaleReturn|recordWholesaleReturn/.test(retail.slice(0, 3000)));
+});
+
+// ── G-14 · who may complete a trader return ─────────────────────────────────
+
+/**
+ * The live RLS matrix (verified 2026-09-26, `pg_policies`). A trader return
+ * writes all three, so the roles that may complete one are the INTERSECTION.
+ */
+const LIVE_WRITERS = {
+  return_records: ["ADMIN", "POS_ECOMMERCE", "ECOMMERCE_ONLY"],
+  wholesale_invoices: ["ADMIN", "ACCOUNTANT"],
+  "ledger_events(return_confirmed)": ["ADMIN", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT"],
+};
+const ROLES = ["ADMIN", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT", "MODERATOR"];
+
+test("G-14 · only a role in all three policies may complete a trader return", () => {
+  for (const role of ROLES) {
+    const inAll = Object.values(LIVE_WRITERS).every((set) => set.includes(role));
+    assert.equal(canReturnWholesale(role), inAll, `${role}: the client rule must match the database`);
+  }
+  assert.equal(canReturnWholesale("ADMIN"), true);
+  // Legacy spellings resolve through `toAppRole`, like every other rule.
+  assert.equal(canReturnWholesale("owner"), true);
+  assert.equal(canReturnWholesale(null), false);
+  assert.equal(canReturnWholesale(""), false);
+  // Not the same rule as SELLING wholesale: ACCOUNTANT may sell, not return.
+  assert.equal(canSellWholesale("ACCOUNTANT"), true);
+  assert.equal(canReturnWholesale("ACCOUNTANT"), false);
+});
+
+test("G-14 · an unauthorized caller is refused before ANYTHING is written", async () => {
+  const resolved = twoInvoiceReturn();
+  const w = world({ failOn: new Set(["authorize"]) });
+  await assert.rejects(runWholesaleReturn(invoiceCredits(resolved.lines), w.steps(resolved)), /forbidden/);
+  assert.deepEqual(w.order, ["authorize"], "no record, no credit, no ledger attempted");
+  assert.equal(w.records.size, 0);
+  assert.equal(w.ledger.length, 0, "no ledger movement");
+  assert.equal(w.invoices.get("a"), 1000, "no invoice touched");
+  assert.equal(w.invoices.get("b"), 1400);
+});
+
+test("G-14 · the command asks the permission, at the one choke point", () => {
+  assert.match(cmd, /authorize: \(\) => \{\s*if \(!canReturnWholesale\(useAuthStore\.getState\(\)\.userRole\)\) \{\s*throw new Error\(WHOLESALE_RETURN_FORBIDDEN\);/);
+  const txn = code(read("../src/lib/wholesaleReturnTxn.ts"));
+  const fn = txn.slice(txn.indexOf("export async function runWholesaleReturn"));
+  assert.ok(fn.indexOf("steps.authorize()") < fn.indexOf("steps.writeRecords()"), "authorization must come first");
+});
+
+test("G-14 · /orders tells an unauthorized role up front and will not submit", () => {
+  const s = code(read("../src/components/ecommerce/OrdersPage.tsx"));
+  assert.match(s, /const mayReturnWholesale = canReturnWholesale\(useAuthStore\(\(s\) => s\.userRole\)\);/);
+  assert.match(s, /\{returnClientId && !mayReturnWholesale && \(/, "the permission state must be shown");
+  assert.match(s, /\(Boolean\(returnClientId\) && !mayReturnWholesale\)/, "and the confirm button disabled");
+  assert.match(s, /\{returnClientId && mayReturnWholesale && resolvedOrderReturn\.ok && \(/,
+    "no settlement panel is offered to a role that cannot settle");
 });

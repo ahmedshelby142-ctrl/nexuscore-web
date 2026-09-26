@@ -233,6 +233,14 @@ export interface WholesaleInvoiceLine {
   unitCost?: number;
   isBundle?: boolean;
   bundleItems?: { productId: string; quantity: number; unitCost: number }[];
+  // Written by شاشة الجملة's draft form and stored with the line. Optional:
+  // invoices from نقطة البيع and older rows do not carry them.
+  sku?: string;
+  /** quantity × wholesalePrice, as drafted. Display only — never summed for money. */
+  total?: number;
+  /** Knowingly sold short (نواقص). */
+  backorder?: boolean;
+  shortfall?: number;
 }
 
 /** A wholesale invoice document, as `wholesale_invoices` stores it. */

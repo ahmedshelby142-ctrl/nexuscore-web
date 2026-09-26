@@ -302,7 +302,10 @@ export function DiscountsPage() {
                         : "—"}
                     </TableCell>
                     <TableCell className="text-center px-4 text-sm text-muted-foreground">
-                      {new Date(discount.createdAt).toLocaleDateString("ar-EG")}
+                      {/* Nullable column: a code without one read «Invalid Date». */}
+                      {discount.createdAt
+                        ? new Date(discount.createdAt).toLocaleDateString("ar-EG")
+                        : "—"}
                     </TableCell>
                     <TableCell className="text-center px-4">
                       <div className="flex items-center justify-center gap-1">

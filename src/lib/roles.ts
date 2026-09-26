@@ -197,3 +197,26 @@ export function canSellWholesale(role: string | null | undefined): boolean {
   const app = toAppRole(role);
   return app === "ADMIN" || app === "ACCOUNTANT";
 }
+
+/**
+ * May this role complete a trader (wholesale) return?
+ *
+ * A trader return writes THREE things, and live RLS allows a different set of
+ * roles for each (verified 2026-09-26):
+ *
+ *   return_records                    ADMIN · POS_ECOMMERCE · ECOMMERCE_ONLY
+ *   wholesale_invoices                ADMIN · ACCOUNTANT
+ *   ledger_events (return_confirmed)  ADMIN · POS_ECOMMERCE · ECOMMERCE_ONLY · ACCOUNTANT
+ *
+ * Only ADMIN is in all three, so only ADMIN can finish one. Same rule as
+ * `canSellWholesale`: no permission is invented here, this states in
+ * TypeScript what the database already enforces, so the refusal arrives before
+ * the first write instead of halfway through. `commitWholesaleReturn` checks
+ * it before anything is written; `/orders` uses it to say so up front.
+ *
+ * If the business decides POS/e-commerce staff should complete these (audit
+ * §G-14), it is `write_wholesale_invoices` that has to change — and then this.
+ */
+export function canReturnWholesale(role: string | null | undefined): boolean {
+  return toAppRole(role) === "ADMIN";
+}

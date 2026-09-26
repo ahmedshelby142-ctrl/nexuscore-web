@@ -80,7 +80,7 @@ import { productPrice, productWholesalePrice } from "@/lib/product";
 import { formatMoney, discountAmountFor, subtract, round } from "@/lib/math";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useAuthStore } from "@/store/useAuthStore";
-import { canSellWholesale } from "@/lib/roles";
+import { canReturnWholesale, canSellWholesale } from "@/lib/roles";
 import { useBalances } from "@/lib/ledger/useBalances";
 import {
   buildWholesaleReturnLines,
@@ -89,7 +89,7 @@ import {
   resolveWholesaleReturn,
   WHOLESALE_RETURN_TYPE,
 } from "@/lib/ledger/wholesale";
-import { commitWholesaleReturn } from "@/lib/wholesaleReturnDoc";
+import { commitWholesaleReturn, WHOLESALE_RETURN_FORBIDDEN } from "@/lib/wholesaleReturnDoc";
 import { adjustDiscountTotal } from "@/services/discountUsage";
 import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
 import { Badge } from "@/components/ui/badge";
@@ -123,7 +123,7 @@ import { Input } from "@/components/ui/input";
 import { OrderSearch } from "@/components/ecommerce/OrderSearch";
 import { ProductSearch } from "@/components/products/ProductSearch";
 import { ordersInPeriod, searchOrders } from "@/lib/orderSearch";
-import { actionsFor, canDo, claimOrder, releaseOrder } from "@/lib/orderLifecycle";
+import { actionsFor, canDo, claimOrder, releaseOrder, soldOnWholesaleInvoice } from "@/lib/orderLifecycle";
 import { exchangeBlock, movementFor, EXCHANGE_BLOCK_TEXT } from "@/lib/exchange";
 import { courierIdOf } from "@/lib/courierBatch";
 import type { EcommerceOrder, EcommerceOrderItem, EcommerceOrderStatus, WalletType } from "@/types";
@@ -199,6 +199,9 @@ export function OrdersPage() {
   const [saleMode, setSaleMode] = useState<"retail" | "wholesale">("retail");
   // The database refuses a wholesale invoice from anyone but ADMIN/ACCOUNTANT.
   const maySellWholesale = canSellWholesale(useAuthStore((s) => s.userRole));
+  // A trader return needs ADMIN (audit §G-14). Asked up front so the dialog
+  // says so instead of letting the operator fill it in to be refused.
+  const mayReturnWholesale = canReturnWholesale(useAuthStore((s) => s.userRole));
   const [wholesaleClient, setWholesaleClient] = useState<string>("");
   const [wholesalePaidAmount, setWholesalePaidAmount] = useState<string>("");
 
@@ -312,11 +315,22 @@ export function OrdersPage() {
       return [
         ...prev,
         {
+          // Every stored order line carries an id (`expandStockItems` gives one
+          // to each); an edited-in line is no different.
+          id: crypto.randomUUID(),
           productId: product.id,
           productName: product.name,
+          sku: product.sku ?? "",
           quantity: qty,
-          unitPrice: product.price,
-          unitCost: product.cost ?? 0,
+          // `productPrice`, as the note under the product search has always
+          // said. This read `product.price` — a field no product has — so a
+          // line added while editing went in at 0: the order total and the COD
+          // the courier collects left it out, and the goods shipped free.
+          unitPrice: productPrice(product),
+          // The ledger's weighted average — the cost `order_placed` freezes.
+          // `product.cost` does not exist either, so the reservation and the
+          // COGS booked at delivery carried 0 for this line.
+          unitCost: costOf(product.id),
           variantName,
         },
       ];
@@ -1416,6 +1430,20 @@ export function OrdersPage() {
     setActionError(null);
 
     try {
+      // Already sold on a wholesale invoice — شاشة الجملة booked goods, COGS,
+      // receivable, shipping charge and courier cost when it issued it. This
+      // order is only the delivery run, so delivering it moves the DOCUMENT and
+      // books nothing: the retail branch below would refuse on the COD check,
+      // and the wholesale branch would append a second `sale` and open a second
+      // invoice for the same goods.
+      if (soldOnWholesaleInvoice(order)) {
+        await updateOrder(order.id, { revenueLogged: true });
+        await updateOrderStatus(reconcileDialog.orderId, "delivered");
+        refreshDebt();
+        setReconcileDialog({ orderId: "", open: false });
+        return;
+      }
+
       if (saleMode === "retail") {
         // ONE event for the delivery. This is where the sale is booked: the
         // stock already left at order_placed, so no stock line here.
@@ -2622,7 +2650,12 @@ export function OrdersPage() {
             )}
             {/* Delivered on a trader's account: the goods pay down the debt
                 instead of the till paying out. Same panel as نقطة البيع. */}
-            {returnClientId && resolvedOrderReturn.ok && (
+            {returnClientId && !mayReturnWholesale && (
+              <div className="rounded-lg p-3 bg-amber-50 border border-amber-200" role="alert">
+                <p className="text-sm font-medium text-amber-900">{WHOLESALE_RETURN_FORBIDDEN}</p>
+              </div>
+            )}
+            {returnClientId && mayReturnWholesale && resolvedOrderReturn.ok && (
               <>
                 <div className="rounded-xl border divide-y">
                   {resolvedOrderReturn.ok.lines.map((line) => (
@@ -2674,8 +2707,17 @@ export function OrdersPage() {
             </Button>
             <Button
               onClick={() => void confirmReturn()}
-              disabled={isWorking || !confirmName.trim() || causeBlock !== null}
-              title={causeBlock ?? undefined}
+              disabled={
+                isWorking ||
+                !confirmName.trim() ||
+                causeBlock !== null ||
+                (Boolean(returnClientId) && !mayReturnWholesale)
+              }
+              title={
+                returnClientId && !mayReturnWholesale
+                  ? WHOLESALE_RETURN_FORBIDDEN
+                  : (causeBlock ?? undefined)
+              }
             >
               {isWorking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {isWorking

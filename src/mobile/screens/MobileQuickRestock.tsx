@@ -102,23 +102,37 @@ export function MobileQuickRestock() {
 
   // Deep link from المخزون (`/restock?products=a,b`) hands over ids only, so
   // the records behind them have to be fetched before anything can render.
+  //
+  // Both failure shapes used to leave the screen on its skeleton for good: a
+  // read that failed was swallowed, and an id that no longer exists (deleted
+  // product, stale link) was never resolved and never removed. Now a failed
+  // read is an error with a retry, and a missing product is dropped and named.
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkAttempt, setLinkAttempt] = useState(0);
   useEffect(() => {
     const missing = selectedProductIds.filter((id) => !picked[id]);
     if (missing.length === 0) return;
     let cancelled = false;
+    setLinkError(null);
     void Promise.all(missing.map((id) => readMobileProductsForRestock({ id, pageSize: 1 })))
       .then((pages) => {
         if (cancelled) return;
         const found: Record<string, any> = {};
+        const gone: string[] = [];
         pages.forEach((page, i) => {
           const row = page.rows[0];
           if (row) found[missing[i]] = row;
+          else gone.push(missing[i]);
         });
         if (Object.keys(found).length > 0) setPicked((prev) => ({ ...prev, ...found }));
+        if (gone.length > 0) {
+          setSelectedProductIds((prev) => prev.filter((id) => !gone.includes(id)));
+          toast.error("صنف من الرابط مش موجود أو اتمسح، واتشال من التوريدة.");
+        }
       })
-      .catch(() => { /* a product that cannot be read simply cannot be drafted */ });
+      .catch((e) => { if (!cancelled) setLinkError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
-  }, [selectedProductIds, picked]);
+  }, [selectedProductIds, picked, linkAttempt]);
 
   const draftOf = (id: string) => lines[id] ?? { quantity: "", unitCost: "" };
   const setDraft = (id: string, patch: Partial<LineDraft>) =>
@@ -290,8 +304,11 @@ export function MobileQuickRestock() {
             trip. Saying "لا توجد أصناف محددة" while they are in flight tells
             the operator their link did nothing, which is both wrong and the
             exact moment they would give up on the screen. */}
+        {linkError && (
+          <ErrorState messageAr="تعذّر تحميل الأصناف المختارة." onRetry={() => setLinkAttempt((n) => n + 1)} />
+        )}
         {draftRows.length === 0 && selectedProductIds.length > 0 ? (
-          <SkeletonState count={1} />
+          linkError ? null : <SkeletonState count={1} />
         ) : draftRows.length === 0 ? (
           <EmptyState
             titleAr="لا توجد أصناف محددة"

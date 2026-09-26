@@ -1,17 +1,17 @@
 /**
  * Mobile Stock View Model
  *
- * Transforms raw product domain data into mobile-friendly stock row structures.
- * Pure function — no DB calls, no React state.
+ * Stock QUANTITY is not derived here. On mobile it is the ledger sum that
+ * `readMobileProducts` attaches as `mobileStock`; this file only turns a
+ * quantity the caller already trusts into a status.
  *
- * Stock quantity authority: `getActualStock()` from lib/product.ts, which reads
- * from the ledger stock snapshot. Products.quantity is NOT used directly.
+ * `toMobileStockRow` / `toMobileStockQueue` / `lowStockRows` used to live here
+ * and read `getActualStock()`, whose ledger snapshot is filled only by
+ * desktop's `useStock` — so on mobile they answered from `products.quantity`.
+ * Their one caller was the dead `homeComposer`; both are gone.
  */
 
-import type { MobileStockRow, StockStatusKey } from "./types";
-import { resolveStockStatus } from "./statusTaxonomies";
-import { formatArabicQuantity } from "./formatters";
-import { getActualStock, productMinLevel } from "@/lib/product";
+import type { StockStatusKey } from "./types";
 
 /**
  * Derives the stock status key from quantity and min level.
@@ -21,61 +21,4 @@ export function deriveStockStatusKey(qty: number, minLevel: number): StockStatus
   if (qty <= 0) return "out_of_stock";
   if (minLevel > 0 && qty <= minLevel) return "low_stock";
   return "in_stock";
-}
-
-/**
- * Transforms a raw product into a `MobileStockRow`.
- * Reads stock from `getActualStock()` — the ledger snapshot authority.
- */
-export function toMobileStockRow(product: any): MobileStockRow {
-  const id = String(product?.id ?? "");
-  const qty = getActualStock(product);
-  const minLevel = productMinLevel(product);
-  const statusKey = deriveStockStatusKey(qty, minLevel);
-  const statusEntry = resolveStockStatus(statusKey);
-
-  return {
-    id,
-    name: String(product?.name ?? "—"),
-    sku: String(product?.sku ?? "—"),
-    quantity: qty,
-    quantityFormatted: formatArabicQuantity(qty),
-    statusKey,
-    statusLabelAr: statusEntry.labelAr,
-    statusTone: statusEntry.tone,
-    href: `/inventory/${id}`,
-  };
-}
-
-/**
- * Transforms a list of raw products into mobile stock rows.
- * Sorted by stock status priority (out-of-stock first), then by name.
- */
-export function toMobileStockQueue(products: any[]): MobileStockRow[] {
-  if (!Array.isArray(products)) return [];
-  return products
-    .map((p) => {
-      try {
-        return toMobileStockRow(p);
-      } catch {
-        return null;
-      }
-    })
-    .filter((row): row is MobileStockRow => row !== null)
-    .sort((a, b) => {
-      const priority = { out_of_stock: 0, low_stock: 1, in_stock: 2 } as const;
-      const pa = priority[a.statusKey] ?? 3;
-      const pb = priority[b.statusKey] ?? 3;
-      if (pa !== pb) return pa - pb;
-      return a.name.localeCompare(b.name, "ar");
-    });
-}
-
-/**
- * Returns only products that are at or below min stock level.
- */
-export function lowStockRows(products: any[]): MobileStockRow[] {
-  return toMobileStockQueue(products).filter(
-    (r) => r.statusKey === "low_stock" || r.statusKey === "out_of_stock",
-  );
 }

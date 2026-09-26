@@ -128,9 +128,12 @@ test("useAlertBadges is reachable only from inside the shell", () => {
 
 test("mobile_shortages is never sent without a resolved store", () => {
   const code = strip(homeReader);
-  const guard = code.indexOf("if (!storeId) return [];");
+  // It THROWS now rather than answering `[]`: no store is "could not ask",
+  // and `[]` rendered as «لا توجد نواقص» — see check_mobile_functional_closure.
+  const guard = code.indexOf("if (!storeId) throw");
   const call = code.indexOf('rpc("mobile_shortages"');
   assert.ok(guard > -1, "no store means no call — not a call with a guessed id");
+  assert.ok(!code.includes("if (!storeId) return [];"), "and not a fake empty answer");
   assert.ok(guard < call, "and the guard must come BEFORE the call");
   assert.match(code, /const storeId = await getActiveStoreId\(\)/);
 });

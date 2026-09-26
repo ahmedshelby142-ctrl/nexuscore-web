@@ -92,11 +92,14 @@ export async function readMobileCustomers(query: MobileListQuery = {}) {
   const ids = page.rows.map((c: any) => String(c.id)).filter(Boolean);
   if (ids.length === 0) return page;
 
-  const { data } = await clientOrThrow()
+  const { data, error } = await clientOrThrow()
     .from("orders")
     .select("customerId, createdAt")
     .in("customerId", ids)
     .is("deleted_at", null);
+  // A failed count is not "0 orders": it used to render every customer on the
+  // page as «لا يوجد طلب سابق».
+  if (error) throw new Error(`[orders] ${error.message}`);
 
   const counts = new Map<string, { orderCount: number; lastOrderAt: string | null }>();
   for (const row of (data ?? []) as any[]) {
@@ -290,14 +293,17 @@ export function readMobileRawProduct(id: string): Promise<any> {
   if (hit) return hit;
   const request = (async () => {
     try {
-      const { data } = await clientOrThrow()
+      const { data, error } = await clientOrThrow()
         .from("products")
         .select("id, name, sku, metadata")
         .eq("id", id)
         .is("deleted_at", null)
         .maybeSingle();
+      if (error) throw error;
       return data ? fromRemoteRow("products", data) : null;
     } catch {
+      // Not cached: a transient failure must not pin `null` for the tab's life.
+      rawProductCache.delete(id);
       return null;
     }
   })();
@@ -425,13 +431,16 @@ export async function readMobileOrderTimeline(orderId: string): Promise<MobileOr
   return timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 }
 
-/** This order's ledger events, by order NUMBER. An unreachable ledger costs the timeline, not the screen. */
-async function ledgerEventsFor(orderNumber: string) {
-  try {
-    return await ledgerEvents({ refType: "ecommerce_order", refId: orderNumber, limit: 200 });
-  } catch {
-    return [];
-  }
+/**
+ * This order's ledger events, by order NUMBER.
+ *
+ * An unreachable ledger costs the timeline, not the screen — but it must SAY
+ * so. It used to answer `[]`, and the timeline then showed only «تم إنشاء
+ * الطلب»: a delivered, settled order drawn as one nothing had happened to.
+ * The detail screen reads this separately and renders its own retry.
+ */
+function ledgerEventsFor(orderNumber: string) {
+  return ledgerEvents({ refType: "ecommerce_order", refId: orderNumber, limit: 200 });
 }
 
 export interface MobileProductWaitingOrder {
@@ -450,6 +459,8 @@ export async function readMobileProductWaitingOrders(productId: string): Promise
     .from("orders")
     .select("id, orderNumber, customerName, items, stockItems, status, createdAt")
     .eq("status", "pending")
+    // A deleted order is waiting for nothing; `mobile_shortages` agrees.
+    .is("deleted_at", null)
     .or(`items.cs.[{"productId":"${productId}"}],stockItems.cs.[{"productId":"${productId}"}]`);
   
   if (error) throw new Error(`[orders] ${error.message}`);
@@ -513,22 +524,28 @@ export interface MobileCustomerFinancialSummary {
 export async function readMobileCustomerFinancialSummary(customerId: string): Promise<MobileCustomerFinancialSummary> {
   const client = clientOrThrow();
 
-  const [{ data: orders, error }, ltv, customer] = await Promise.all([
+  const [{ data: orders, error }, ltv, customerRead] = await Promise.all([
     client
       .from("orders")
       .select("id, status, expectedCod, customerId, customerPhone")
-      .or(`customerId.eq.${customerId},customerPhone.eq.${customerId}`),
+      .or(`customerId.eq.${customerId},customerPhone.eq.${customerId}`)
+      // Same population as the order history below it, which already
+      // excluded deleted orders — the two sections disagreed on the count.
+      .is("deleted_at", null),
     // The ledger's own answer. Returns have already been deducted from it.
-    balanceOf("customer_ltv", customerId).catch(() => ({ qty: 0, amount: 0 })),
+    // NOT caught: a failed ledger read used to become «٠ ج.م.» lifetime value,
+    // a money zero nobody measured. The screen renders an error + retry.
+    balanceOf("customer_ltv", customerId),
     client
       .from("customers")
       .select("returned_orders_count")
       .eq("id", customerId)
-      .maybeSingle()
-      .then((r: any) => r?.data ?? null, () => null),
+      .maybeSingle(),
   ]);
 
   if (error) throw new Error(`[orders] ${error.message}`);
+  if (customerRead.error) throw new Error(`[customers] ${customerRead.error.message}`);
+  const customer = customerRead.data as { returned_orders_count?: number } | null;
 
   const statusCounts: Record<string, number> = {
     pending: 0, shipped: 0, delivered: 0, returned: 0, cancelled: 0,

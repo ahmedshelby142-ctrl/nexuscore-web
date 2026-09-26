@@ -21,7 +21,7 @@ const terminology = [
   read("../src/mobile/navigation/mobileNavigation.ts"),
   read("../src/mobile/viewmodels/metricDefinitions.ts"),
   read("../src/mobile/viewmodels/alertModel.ts"),
-  read("../src/mobile/viewmodels/home/homeComposer.ts"),
+  read("../src/mobile/data/mobileHomeReader.ts"),
   read("../src/mobile/screens/MobileHomeScreen.tsx"),
 ].join("\n");
 
@@ -72,7 +72,11 @@ test("Customers is a read-only lookup and omits invented lifetime revenue", () =
 
 test("Details use route params and authoritative stored values", () => {
   assert.match(productDetails, /useParams/);
-  assert.match(productDetails, /getActualStock/);
+  // The ledger quantity the reader attached. This used to REQUIRE
+  // `getActualStock`, which on mobile falls back to `products.quantity`
+  // because its snapshot is only ever filled by desktop's `useStock`.
+  assert.match(productDetails, /mobileStock/);
+  assert.doesNotMatch(productDetails, /getActualStock/);
   assert.match(productDetails, /mobileCost/);
   assert.match(orderDetails, /useParams/);
   assert.match(orderDetails, /totalAmount/);

@@ -30,7 +30,6 @@ export function MobileCustomerDetails() {
   const [ordersPage, setOrdersPage] = useState<{ rows: any[]; total: number | null; hasMore: boolean; loading: boolean; loadingMore: boolean; error: string | null }>({
     rows: [], total: null, hasMore: false, loading: true, loadingMore: false, error: null
   });
-  const [pageNum, setPageNum] = useState(0);
 
   /**
    * The customer's money.
@@ -81,20 +80,14 @@ export function MobileCustomerDetails() {
   useEffect(() => { void loadOrders(0); }, [loadOrders]);
 
 
+  // The next page is whatever follows the rows ALREADY held, through the same
+  // `loadOrders` that owns the error state. It used to bump a separate page
+  // counter from a stale closure — two quick taps advanced it twice and the
+  // page between was never read — and a failure was an unhandled rejection
+  // that left «تحميل المزيد» spinning forever.
   const loadMoreOrders = () => {
     if (ordersPage.hasMore && !ordersPage.loadingMore) {
-      setPageNum(p => p + 1);
-      const nextPage = pageNum + 1;
-      readMobileCustomerOrderHistory(customerId ?? "", nextPage, 25).then((result) => {
-        setOrdersPage((current) => ({
-          rows: [...current.rows, ...result.rows.filter((next: any) => !current.rows.some((existing: any) => String(existing.id) === String(next.id)))],
-          total: result.total,
-          hasMore: result.hasMore,
-          loading: false,
-          loadingMore: false,
-          error: null
-        }));
-      });
+      void loadOrders(Math.floor(ordersPage.rows.length / 25));
     }
   };
 

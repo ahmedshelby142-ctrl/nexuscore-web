@@ -36,12 +36,14 @@ export function MobileShipmentsScreen() {
   const pipelineRows = useMemo(() => {
     const shipmentRows = toMobileShipmentQueue(page.rows, couriers);
     const readyRows = toMobileOrderQueue(page.rows.filter((order: any) => String(order.status) === "pending")).map((row) => ({ ...row, statusLabelAr: "جاهز للشحن", statusTone: "warning" as const }));
-    return [...readyRows, ...shipmentRows].filter((row) => {
-      const matchesSearch = !query || `${row.title} ${row.subtitle ?? ""}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
-      const matchesStage = stage === "ready" ? row.statusKey === "pending" : row.statusKey === stage;
-      return matchesSearch && matchesStage;
-    });
-  }, [page.rows, query, stage, couriers]);
+    // Search is the SERVER's (`readMobileShipments` matches order number,
+    // customer and courier). A second, client-side text filter here only knew
+    // title and customer, so searching «ابحث برقم الطلب أو المندوب» by courier
+    // got the right rows back and then threw every one of them away.
+    return [...readyRows, ...shipmentRows].filter((row) =>
+      stage === "ready" ? row.statusKey === "pending" : row.statusKey === stage,
+    );
+  }, [page.rows, stage, couriers]);
 
   return <section className="mobile-screen">
     <MobileAppBar title="الشحنات" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} trailingAction={<button type="button" className="mobile-icon-button" onClick={() => void page.refresh()} disabled={page.refreshing} aria-label="تحديث" aria-busy={page.refreshing}><RefreshCw aria-hidden="true" className={page.refreshing ? "mobile-spin" : undefined} /></button>} />

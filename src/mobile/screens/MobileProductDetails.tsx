@@ -1,7 +1,7 @@
 import { ArrowRight, Package, AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { productMinLevel, productPrice, productWholesalePrice, getActualStock, isProductArchived } from "@/lib/product";
+import { productMinLevel, productPrice, productWholesalePrice, isProductArchived } from "@/lib/product";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSection } from "@/mobile/components/MobileSection";
 import { StatusPill } from "@/mobile/components/StatusPill";
@@ -63,7 +63,12 @@ export function MobileProductDetails() {
   if (!product) return <><MobileAppBar title="تفاصيل المنتج" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} /><EmptyState titleAr="المنتج غير موجود" messageAr="تعذّر العثور على هذا المنتج." /></>;
 
   const archived = isProductArchived(product);
-  const quantity = getActualStock(product);
+  // The LEDGER quantity `readMobileProduct` attached — the same number the
+  // stock list shows. The shared `lib/product` stock helper was used here, and
+  // on mobile it can only answer from the `products.quantity` mirror: its snapshot is
+  // filled by desktop's `useStock`, which mobile never mounts. So the list and
+  // this screen disagreed about one product, and this one was the mirror.
+  const quantity = Number((product as any).mobileStock ?? 0);
   const minLevel = productMinLevel(product);
   const statusKey = deriveStockStatusKey(quantity, minLevel);
   const status = resolveStockStatus(statusKey);

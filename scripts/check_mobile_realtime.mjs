@@ -192,7 +192,9 @@ test("the paged query separates refreshing from loading, and guards both", () =>
   assert.match(pagedQuery, /loading: mode === "initial"/);
   assert.match(pagedQuery, /refreshing: mode === "refresh"/);
   // Rapid presses and event bursts collapse to one request.
-  assert.match(pagedQuery, /if \(mode !== "append" && inFlight\.current\) return;/);
+  // Refresh only: a NEW query (search/filter) supersedes the read in flight
+  // instead of being dropped — behaviour covered in check_mobile_functional_closure.
+  assert.match(pagedQuery, /if \(mode === "refresh" && inFlight\.current !== null\) return;/);
   // A late answer for a filter the user already left must not repaint.
   assert.match(pagedQuery, /if \(mine !== generation\.current\) return;/);
 });

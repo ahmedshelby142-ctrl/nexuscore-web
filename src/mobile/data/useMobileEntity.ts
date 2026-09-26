@@ -30,11 +30,15 @@ export function useMobileEntity<T>(reader: () => Promise<T | null>) {
   });
 
   const generation = useRef(0);
-  const inFlight = useRef(false);
+  // The READER in flight, not a boolean. A second tap on retry for the same
+  // record is dropped; a different record (the route param moved) supersedes
+  // it. With a boolean, /orders/A → /orders/B while A was loading skipped B's
+  // read and then painted A's order under B's URL.
+  const inFlight = useRef<(() => Promise<T | null>) | null>(null);
 
   const run = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
+    if (inFlight.current === reader) return;
+    inFlight.current = reader;
     const mine = ++generation.current;
     setState({ data: null, loading: true, error: null });
     try {
@@ -49,7 +53,7 @@ export function useMobileEntity<T>(reader: () => Promise<T | null>) {
         });
       }
     } finally {
-      inFlight.current = false;
+      if (inFlight.current === reader) inFlight.current = null;
     }
   }, [reader]);
 

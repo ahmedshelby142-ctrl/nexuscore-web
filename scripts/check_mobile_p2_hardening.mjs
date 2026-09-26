@@ -83,7 +83,9 @@ test("P2-2 · the entity loader can be asked again", () => {
 });
 
 test("P2-2 · retry collapses a double tap and cannot repaint a stale record", () => {
-  assert.match(entityHook, /if \(inFlight\.current\) return;/);
+  // Keyed on the READER: a retry for the same record collapses, but a new
+  // record (route param moved) supersedes instead of being dropped.
+  assert.match(entityHook, /if \(inFlight\.current === reader\) return;/);
   assert.match(entityHook, /if \(mine === generation\.current\)/);
 });
 

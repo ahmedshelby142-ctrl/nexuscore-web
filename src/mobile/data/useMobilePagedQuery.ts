@@ -43,12 +43,18 @@ export function useMobilePagedQuery<T>(
   const generation = useRef(0);
   // One re-read at a time. A held finger on تحديث, or a burst of realtime
   // events from one multi-row write, must not become a burst of queries.
-  const inFlight = useRef(false);
+  //
+  // Only a REFRESH yields to a read in flight. An initial read is a new
+  // question (the search text or the filter changed) and must supersede the
+  // old one. It used to be dropped too: typing «ab» while «a» was loading
+  // skipped «ab» entirely, then committed «a»'s rows under a box reading «ab».
+  // Holds the generation that owns it, so a superseded read cannot release it.
+  const inFlight = useRef<number | null>(null);
 
   const run = useCallback(async (mode: "initial" | "append" | "refresh") => {
-    if (mode !== "append" && inFlight.current) return;
-    if (mode !== "append") inFlight.current = true;
+    if (mode === "refresh" && inFlight.current !== null) return;
     const mine = ++generation.current;
+    if (mode !== "append") inFlight.current = mine;
 
     setState((current) => ({
       ...current,
@@ -81,7 +87,7 @@ export function useMobilePagedQuery<T>(
       if (mine !== generation.current) return;
       setState((current) => ({ ...current, loading: false, loadingMore: false, refreshing: false, error: error instanceof Error ? error.message : String(error) }));
     } finally {
-      if (mode !== "append") inFlight.current = false;
+      if (inFlight.current === mine) inFlight.current = null;
     }
   }, [query, reader, state.rows.length]);
 

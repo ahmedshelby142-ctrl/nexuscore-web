@@ -52,12 +52,7 @@ export {
   shippedOrderRows,
 } from "./orderViewModel";
 
-export {
-  toMobileStockRow,
-  toMobileStockQueue,
-  lowStockRows,
-  deriveStockStatusKey,
-} from "./stockViewModel";
+export { deriveStockStatusKey } from "./stockViewModel";
 
 export {
   toMobileShipmentRow,

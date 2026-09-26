@@ -10,6 +10,92 @@ created, and no business behaviour was changed.
 
 ---
 
+## Current status — Mobile functional closure (2026-09-26)
+
+Re-audited from the code at `79dbfcf`, not from the findings below. §A–§O are
+the **2026-09-21 baseline** and are kept as written; several of their P0/P1
+items were closed since (`7709c0c`, `9856d3b`, `6f7896b`, `fa94822`,
+`97c515c`). This section is the current answer. Functional only — no visual
+change, no courier API, no desktop change, no Supabase change.
+
+### Previously reported items
+
+| # | Claim | Current finding | Result |
+|---|---|---|---|
+| D1 | dead `homeComposer.ts` with hardcoded zero signals | Still present, imported by **no** source file (only two text-matching tests). Hardcoded `longInTransitOrders: 0` / `unsettledCodOrders: 0` and computed stock through the helper that reads `products.quantity` on mobile | **Deleted**, with the three stock-row helpers only it used; tests re-bound to `mobileHomeReader.ts`, the composer Home renders |
+| D2 | `/restock` under `purchasing` instead of `stock` | Live policies: `write_purchase_invoices`, `write_suppliers` and the `purchase` branch of `insert_ledger_events` are `has_role(ADMIN, ACCOUNTANT)`. `purchasing` = ADMIN + ACCOUNTANT; `stock` would add ECOMMERCE_ONLY + MODERATOR, whom the database refuses | **Not a defect.** Guard is correct; moving it would broaden access. Pinned by test |
+| D3 | TypeScript / auth errors | `npx tsc --noEmit` → **0** errors (before and after) | **Closed** — nothing to fix |
+| D4 | Shipments refresh has no handler | Wired to `page.refresh()` → `readMobileShipments` since `9856d3b` | **Closed** — pinned by test |
+| D5 | large uncommitted mobile tree | Mobile tree is committed. Uncommitted: `useCourierStore.ts` + `cloudHydrate.ts` (courier store work) and `dist-mobile/**` | **Not a product bug**; preserved, not staged |
+
+### Real functional defects found and fixed
+
+| # | Defect | Effect | Fix |
+|---|---|---|---|
+| M-1 | Home kept every snapshot in a module-level Map for the tab's life, and kept a *failed* request in `pending` | تحديث / حاول مرة أخرى never re-read; one failed read made Home's error permanent; after sign-out (no page reload) the next user with the same role saw the **previous store's** alerts, order numbers and customer names | In-flight dedupe only, dropped on settle; Home + badges follow realtime (`orders`, `products`, `ledger_events`) |
+| M-2 | `useMobilePagedQuery` dropped any initial read while another was in flight | `MobileSearch` is not debounced: typing «ab» while «a» loaded skipped «ab» and committed «a»'s rows under «ab». Same for filter/tab changes | A new query supersedes; only `refresh` is deduped; the lock is owned by generation |
+| M-3 | `useMobileEntity`, same pattern with a boolean lock | A route-param change while loading painted the previous record under the new URL | Lock keyed on the reader |
+| M-4 | Product Details used `getActualStock`, whose ledger snapshot is only filled by desktop's `useStock` | Showed the `products.quantity` mirror. Live: mirror **24 / 51** vs ledger **22 / 60** for the two products with open demand — list and details disagreed | Uses the ledger `mobileStock` the reader attaches |
+| M-5 | Failed reads rendered as zero/empty | customer order counts → «لا يوجد طلب سابق»; lifetime value → ٠ ج.م.; wasted-trip debt → 0; order timeline → «تم إنشاء الطلب» only; shortages with an unresolved store → «لا توجد نواقص» | All throw; the timeline gained its own error + retry |
+| M-6 | Deleted orders counted | customer summary counted soft-deleted orders (its own history below did not); product "waiting orders" listed deleted pending orders (`mobile_shortages` excludes them) | `deleted_at IS NULL` on both |
+| M-7 | Shipments re-filtered server search on the client by title/customer only | Searching by courier — the placeholder's own suggestion — returned the rows and then discarded all of them | Server search is the only search |
+| M-8 | Quick Restock deep link | A failed product read was swallowed and a deleted/stale id never resolved: **skeleton forever** | Error + retry; missing ids dropped with a toast |
+| M-9 | Customer order history «تحميل المزيد» | Page counter from a stale closure: two quick taps skipped a page; failure was an unhandled rejection with the spinner stuck | Pages from rows held, through `loadOrders`, which owns the error state |
+| M-10 | Stock «منخفض/نافد» filter on paged data | With more pages unloaded, «لا توجد أصناف» and no «تحميل المزيد» | Empty state only when nothing more exists |
+| M-11 | Shortages | Stale «إجمالي العجز» stayed above an error; no realtime cue | Rows cleared on error; follows `orders` + `ledger_events` |
+| M-12 | Home «الشحنات في الطريق» count | The 3-row preview length, not the server total | Uses the total |
+
+### Verified correct, unchanged
+
+Stock on every list is `SUM(ledger_lines.qty_delta)` via `balanceOf` (which
+throws on failure — no fake zero). Shortages come only from `mobile_shortages`
+(SECURITY DEFINER, `has_role`-gated, store passed from the session's
+membership, `anon` has no EXECUTE). Quick Restock: one write path
+(`executeQuickRestock` → `commitReceipt`), `useSubmitGate` + disabled button,
+offline-disabled, a failed supplier read blocks «+ مورد جديد», quantity/cost
+validated in the shared command, and the displayed «متاح» is never an input to
+the write. Orders / shipments / customers / products / purchase invoices:
+server paging with exact count and stable `(sort, id)` ordering, load-more
+dedupe by id. All three detail screens: loading / content / not-found /
+error + retry / back. Session gate fails closed to `/login` (runtime: an
+unauthenticated deep link to `/inventory/:id` lands on `/login`, no console
+errors); licence gate redirects on an unusable verdict.
+
+### Runtime proof (live `oczgqpxeixlrufvevitz`, read-only, simulated JWT claims, rolled back)
+
+| Principal | purchase write (`has_role` ADMIN/ACCOUNTANT) | `mobile_shortages(db31…)` | orders / products visible in db31 |
+|---|---|---|---|
+| ADMIN of db31 | **true** | 0 rows — recomputed independently: demand 1 vs ledger 22, 3 vs 60 → honest zero | 34 / 7 |
+| POS_ECOMMERCE of db31 | **false** | 0 (not in the RPC's role list; mobile never grants it `stock`) | 34 / 7 |
+| ADMIN of c58d76ab (foreign) | **false** | 0 | **0 / 0** |
+| anon | — | no EXECUTE privilege | — |
+
+No ACCOUNTANT, ECOMMERCE_ONLY or MODERATOR member exists live, and creating
+one is a production write, so those three are proven from the live policy text
+plus the capability-matrix test. Client-side concurrency (supersede, dedupe,
+retry restores data, one read for Home + badges) is proven by behavioural tests
+that run the real hook modules — `scripts/check_mobile_functional_closure.mjs`.
+
+### Remaining — not blockers for this phase
+
+- **Receipt lost-acknowledgement.** `idempotencyKey` is stored in the event
+  payload but not enforced by the database. A double tap is one write (gate),
+  but if the server commits and the response is lost, a retry records a second
+  receipt. Shared with desktop's `QuickRestockDialog`; closing it needs a
+  unique index on the key (Supabase change — recommended, not applied).
+- `mobile_shortages` answers an unauthorized caller with an **empty set**
+  rather than an error. No leak (proven above), and the client only calls it
+  for roles in its list, but a licence lapsing mid-session would read as «لا
+  توجد نواقص» until the licence gate redirects. Raising `42501` would be more
+  honest; optional.
+- P2-9 lint debt (§F) unchanged.
+
+**Mobile is functionally complete for its decided scope** — no known
+functional blocker remains. The business decisions in §G are still open and
+are not functional defects.
+
+---
+
 ## A. Product scope — ONLINE-ONLY
 
 NEXUS CORE is an **online-only** product. Supabase/Postgres is the server

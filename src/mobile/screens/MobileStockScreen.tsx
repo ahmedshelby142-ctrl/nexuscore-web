@@ -81,9 +81,13 @@ export function MobileStockScreen() {
           <SkeletonState />
         ) : page.error ? (
           <ErrorState messageAr="تعذّر تحميل المخزون." onRetry={page.reload} />
-        ) : rows.length === 0 ? (
+        ) : rows.length === 0 && !page.hasMore ? (
           <EmptyState titleAr="لا توجد أصناف" messageAr="لا توجد أصناف مطابقة لهذا الاختيار." />
         ) : (
+          // «منخفض» / «نافد» filter the pages already loaded (stock is a ledger
+          // sum, not a column the server can filter on). With more pages to
+          // come, «لا توجد أصناف» was a claim about products never looked at —
+          // so the list stays, empty, with its «تحميل المزيد».
           <Fragment>
             <div className="mobile-entity-list">
               {rows.map((row) => (

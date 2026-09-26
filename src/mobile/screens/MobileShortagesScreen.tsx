@@ -8,6 +8,7 @@ import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { formatArabicQuantity, formatArabicCount } from "@/mobile/viewmodels/formatters";
 import { readMobileShortages, type MobileShortageRow } from "@/mobile/data/mobileHomeReader";
 import { useMobileCapabilities } from "@/mobile/navigation/MobileRouteGuard";
+import { useRealtimeTables } from "@/mobile/data/useMobileRealtime";
 
 /**
  * تقرير النواقص — the products open orders demand more of than the shelf holds.
@@ -51,12 +52,17 @@ export function MobileShortagesScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // `quiet`: re-check without the skeleton, so a realtime cue does not blank
+  // the list under the operator's thumb.
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       setRows(await readMobileShortages());
     } catch (e) {
+      // Not the previous answer: «إجمالي العجز» above the error would
+      // otherwise keep showing a total nobody can vouch for any more.
+      setRows([]);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
@@ -66,6 +72,10 @@ export function MobileShortagesScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A shortage is open orders against ledger stock, so either one moving can
+  // open or close one — including a توريد recorded on another device.
+  useRealtimeTables(["orders", "ledger_events"], () => { void load(true); });
 
   const needle = query.trim().toLowerCase();
   const visible = needle

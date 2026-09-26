@@ -24,6 +24,8 @@ export interface MobileHomeSnapshot {
   pendingOrders: number;
   orders: any[];
   shipments: any[];
+  /** The server's count of in-transit orders; `shipments` is only the first 3. */
+  shipmentsTotal: number;
   shortages: MobileShortageRow[];
 }
 
@@ -48,7 +50,9 @@ function clientOrThrow() {
  */
 export async function readMobileShortages(): Promise<MobileShortageRow[]> {
   const storeId = await getActiveStoreId();
-  if (!storeId) return [];
+  // No store is "could not ask", not "nothing is short". `getActiveStoreId`
+  // also answers null when the membership read itself failed.
+  if (!storeId) throw new Error("تعذّر تحديد المتجر الحالي");
   const { data, error } = await clientOrThrow().rpc("mobile_shortages", { p_store: storeId });
   if (error) throw new Error(`[mobile_shortages] ${error.message}`);
   return (data ?? []) as MobileShortageRow[];
@@ -62,7 +66,7 @@ export async function readMobileHomeSnapshot(capabilities: ReadonlySet<MobileCap
     capabilities.has("shipments") ? readMobileShipments({ status: "shipped", pageSize: 3 }) : Promise.resolve({ total: 0, rows: [], hasMore: false }),
     capabilities.has("stock") ? readMobileShortages() : Promise.resolve([]),
   ]);
-  return { todayOrders: today.total ?? 0, pendingOrders: pending.total ?? 0, orders: orders.rows, shipments: shipments.rows, shortages };
+  return { todayOrders: today.total ?? 0, pendingOrders: pending.total ?? 0, orders: orders.rows, shipments: shipments.rows, shipmentsTotal: shipments.total ?? shipments.rows.length, shortages };
 }
 
 export function composeMobileHomeSnapshot(
@@ -89,6 +93,6 @@ export function composeMobileHomeSnapshot(
   const queues = [] as ComposedMobileHomeSnapshot["queues"];
   if (capabilities.has("orders") && snapshot.pendingOrders > 0) queues.push({ id: "orders", titleAr: "الطلبات التي تحتاج إجراء", count: snapshot.pendingOrders, href: "/orders", rows: snapshot.orders.slice(0, 3).map((order) => ({ id: String(order.id), title: String(order.orderNumber ?? order.id), subtitle: String(order.customerName ?? "—"), statusKey: String(order.status ?? ""), statusLabelAr: resolveOrderStatus(order.status).labelAr, statusTone: resolveOrderStatus(order.status).tone, primaryValue: String(order.totalAmount ?? ""), href: `/orders/${order.id}` })) });
   if (capabilities.has("stock") && snapshot.shortages.length > 0) queues.push({ id: "stock", titleAr: "نواقص تحتاج متابعة", count: snapshot.shortages.length, href: "/inventory/shortages", rows: snapshot.shortages.slice(0, 3).map((row) => ({ id: row.product_id, title: row.product_name, subtitle: row.sku, statusKey: "shortage", statusLabelAr: "نقص", statusTone: "critical", primaryValue: formatArabicCount(row.deficit), href: `/inventory/${row.product_id}` })) });
-  if (capabilities.has("shipments") && snapshot.shipments.length > 0) queues.push({ id: "shipments", titleAr: "الشحنات في الطريق", count: snapshot.shipments.length, href: "/shipments", rows: snapshot.shipments.slice(0, 3).map((order) => ({ id: String(order.id), title: String(order.orderNumber ?? order.id), subtitle: String(order.customerName ?? "—"), statusKey: String(order.status ?? "shipped"), statusLabelAr: resolveShipmentStatus(order.status).labelAr, statusTone: resolveShipmentStatus(order.status).tone, href: `/orders/${order.id}` })) });
+  if (capabilities.has("shipments") && snapshot.shipments.length > 0) queues.push({ id: "shipments", titleAr: "الشحنات في الطريق", count: snapshot.shipmentsTotal, href: "/shipments", rows: snapshot.shipments.slice(0, 3).map((order) => ({ id: String(order.id), title: String(order.orderNumber ?? order.id), subtitle: String(order.customerName ?? "—"), statusKey: String(order.status ?? "shipped"), statusLabelAr: resolveShipmentStatus(order.status).labelAr, statusTone: resolveShipmentStatus(order.status).tone, href: `/orders/${order.id}` })) });
   return { alerts, metrics: [capabilities.has("orders") && metric("today_orders", snapshot.todayOrders), capabilities.has("orders") && metric("pending_orders", snapshot.pendingOrders), capabilities.has("stock") && metric("low_stock_products", snapshot.shortages.length)].filter(Boolean) as MobileMetric[], queues };
 }

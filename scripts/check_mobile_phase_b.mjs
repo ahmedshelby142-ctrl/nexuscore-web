@@ -5,7 +5,12 @@ import { readFileSync } from "node:fs";
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const navigation = read("../src/mobile/navigation/mobileNavigation.ts");
 const capabilities = read("../src/mobile/navigation/mobileCapabilities.ts");
-const home = read("../src/mobile/viewmodels/home/homeComposer.ts");
+// The home screen's real composer. `viewmodels/home/homeComposer.ts` used to be
+// pinned here, but nothing imported it: it was dead code that hardcoded
+// `longInTransitOrders: 0` / `unsettledCodOrders: 0` and read stock from the
+// `products.quantity` mirror. It was deleted; the assertions now bind to the
+// composer Home actually renders.
+const home = read("../src/mobile/data/mobileHomeReader.ts");
 const alerts = read("../src/mobile/viewmodels/alertModel.ts");
 const metrics = read("../src/mobile/viewmodels/metricDefinitions.ts");
 const router = read("../src/mobile/router.tsx");
@@ -38,10 +43,13 @@ test("mobile navigation delegates access to canonical capabilities", () => {
 });
 
 test("home is composed from pure view models and omits unsupported revenue claims", () => {
-  assert.match(home, /export function composeHomeSections/);
-  assert.match(home, /deriveAlerts\(buildAlertInput/);
-  assert.match(home, /toMobileOrderQueue/);
-  assert.match(home, /toMobileStockQueue/);
+  assert.match(home, /export function composeMobileHomeSnapshot/);
+  assert.match(home, /deriveAlerts\(\{/);
+  assert.match(home, /readMobileOrders/);
+  assert.match(home, /rpc\("mobile_shortages"/, "stock signals come from the ledger RPC");
+  // "Nobody looked" must not be rendered as an all-clear.
+  assert.doesNotMatch(home, /longInTransitOrders:\s*0|unsettledCodOrders:\s*0|agingPendingOrders:\s*0/);
+  assert.doesNotMatch(home, /\.quantity/);
   assert.doesNotMatch(home, /بطاقة/);
   assert.doesNotMatch(metrics, /today_revenue|بطاقة/);
 });

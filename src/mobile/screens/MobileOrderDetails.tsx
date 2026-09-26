@@ -1,5 +1,5 @@
 import { ArrowRight, Package } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSection } from "@/mobile/components/MobileSection";
@@ -39,16 +39,29 @@ export function MobileOrderDetails() {
     return () => { active = false; };
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    if (orderId) {
-      setTimelineLoading(true);
-      readMobileOrderTimeline(orderId).then((data) => {
-        if (active) { setTimeline(data); setTimelineLoading(false); }
-      }).catch((err) => { if (active) { setTimelineError(err.message); setTimelineLoading(false); } });
+  // Hoisted so the timeline's error can ask again through the same reader.
+  // `timelineError` was never cleared either, so one failure stuck to the
+  // screen for every later order opened in the same instance.
+  const timelineRequest = useRef(0);
+  const loadTimeline = useCallback(async () => {
+    if (!orderId) return;
+    const mine = ++timelineRequest.current;
+    setTimelineLoading(true);
+    setTimelineError(null);
+    try {
+      const data = await readMobileOrderTimeline(orderId);
+      if (mine === timelineRequest.current) setTimeline(data);
+    } catch (err) {
+      if (mine === timelineRequest.current) {
+        setTimeline([]);
+        setTimelineError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (mine === timelineRequest.current) setTimelineLoading(false);
     }
-    return () => { active = false; };
   }, [orderId]);
+
+  useEffect(() => { void loadTimeline(); }, [loadTimeline]);
 
   if (offline) return <><MobileAppBar title="تفاصيل الطلب" leadingAction={back} /><div className="mobile-screen-body"><OfflineState /></div></>;
   if (loading) return <><MobileAppBar title="تفاصيل الطلب" /><div className="mobile-screen-body"><SkeletonState /></div></>;
@@ -197,7 +210,7 @@ export function MobileOrderDetails() {
         {timelineLoading ? (
           <SkeletonState count={3} />
         ) : timelineError ? (
-          <ErrorState messageAr={timelineError} />
+          <ErrorState messageAr="تعذّر تحميل سجل الطلب." onRetry={() => void loadTimeline()} />
         ) : timeline.length === 0 ? (
           <EmptyState titleAr="لا يوجد خط زمني" messageAr="لا توجد أحداث مسجلة لهذا الطلب." />
         ) : (

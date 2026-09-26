@@ -55,6 +55,7 @@ import { formatMoney, formatQty, discountAmountFor } from "@/lib/math";
 import { applyDiscountCode } from "@/lib/discounts";
 import { claimDiscountUse, releaseDiscountUse } from "@/services/discountUsage";
 import { nextDocumentNumber } from "@/services/documentNumber";
+import { statusOf } from "@/lib/figure";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import type { EcommerceOrderItem, WalletType } from "@/types";
 import { WALLET_LABELS, canonicalWallet } from "@/types";
@@ -176,7 +177,8 @@ function EcommerceOrdersInner() {
   const customers = useCustomerStore((s) => s.customers);
   // Lifetime spend per customer id, so two people with the same first name are
   // still telling apart. SUM(customer_ltv) — never a stored field.
-  const { amountOf: ltvOf } = useBalances("customer_ltv");
+  const ltv = useBalances("customer_ltv");
+  const { amountOf: ltvOf } = ltv;
 
   // Every field the user types is a DRAFT: it survives navigating to another
   // screen and back, and an accidental reload, and dies with the session.
@@ -1202,7 +1204,9 @@ function EcommerceOrdersInner() {
           customers={customers}
           phone={customer_phone}
           linkedId={customerId}
-          ltvOf={ltvOf}
+          // Only once the read landed: before that, or after it fails, every
+          // customer would be introduced as having bought ٠ ج.م.
+          ltvOf={statusOf(ltv) === "ready" ? ltvOf : undefined}
           onPick={(c) => {
             setCustomerId(c.id);
             setCustomerName(c.name);

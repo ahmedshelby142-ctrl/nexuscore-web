@@ -1,4 +1,5 @@
 import React from "react";
+import { CollectionGate } from "@/components/ui/collection-gate";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useEffect, useMemo } from "react";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
@@ -242,7 +243,7 @@ export function DiscountsPage() {
               {discounts.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={9} className="text-center text-muted-foreground py-12">
-                    لا توجد أكواد خصم محفوظة
+                    <CollectionGate tables={["discount_codes"]}>لا توجد أكواد خصم محفوظة</CollectionGate>
                   </TableCell>
                 </TableRow>
               ) : (

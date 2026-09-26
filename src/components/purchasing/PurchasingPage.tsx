@@ -45,6 +45,9 @@ import { nextDocumentNumber } from "@/services/documentNumber";
 import { commitReceipt } from "@/lib/receiving";
 import { ProductSearch } from "@/components/products/ProductSearch";
 import { formatMoney, formatBalance, formatQty, round } from "@/lib/math";
+import { figureOr, moneyFigure, statusOf } from "@/lib/figure";
+import { LoadError } from "@/components/ui/load-error";
+import { CollectionGate, useCollectionStatus } from "@/components/ui/collection-gate";
 import { useBalances } from "@/lib/ledger/useBalances";
 import {
   buildSupplierReturnLines,
@@ -83,10 +86,12 @@ export function PurchasingPage() {
   // fixed for — the cost now comes off the purchase invoice line.
   const { qtyOf, refresh: refreshStock } = useStock();
   // What we owe each supplier — the account the آجل half of a receipt feeds.
-  const { amountOf: debtOf, total: totalSupplierDebt, refresh: refreshDebt } =
-    useBalances("payable_supplier");
+  const supplierDebt = useBalances("payable_supplier");
+  const { amountOf: debtOf, total: totalSupplierDebt, refresh: refreshDebt } = supplierDebt;
 
-  // Dashboard Stats
+  // Dashboard Stats — counts and sums of the hydrated documents, so they are
+  // only numbers once those tables have actually been read.
+  const docsRead = useCollectionStatus(["purchase_invoices", "suppliers"]).read;
   const totalInvoices = purchaseInvoices.length;
   const totalSuppliers = suppliers.length;
   const totalVolume = purchaseInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0);
@@ -344,6 +349,19 @@ export function PurchasingPage() {
     }
     if (returnRequests.length === 0) {
       setReturnError("اختر بند من فاتورة وحدد الكمية المرتجعة");
+      return;
+    }
+    // The تسوية splits this return between "clears what we owe" and "they
+    // refund us cash" FROM the debt. A debt read that failed answers 0, and a
+    // return posted against that 0 books cash we never received instead of
+    // reducing the payable. Refuse rather than post it.
+    if (statusOf(supplierDebt) !== "ready") {
+      setReturnError(
+        supplierDebt.error
+          ? "تعذّرت قراءة رصيد المورد من الدفتر، فالمرتجع مش هيتسجل لحد ما يتقري. جرّب تاني."
+          : "رصيد المورد لسه بيتحمّل. جرّب تاني بعد لحظة.",
+      );
+      if (supplierDebt.error) refreshDebt();
       return;
     }
 
@@ -607,7 +625,7 @@ export function PurchasingPage() {
               </div>
               <div>
                 <p className="text-gray-800 dark:text-gray-200 font-bold text-lg">فواتير المشتريات</p>
-                <h3 className="text-2xl font-bold">{totalInvoices}</h3>
+                <h3 className="text-2xl font-bold">{figureOr(() => String(totalInvoices), docsRead)}</h3>
               </div>
             </div>
           </CardContent>
@@ -620,7 +638,7 @@ export function PurchasingPage() {
               </div>
               <div>
                 <p className="text-gray-800 dark:text-gray-200 font-bold text-lg">إجمالي قيمة المشتريات</p>
-                <h3 className="text-2xl font-bold">{formatMoney(totalVolume)}</h3>
+                <h3 className="text-2xl font-bold">{moneyFigure(totalVolume, docsRead)}</h3>
               </div>
             </div>
           </CardContent>
@@ -633,7 +651,7 @@ export function PurchasingPage() {
               </div>
               <div>
                 <p className="text-gray-800 dark:text-gray-200 font-bold text-lg">عدد الموردين</p>
-                <h3 className="text-2xl font-bold">{totalSuppliers}</h3>
+                <h3 className="text-2xl font-bold">{figureOr(() => String(totalSuppliers), docsRead)}</h3>
               </div>
             </div>
           </CardContent>
@@ -662,7 +680,7 @@ export function PurchasingPage() {
                 {purchaseInvoices.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={5} className="py-12 text-center text-muted-foreground">
-                      لا توجد فواتير مشتريات
+                      <CollectionGate tables={["purchase_invoices"]}>لا توجد فواتير مشتريات</CollectionGate>
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -702,7 +720,7 @@ export function PurchasingPage() {
                 {suppliers.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={3} className="py-12 text-center text-muted-foreground">
-                      لا يوجد موردين
+                      <CollectionGate tables={["suppliers"]}>لا يوجد موردين</CollectionGate>
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -795,6 +813,7 @@ export function PurchasingPage() {
               <WholesaleReturnPanel
                 variant="supplier"
                 debt={returnSupplierDebt}
+                debtRead={supplierDebt}
                 returnValue={returnValue}
                 paidInput={returnPaidInput}
                 onPaidChange={setReturnPaidInput}
@@ -1162,11 +1181,26 @@ export function PurchasingPage() {
             <div className="rounded-xl border bg-amber-50 dark:bg-amber-950/30 border-amber-200 p-4">
               <p className="text-sm text-amber-800 dark:text-amber-500">الرصيد المستحق</p>
               <p className="text-2xl font-bold mt-2 text-amber-700 dark:text-amber-400">
-                {formatBalance(supplierMetrics?.owed ?? 0, { owed: "علينا", credit: "لنا" })}
+                {figureOr(
+                  () => formatBalance(supplierMetrics?.owed ?? 0, { owed: "علينا", credit: "لنا" }),
+                  supplierDebt,
+                )}
               </p>
+              {supplierDebt.error && (
+                <LoadError
+                  className="mt-3"
+                  message="تعذّرت قراءة الرصيد من الدفتر."
+                  detail={supplierDebt.error}
+                  onRetry={refreshDebt}
+                  busy={supplierDebt.loading}
+                />
+              )}
               <Button
                 size="sm"
                 className="mt-3 w-full"
+                // Pre-filling a payment from a balance that did not load would
+                // pre-fill nothing and look like "nothing owed".
+                disabled={statusOf(supplierDebt) !== "ready"}
                 onClick={() => {
                   // Pre-filled with the whole outstanding balance: paying in
                   // full is the common case, and a credit balance pre-fills
@@ -1227,7 +1261,7 @@ export function PurchasingPage() {
                 <TableBody>
                   {supplierMetrics?.invs.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={3} className="text-center py-8 text-muted-foreground">لا يوجد سجل توريد</TableCell>
+                      <TableCell colSpan={3} className="text-center py-8 text-muted-foreground"><CollectionGate tables={["purchase_invoices"]}>لا يوجد سجل توريد</CollectionGate></TableCell>
                     </TableRow>
                   ) : (
                     supplierMetrics?.invs.map((inv: any) => (
@@ -1253,7 +1287,10 @@ export function PurchasingPage() {
           <DialogTitle>تسجيل دفعة للمورد</DialogTitle>
           <DialogDescription>
             {selectedSupplier?.companyName} — الرصيد الحالي{" "}
-            {formatBalance(supplierMetrics?.owed ?? 0, { owed: "علينا", credit: "لنا" })}
+            {figureOr(
+              () => formatBalance(supplierMetrics?.owed ?? 0, { owed: "علينا", credit: "لنا" }),
+              supplierDebt,
+            )}
           </DialogDescription>
         </DialogHeader>
 

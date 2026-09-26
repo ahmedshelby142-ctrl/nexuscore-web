@@ -29,6 +29,8 @@ import { nextDocumentNumber } from "@/services/documentNumber";
 import { cn } from "@/lib/utils";
 import { useOrderStore } from "@/store/useOrderStore";
 import { EmptyState } from "@/components/ui/empty-state";
+import { CollectionGate } from "@/components/ui/collection-gate";
+import { statusOf } from "@/lib/figure";
 import { useFinancialStore } from "@/store/useFinancialStore";
 import { customerIdOf } from "@/lib/customers";
 import { useCustomerStore } from "@/store/useCustomerStore";
@@ -176,7 +178,8 @@ export function OrdersPage() {
   // screen has to take the button away here without a reload.
   const returnRecords = useBusinessStore((s) => s.returnRecords);
   // A trader's outstanding balance, for reconciling a wholesale return.
-  const { amountOf: debtOf, refresh: refreshDebt } = useBalances("receivable_client");
+  const clientDebt = useBalances("receivable_client");
+  const { amountOf: debtOf, refresh: refreshDebt } = clientDebt;
   // Re-read after a payment so الخزنة reflects the new cash immediately.
   const { refresh: refreshWallets } = useBalances("wallet");
   const { qtyOf, costOf, refresh: refreshStock } = useStock();
@@ -991,6 +994,21 @@ export function OrdersPage() {
         // A trader's return settles against their account, not the till. The
         // same تسوية POS does — see `buildWholesaleReturnLines`.
         if (returnClientId) {
+          // The stale-read version of this was measured and fixed (see the
+          // refresh after a delivery below). A FAILED read is the same zero by
+          // another route: settled against it, the trader's return comes back
+          // as cash instead of clearing what they owe. Refuse.
+          if (statusOf(clientDebt) !== "ready") {
+            setActionError(
+              clientDebt.error
+                ? "تعذّرت قراءة رصيد التاجر من الدفتر، فالمرتجع مش هيتسجل لحد ما يتقري. جرّب تاني."
+                : "رصيد التاجر لسه بيتحمّل. جرّب تاني بعد لحظة.",
+            );
+            if (clientDebt.error) refreshDebt();
+            setIsWorking(false);
+            releaseOrder(order.id);
+            return;
+          }
           if (resolvedOrderReturn.error || !resolvedOrderReturn.ok?.lines.length) {
             setActionError(
               resolvedOrderReturn.error ?? "مفيش بنود متاحة للإرجاع على فاتورة الطلب ده.",
@@ -1755,6 +1773,7 @@ export function OrdersPage() {
                 {filteredOrders.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8} className="py-12">
+                      <CollectionGate tables={["orders"]}>
                       <EmptyState
                         icon={query || fromDate || toDate ? Search : Inbox}
                         title={
@@ -1768,6 +1787,7 @@ export function OrdersPage() {
                             : "طلباتك هتظهر هنا لما تتنقل للتصنيف ده"
                         }
                       />
+                      </CollectionGate>
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -2617,6 +2637,7 @@ export function OrdersPage() {
                 </div>
                 <WholesaleReturnPanel
                   debt={returnClientDebt}
+                  debtRead={clientDebt}
                   // The WHOLESALE value of what is coming back, from the
                   // invoice. `order.totalAmount` is the retail figure and
                   // booking it here reversed more than was ever sold.

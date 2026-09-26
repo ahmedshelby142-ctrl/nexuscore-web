@@ -2,6 +2,8 @@ import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Fragment } from "react";
 import { formatMoney } from "@/lib/math";
+import { moneyFigure, statusOf } from "@/lib/figure";
+import { LoadError } from "@/components/ui/load-error";
 import {
   Truck,
   Wallet,
@@ -109,7 +111,8 @@ export function CourierLedgerPage() {
   // stored on the courier record any more.
   const owedToUs = useBalances("receivable_courier");
   const owedToThem = useBalances("payable_courier");
-  const { amountOf: expenseOf, refresh: refreshExpense } = useBalances("expense");
+  const expense = useBalances("expense");
+  const { amountOf: expenseOf, refresh: refreshExpense } = expense;
   const returnFeesBorne = expenseOf("shipping_return");
 
   // §3.9 drill-down BY FEE TYPE. Not three accounts, and not a compound
@@ -122,6 +125,15 @@ export function CourierLedgerPage() {
   const feeDelivery = useBalances("payable_courier", "order_delivered");
   const feeReturnish = useBalances("payable_courier", "return_confirmed");
   const feeExchange = useBalances("receivable_courier", "return_confirmed");
+
+  // Every balance on this screen, and whether ALL of them actually answered.
+  // `useBalances` says 0 both before its read lands and after it fails, so a
+  // card, a row or a printed PDF built on one it has not checked is a
+  // confident «٠ ج.م» about money a courier is holding.
+  const balanceReads = [owedToUs, owedToThem, expense, feeDelivery, feeReturnish, feeExchange];
+  const balanceStatus = statusOf(...balanceReads);
+  const balanceError = balanceReads.find((r) => r.error)?.error ?? null;
+  const retryBalances = () => balanceReads.forEach((r) => r.refresh());
 
   const [history, setHistory] = useState<SettlementRow[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -408,6 +420,9 @@ export function CourierLedgerPage() {
   });
 
   const handleExportPdf = () => {
+    // A printed statement is a document someone signs. It is never produced
+    // from balances that did not load.
+    if (balanceStatus !== "ready") return;
     generateCourierPdf({
       companyName: storeIdentity().name,
       reportDate: new Date(),
@@ -448,10 +463,24 @@ export function CourierLedgerPage() {
             فلوس العملاء اللي لسه مع المندوب، العمولات اللي ليه، وتسوية التحويلة أول ما توصل
           </p>
         </div>
-        <Button variant="outline" onClick={handleExportPdf} className="shrink-0">
+        <Button
+          variant="outline"
+          onClick={handleExportPdf}
+          className="shrink-0"
+          disabled={balanceStatus !== "ready"}
+        >
           <FileText className="size-4 ml-2" /> تصدير PDF
         </Button>
       </div>
+
+      {balanceError && (
+        <LoadError
+          message="تعذّرت قراءة أرصدة الشحن، فمفيش أرقام معروضة لحد ما تتقري."
+          detail={balanceError}
+          onRetry={retryBalances}
+          busy={balanceReads.some((r) => r.loading)}
+        />
+      )}
 
       {/* Every card says WHO owes WHOM, in words. "مستحق للمندوبين" and
           "الصافي (لنا − عليهم)" were unreadable to the person who has to act on
@@ -461,7 +490,7 @@ export function CourierLedgerPage() {
           <div className="flex items-center gap-2 text-muted-foreground">
             <Truck className="size-4" /> فلوس لسه مع المندوبين
           </div>
-          <p className="text-2xl font-bold mt-3">{formatMoney(owedToUs.total)}</p>
+          <p className="text-2xl font-bold mt-3">{moneyFigure(owedToUs.total, owedToUs)}</p>
           <p className="text-xs text-muted-foreground mt-2">
             محصّلينها من العملاء ولسه ما وصلتش خزنتك
           </p>
@@ -470,7 +499,7 @@ export function CourierLedgerPage() {
           <div className="flex items-center gap-2 text-muted-foreground">
             <Coins className="size-4" /> عمولات هيخصموها
           </div>
-          <p className="text-2xl font-bold mt-3 text-amber-600">{formatMoney(owedToThem.total)}</p>
+          <p className="text-2xl font-bold mt-3 text-amber-600">{moneyFigure(owedToThem.total, owedToThem)}</p>
           <p className="text-xs text-muted-foreground mt-2">
             بتتخصم من التحويلة — مش هتدفعها من الخزنة
           </p>
@@ -481,7 +510,7 @@ export function CourierLedgerPage() {
           </div>
           {/* The ONLY shipping our shop pays for. Delivery and exchange fees
               are the customer's and pass through — they never land here. */}
-          <p className="text-2xl font-bold mt-3 text-red-600">{formatMoney(returnFeesBorne)}</p>
+          <p className="text-2xl font-bold mt-3 text-red-600">{moneyFigure(returnFeesBorne, expense)}</p>
           <p className="text-xs text-muted-foreground mt-2">
             ده الشحن الوحيد اللي بيتحسب خسارة علينا
           </p>
@@ -491,7 +520,7 @@ export function CourierLedgerPage() {
             <ArrowLeftRight className="size-4" /> المفروض يوصلك في الآخر
           </div>
           <p className="text-2xl font-bold mt-3 text-amber-700 dark:text-amber-300">
-            {formatMoney(owedToUs.total - owedToThem.total)}
+            {moneyFigure(owedToUs.total - owedToThem.total, owedToUs, owedToThem)}
           </p>
           <p className="text-xs text-muted-foreground mt-2">
             اللي معاهم ناقص عمولاتهم — ده المتوقع في التحويلة الجاية
@@ -499,13 +528,6 @@ export function CourierLedgerPage() {
         </div>
       </div>
 
-      {(owedToUs.error || owedToThem.error) && (
-        <div className="rounded-lg p-3 bg-red-50 border border-red-200">
-          <p className="text-sm font-medium text-red-900">
-            تعذّرت قراءة أرصدة الشحن — الأرقام فوق مش مضمونة دلوقتي.
-          </p>
-        </div>
-      )}
 
       {/* Registration. THE management screen for couriers — the order form now
           selects from this list instead of taking a typed name, so a company
@@ -586,10 +608,10 @@ export function CourierLedgerPage() {
                         </button>
                       </TableCell>
                       <TableCell className="text-center px-4 font-mono">
-                        {formatMoney(ours)}
+                        {moneyFigure(ours, owedToUs)}
                       </TableCell>
                       <TableCell className="text-center px-4 font-mono text-amber-600">
-                        {formatMoney(theirs)}
+                        {moneyFigure(theirs, owedToThem)}
                       </TableCell>
                       <TableCell
                         className={
@@ -597,7 +619,7 @@ export function CourierLedgerPage() {
                           (ours - theirs >= 0 ? "text-green-600" : "text-red-600")
                         }
                       >
-                        {formatMoney(ours - theirs)}
+                        {moneyFigure(ours - theirs, owedToUs, owedToThem)}
                       </TableCell>
                       <TableCell className="text-center px-4">
                         <Badge variant="outline">{openCount} طلب</Badge>
@@ -621,7 +643,7 @@ export function CourierLedgerPage() {
                             <div className="rounded-xl border bg-card p-3">
                               <p className="text-muted-foreground text-xs">توصيل للعملاء</p>
                               <p className="font-mono font-bold mt-1">
-                                {formatMoney(feeDelivery.amountOf(courier.id))}
+                                {moneyFigure(feeDelivery.amountOf(courier.id), feeDelivery)}
                               </p>
                               <p className="text-xs text-muted-foreground mt-1">
                                 العميل دفعها مع الطلب — بتعدّي مننا للمندوب
@@ -630,7 +652,7 @@ export function CourierLedgerPage() {
                             <div className="rounded-xl border bg-card p-3">
                               <p className="text-muted-foreground text-xs">رجّع بضاعة</p>
                               <p className="font-mono font-bold mt-1 text-red-600">
-                                {formatMoney(returns)}
+                                {moneyFigure(returns, feeReturnish, feeExchange)}
                               </p>
                               <p className="text-xs text-muted-foreground mt-1">
                                 دي اللي المحل بيدفعها من جيبه
@@ -638,7 +660,7 @@ export function CourierLedgerPage() {
                             </div>
                             <div className="rounded-xl border bg-card p-3">
                               <p className="text-muted-foreground text-xs">استبدال</p>
-                              <p className="font-mono font-bold mt-1">{formatMoney(exchange)}</p>
+                              <p className="font-mono font-bold mt-1">{moneyFigure(exchange, feeExchange)}</p>
                               <p className="text-xs text-muted-foreground mt-1">
                                 العميل دفعها برضه — بيحصّلها المندوب لينا
                               </p>

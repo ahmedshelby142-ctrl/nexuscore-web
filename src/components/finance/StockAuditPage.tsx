@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect } from "react";
 import { Package, Plus, Search, FileText, AlertTriangle, Copy, Inbox } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LoadError } from "@/components/ui/load-error";
+import { figureOr, moneyFigure, statusOf } from "@/lib/figure";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useFinancialStore } from "@/store/useFinancialStore";
 import { add, subtract, formatQty, formatMoney } from "@/lib/math";
@@ -55,7 +57,8 @@ export function StockAuditPage() {
   const allProducts = useBusinessStore((s) => s.products);
   const products = useMemo(() => activeProducts(allProducts), [allProducts]);
   // What the ledger says is on the shelf, and what each unit really cost.
-  const { qtyOf, costOf, refresh: refreshStock } = useStock();
+  const stock = useStock();
+  const { qtyOf, costOf, refresh: refreshStock } = stock;
   const [isSaving, setIsSaving] = useState(false);
   // One submit at a time; `isSaving` state cannot close the same-tick window.
   const gate = useSubmitGate();
@@ -74,11 +77,15 @@ export function StockAuditPage() {
    * the same guard.
    */
   const [auditFetchError, setAuditFetchError] = useState<string | null>(null);
+  // Until the first fetch settles, "no audits" is not a fact — it is a read
+  // that has not come back yet.
+  const [auditLoading, setAuditLoading] = useState(true);
 
   // رصيد المخزن — SUM(stock.amount), the weighted-average value actually on the
   // shelf. This card used to show SUM(wallet), the TILL total, on a screen about
   // inventory: a real number, answering a question nobody asked here.
-  const { total: inventoryValue, refresh: refreshInventoryValue } = useBalances("stock");
+  const stockValue = useBalances("stock");
+  const { total: inventoryValue, refresh: refreshInventoryValue } = stockValue;
 
   const [isAuditOpen, setIsAuditOpen] = useState(false);
   const [auditCategory, setAuditCategory] = useState("all");
@@ -111,6 +118,7 @@ export function StockAuditPage() {
 
   // Fetch stock audit events from the ledger
   const fetchAudits = async () => {
+    setAuditLoading(true);
     try {
       const rows = await fetchLedgerEvents({ refType: "stock_audit" });
       setAuditEvents(rows);
@@ -118,6 +126,8 @@ export function StockAuditPage() {
     } catch (e) {
       console.error(e);
       setAuditFetchError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAuditLoading(false);
     }
   };
 
@@ -239,6 +249,18 @@ export function StockAuditPage() {
   }, [auditResults, qtyOf, costOf]);
 
   const handleConfirmAudit = async () => {
+    // Every line below is (counted − systemQty) × unitCost, and both come from
+    // the ledger read. A read that failed answers 0 for both, so a count of 10
+    // would be booked as 10 units of surplus the shop never had. Refuse.
+    if (statusOf(stock) !== "ready") {
+      setAuditError(
+        stock.error
+          ? "تعذّرت قراءة المخزون من الدفتر، فالجرد مش هيتسجل لحد ما يتقري. جرّب تاني."
+          : "المخزون لسه بيتحمّل. جرّب تاني بعد لحظة.",
+      );
+      if (stock.error) refreshStock();
+      return;
+    }
     const items = auditItems;
 
     const lines = buildStockAdjustmentLines({ items });
@@ -359,14 +381,25 @@ export function StockAuditPage() {
             <FileText className="size-5 text-blue-600" />
             <p className="text-sm text-muted-foreground">عمليات الجرد</p>
           </div>
-          <p className="text-2xl font-bold">{auditEvents.length}</p>
+          <p className="text-2xl font-bold">
+            {figureOr(() => String(auditEvents.length), { loading: auditLoading, error: auditFetchError })}
+          </p>
         </div>
         <div className="rounded-2xl border border-border bg-card p-6">
           <div className="flex items-center gap-3 mb-2">
             <AlertTriangle className="size-5 text-amber-600" />
             <p className="text-sm text-muted-foreground">رصيد المخزن (بالتكلفة)</p>
           </div>
-          <p className="text-2xl font-bold">{formatMoney(inventoryValue)}</p>
+          <p className="text-2xl font-bold">{moneyFigure(inventoryValue, stockValue)}</p>
+          {stockValue.error && (
+            <LoadError
+              className="mt-3"
+              message="تعذّرت قراءة قيمة المخزون."
+              detail={stockValue.error}
+              onRetry={refreshInventoryValue}
+              busy={stockValue.loading}
+            />
+          )}
         </div>
       </div>
 
@@ -410,9 +443,14 @@ export function StockAuditPage() {
       <div className="rounded-2xl border border-border bg-card p-6">
         <h3 className="font-display text-xl font-bold mb-4">سجل حركة المخزون</h3>
         {auditFetchError ? (
-          <div className="py-8 text-center text-sm text-destructive">
-            تعذّر تحميل سجل الجرد — القائمة تحت غير مكتملة. {auditFetchError}
-          </div>
+          <LoadError
+            message="تعذّر تحميل سجل الجرد."
+            detail={auditFetchError}
+            onRetry={() => void fetchAudits()}
+            busy={auditLoading}
+          />
+        ) : auditLoading ? (
+          <div className="py-8 text-center text-sm text-muted-foreground">جاري تحميل سجل الجرد…</div>
         ) : auditsByDate.length === 0 ? (
           <div className="py-8">
             <EmptyState icon={Inbox} title="لا توجد حركات مخزون مسجلة" />

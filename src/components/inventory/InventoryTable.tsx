@@ -12,6 +12,8 @@ import {
   Inbox,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LoadError } from "@/components/ui/load-error";
+import { CollectionGate } from "@/components/ui/collection-gate";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useStock } from "@/lib/ledger/useStock";
 import {
@@ -45,7 +47,8 @@ export function InventoryTable() {
   const products = useMemo(() => activeProducts(allProducts), [allProducts]);
   // Same source as المنتجات: quantity is SUM(stock) and the value card prices
   // it at the weighted-average cost, so the two screens cannot disagree.
-  const { qtyOf, costOf, refresh: refreshStock } = useStock();
+  const stock = useStock();
+  const { qtyOf, costOf, refresh: refreshStock } = stock;
   const [stockFilter, setStockFilter] = useState<StockFilter>("all");
   const [pendingRemoval, setPendingRemoval] = useState<Product | null>(null);
   // Sorting is a view concern only — it reorders `qtyOf` reads, never touches
@@ -126,7 +129,18 @@ export function InventoryTable() {
     <div className="space-y-6">
       {/* The same four cards as المنتجات, from the same component and the same
           ledger figures — clicking one filters the table below. */}
-      <StockSummaryCards products={products} value={stockFilter} onChange={setStockFilter} costOf={costOf} />
+      {/* The quantities below fall back to the product mirror by design
+          (P1-B), but the stock VALUE is a ledger figure. A failed ledger read
+          is said out loud here instead of being printed as ٠. */}
+      {stock.error && (
+        <LoadError
+          message="تعذّرت قراءة المخزون من الدفتر، فقيمة المخزون مش معروضة والكميات ممكن تكون قديمة."
+          detail={stock.error}
+          onRetry={refreshStock}
+          busy={stock.loading}
+        />
+      )}
+      <StockSummaryCards products={products} value={stockFilter} onChange={setStockFilter} costOf={costOf} read={stock} />
 
       <div className="rounded-2xl border border-border bg-card p-6">
       {/* A one-line prompt, not a list.
@@ -264,6 +278,7 @@ export function InventoryTable() {
             {visibleProducts.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={7} className="py-12">
+                  <CollectionGate tables={["products"]}>
                   {products.length === 0 ? (
                     <EmptyState icon={Inbox} title="لسه مفيش منتجات" />
                   ) : searchQuery.trim() ? (
@@ -271,6 +286,7 @@ export function InventoryTable() {
                   ) : (
                     <EmptyState icon={Package} title="مفيش منتجات في التصنيف ده" />
                   )}
+                  </CollectionGate>
                 </TableCell>
               </TableRow>
             ) : (

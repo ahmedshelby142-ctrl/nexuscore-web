@@ -2,6 +2,7 @@ import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState } from "react";
 import { Building2, Plus, MapPin, Phone, Power, Trash2, Users, Inbox } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { CollectionGate } from "@/components/ui/collection-gate";
 import { useBranchStore, describeRole } from "@/store/useBranchStore";
 import { useAuthStore } from "@/store/useAuthStore";
 import { Button } from "@/components/ui/button";
@@ -128,11 +129,13 @@ export function BranchesPage() {
               {branches.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="py-12">
+                    <CollectionGate tables={["branches"]}>
                     <EmptyState
                       icon={Building2}
                       title="لا توجد فروع مسجلة"
                       description="أضف فرعك الأول للبدء في إدارة المخزون والمبيعات."
                     />
+                    </CollectionGate>
                   </TableCell>
                 </TableRow>
             ) : (

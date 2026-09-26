@@ -36,6 +36,9 @@ import { add, subtract, multiply, divide, round, formatMoney, formatBalance } fr
 import type { BusinessPersona, ExpenseCategory } from "@/types";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { totalAssetsOf, netWorthOf } from "@/lib/dashboard";
+import { netProfitOf } from "@/lib/ledger/reports";
+import { figureOr, statusOf, type ReadState } from "@/lib/figure";
+import { LoadError } from "@/components/ui/load-error";
 import { useStock } from "@/lib/ledger/useStock";
 import { CapitalEquityPage } from "@/components/finance/CapitalEquityPage";
 import { ownershipFits, totalOwnership, activePartners, isPartnerArchived } from "@/lib/partners";
@@ -187,6 +190,10 @@ interface LedgerSummary {
   walletsTotal: number;
 }
 
+/** The ledger accounts a KPI card is computed from. A failed read of any of
+ *  them must mark THAT card unavailable — not the whole grid, and not a zero. */
+type LedgerFeed = "revenue" | "cogs" | "expense" | "wallet" | "receivable_client" | "stock" | "payable_supplier";
+
 const PERSONA_KPI_CONFIG: Record<
   BusinessPersona,
   Array<{
@@ -199,11 +206,13 @@ const PERSONA_KPI_CONFIG: Record<
     iconColor: string;
     valueColor: string;
     compute: (ls: LedgerSummary) => string;
+    feeds: LedgerFeed[];
   }>
 > = {
   retail: [
     {
       key: "pos",
+      feeds: ["revenue"],
       label: "مبيعات نقطة البيع",
       sublabel: "SUM(revenue) للقناة pos",
       icon: DollarSign,
@@ -217,6 +226,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "otherChannels",
+      feeds: ["revenue"],
       label: "مبيعات أونلاين وجملة",
       sublabel: "إجمالي المبيعات − نقطة البيع",
       icon: Wallet,
@@ -229,6 +239,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "branchExpenses",
+      feeds: ["expense"],
       label: "المصروفات التشغيلية للفروع",
       sublabel: "إيجار + رواتب + فواتير",
       icon: Store,
@@ -240,6 +251,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "netRetail",
+      feeds: ["revenue", "cogs", "expense"],
       label: "صافي ربح التجزئة",
       sublabel: "المبيعات - (COGS + مصروفات)",
       icon: PiggyBank,
@@ -252,6 +264,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "wholesaleDebts",
+      feeds: ["receivable_client"],
       label: "ديون مستحقة (عملاء الجملة)",
       sublabel: "أرصدة عملاء الجملة الآجلة",
       icon: TrendingUp,
@@ -266,6 +279,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "supplierDebts",
+      feeds: ["payable_supplier"],
       label: "ديون علينا (الموردين)",
       sublabel: "المتبقي الآجل على فواتير المشتريات",
       icon: TrendingUp,
@@ -279,6 +293,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "totalAssets",
+      feeds: ["wallet", "stock", "receivable_client"],
       label: "إجمالي أصول الشركة",
       sublabel: "خزائن + مخزون + ديون العملاء (قبل خصم ديون الموردين)",
       icon: Landmark,
@@ -290,6 +305,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "netWorth",
+      feeds: ["wallet", "stock", "receivable_client", "payable_supplier"],
       label: "صافي القيمة",
       sublabel: "إجمالي الأصول − ديون الموردين",
       icon: Landmark,
@@ -308,6 +324,7 @@ const PERSONA_KPI_CONFIG: Record<
   ecommerce: [
     {
       key: "onlineRevenue",
+      feeds: ["revenue"],
       label: "إيرادات الطلبات الإلكترونية",
       sublabel: "الطلبات المدفوعة والمتبقية",
       icon: DollarSign,
@@ -319,6 +336,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "shippingCost",
+      feeds: ["expense"],
       label: "تكلفة الشحن",
       sublabel: "مصاريف مرتجعات الشحن — التوصيل بيتحصّل من العميل",
       icon: Truck,
@@ -338,6 +356,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "operatingExpenses",
+      feeds: ["expense"],
       label: "مصروفات التشغيل",
       sublabel: "شحن + تسويق + فواتير + صيانة",
       icon: TrendingDown,
@@ -349,6 +368,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "netEcommerce",
+      feeds: ["revenue", "cogs", "expense"],
       label: "صافي ربح المتجر الإلكتروني",
       sublabel: "الإيرادات - إجمالي التكاليف",
       icon: PiggyBank,
@@ -361,6 +381,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "wholesaleDebts",
+      feeds: ["receivable_client"],
       label: "ديون مستحقة (عملاء الجملة)",
       sublabel: "أرصدة عملاء الجملة الآجلة",
       icon: TrendingUp,
@@ -375,6 +396,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "supplierDebts",
+      feeds: ["payable_supplier"],
       label: "ديون علينا (الموردين)",
       sublabel: "المتبقي الآجل على فواتير المشتريات",
       icon: TrendingUp,
@@ -388,6 +410,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "totalAssets",
+      feeds: ["wallet", "stock", "receivable_client"],
       label: "إجمالي أصول الشركة",
       sublabel: "خزائن + مخزون + ديون العملاء (قبل خصم ديون الموردين)",
       icon: Landmark,
@@ -399,6 +422,7 @@ const PERSONA_KPI_CONFIG: Record<
     },
     {
       key: "netWorth",
+      feeds: ["wallet", "stock", "receivable_client", "payable_supplier"],
       label: "صافي القيمة",
       sublabel: "إجمالي الأصول − ديون الموردين",
       icon: Landmark,
@@ -458,7 +482,8 @@ export function PartnersFinancePage() {
   // SUM(revenue) below.
   // The real figure: SUM(cogs) over the ledger, booked at each sale from the
   // cost actually paid on توريد. Covers POS, wholesale and e-commerce together.
-  const { total: totalCOGS, error: cogsError } = useBalances("cogs");
+  const cogsRead = useBalances("cogs");
+  const { total: totalCOGS, error: cogsError, refresh: refreshCogs } = cogsRead;
   // Sales and operating costs from the ledger, not from stores.
   // `getTotalSales()` summed the `transactions` store (which a POS sale has not
   // written since the ledger conversion), the wholesale invoice documents and a
@@ -466,18 +491,53 @@ export function PartnersFinancePage() {
   // SUM(revenue) already covers POS, wholesale and e-commerce, and carries
   // returns as negatives. SUM(expense) covers what was just wired above plus
   // جرد shrinkage and courier return fees.
-  const { total: ledgerSales, error: salesError, amountOf: revenueOf } = useBalances("revenue");
-  const { total: ledgerExpenses, error: expenseError, amountOf: expenseOf, refresh: refreshExpenses } = useBalances("expense");
+  const salesRead = useBalances("revenue");
+  const { total: ledgerSales, error: salesError, amountOf: revenueOf, refresh: refreshSales } = salesRead;
+  const expenseRead = useBalances("expense");
+  const { total: ledgerExpenses, error: expenseError, amountOf: expenseOf, refresh: refreshExpenses } = expenseRead;
+  const walletRead = useBalances("wallet");
   const {
     refresh: refreshWallets,
     amountOf: walletAmountOf,
     total: walletsTotal,
-  } = useBalances("wallet");
-  const { total: receivableClientTotal } = useBalances("receivable_client");
-  const { total: inventoryValue } = useBalances("stock");
+    error: walletsError,
+  } = walletRead;
+  const receivableRead = useBalances("receivable_client");
+  const { total: receivableClientTotal, error: receivableError, refresh: refreshReceivable } = receivableRead;
+  const stockValueRead = useBalances("stock");
+  const { total: inventoryValue, error: stockValueError, refresh: refreshStockValue } = stockValueRead;
   // What we owe suppliers. Reachable since the receipt screen learned to book
   // a part-paid فاتورة آجل, and until now displayed by nothing at all.
-  const { total: payableSupplierTotal } = useBalances("payable_supplier");
+  const payableRead = useBalances("payable_supplier");
+  const { total: payableSupplierTotal, error: payableError, refresh: refreshPayable } = payableRead;
+
+  // ── P1-D: a figure is a number only once the reads under it succeeded ──
+  // Every `total` above answers 0 both before its read lands and after it
+  // fails, so a KPI built on one it has not checked is a confident lie. Each
+  // card names its feeds; the card is "…" while any is loading and "— ج.م"
+  // when any failed — and a card whose feeds are intact keeps its number.
+  const feedRead: Record<LedgerFeed, ReadState> = {
+    revenue: salesRead,
+    cogs: cogsRead,
+    expense: expenseRead,
+    wallet: walletRead,
+    receivable_client: receivableRead,
+    stock: stockValueRead,
+    payable_supplier: payableRead,
+  };
+  const allReads = Object.values(feedRead);
+  const ledgerError = allReads.find((r) => r.error)?.error ?? null;
+  // One retry re-runs the SAME reads through the hooks' own `refresh()` — no
+  // second fetch path, no local cache.
+  const retryLedgerReads = () => {
+    refreshCogs();
+    refreshSales();
+    refreshExpenses();
+    refreshWallets();
+    refreshReceivable();
+    refreshStockValue();
+    refreshPayable();
+  };
 
   // `walletsTotal` is the account's OWN sum, not a reduce over WALLET_LABELS.
   // The whitelist version silently dropped any wallet line whose subject was
@@ -485,6 +545,10 @@ export function PartnersFinancePage() {
   // nothing stops one. It also disagreed with رأس المال, which has always used
   // this same `total`. One figure, one definition.
 
+  // Asked only of a wallet read that ANSWERED. A failed read says every till
+  // is 0, and this used to take that as "no opening balance yet" and prompt
+  // the owner to record one — a second opening entry on top of the real one.
+  const walletsKnown = statusOf(walletRead) === "ready";
   const hasOpeningBalance = (Object.keys(WALLET_LABELS) as WalletType[]).some(
     (w) => walletAmountOf(w) !== 0,
   );
@@ -522,13 +586,22 @@ export function PartnersFinancePage() {
       // guessed, and no term counted twice — `shippingCost` is a slice of
       // `opEx`, not a fourth deduction. Depreciation is deliberately absent:
       // it is non-cash, so it lives as a memo on the reports tab (§3.12).
-      profit: ledgerSales - totalCOGS - ledgerExpenses,
+      // `netProfitOf`, not a local subtraction: this page is the ACCOUNTANT's
+      // financial view and cannot read `owner_financial_summary` (ADMIN only,
+      // by decision in migration 034), so it computes — but through the same
+      // one definition `pnl()` uses, pinned to the SQL reader by test.
+      profit: netProfitOf({ revenue: ledgerSales, cogs: totalCOGS, expenses: ledgerExpenses }),
       receivableClient: receivableClientTotal,
       payableSupplier: payableSupplierTotal,
       inventoryValue: inventoryValue,
       walletsTotal: walletsTotal,
     };
   }, [busTrigger, finTrigger, totalCOGS, ledgerSales, ledgerExpenses, revenueOf, shippingCost, receivableClientTotal, payableSupplierTotal, inventoryValue, walletsTotal]);
+
+  // ls.profit is sales − cogs − expenses: it is only a real number when all
+  // three reads succeeded. The partners tab divides it up, so it must never
+  // divide up a zero produced by a failure.
+  const profitAvailable = statusOf(salesRead, cogsRead, expenseRead) === "ready";
 
   // ── Partner earnings map ──
   const partnerEarningsMap = useMemo(() => {
@@ -870,16 +943,15 @@ export function PartnersFinancePage() {
       {/* A failed COGS read must never render as "cost = 0", because that shows
           up as profit. Same rule the ledger hooks hold for stock and wallets:
           say the number is unavailable rather than print a flattering zero. */}
-      {cogsError && (
-        <div className="rounded-2xl border border-red-300 bg-red-50 p-4 flex items-start gap-3">
-          <Ban className="size-5 text-red-600 shrink-0 mt-0.5" />
-          <div>
-            <p className="font-bold text-red-900">تعذر حساب تكلفة المبيعات من الدفتر</p>
-            <p className="text-sm text-red-700 mt-1">
-              أرقام التكلفة والأرباح تحت مش كاملة — متاخدش قرار عليها لحد ما المشكلة تتحل.
-            </p>
-          </div>
-        </div>
+      {/* Any of the seven ledger reads failing withdraws the cards built on
+          it. One banner says so, one retry re-runs every read. */}
+      {ledgerError && (
+        <LoadError
+          message="تعذّر تحميل بعض الأرقام المالية من الدفتر — الكروت اللي بتعتمد عليها مش معروضة. متاخدش قرار على رقم مش ظاهر."
+          detail={ledgerError}
+          onRetry={retryLedgerReads}
+          busy={allReads.some((r) => r.loading)}
+        />
       )}
       {overBudgetAlert && (
         <div className="rounded-2xl border border-red-300 bg-red-50 p-6 flex items-start gap-4">
@@ -937,7 +1009,7 @@ export function PartnersFinancePage() {
               measured from zero, so the prompt sits above the numbers rather
               than waiting to be discovered in a tab. It disappears on its own
               once any wallet has been opened. */}
-          {!hasOpeningBalance && (
+          {walletsKnown && !hasOpeningBalance && (
             <div className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900 p-4 flex items-start gap-3 flex-wrap">
               <Wallet className="size-5 text-amber-600 mt-0.5 shrink-0" />
               <div className="flex-1 min-w-0">
@@ -963,7 +1035,12 @@ export function PartnersFinancePage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {PERSONA_KPI_CONFIG[persona].map((kpi) => {
               const Icon = kpi.icon;
-              const val = kpi.compute(ls);
+              // A failed read leaves its totals at 0, and a KPI computed from
+              // those zeros reads like a real answer. A card whose feeds failed
+              // says so; a card whose feeds are intact keeps its number.
+              const reads = kpi.feeds.map((f) => feedRead[f]);
+              const unavailable = statusOf(...reads) !== "ready";
+              const val = figureOr(() => kpi.compute(ls), ...reads);
               const isNegative = val.startsWith("-");
               return (
                 <div
@@ -979,11 +1056,13 @@ export function PartnersFinancePage() {
                     <span className="text-xs font-medium text-muted-foreground">{kpi.label}</span>
                   </div>
                   <p
-                    className={`text-2xl font-bold ${kpi.valueColor || (isNegative ? "text-red-600" : "text-green-600")}`}
+                    className={`text-2xl font-bold ${unavailable ? "text-muted-foreground" : kpi.valueColor || (isNegative ? "text-red-600" : "text-green-600")}`}
                   >
                     {val}
                   </p>
-                  <p className="text-xs text-muted-foreground mt-1">{kpi.sublabel}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {statusOf(...reads) === "error" ? "تعذّرت قراءة الرقم من الدفتر" : kpi.sublabel}
+                  </p>
                 </div>
               );
             })}
@@ -1311,15 +1390,23 @@ export function PartnersFinancePage() {
               <p className="text-sm text-muted-foreground mt-1">متوسط المساهمة</p>
             </div>
             <div className="rounded-2xl border border-border bg-card p-6">
-              <p
-                className="text-2xl font-bold"
-                style={{
-                  color: ls.profit >= 0 ? "var(--color-green-600)" : "var(--color-red-600)",
-                }}
-              >
-                {formatMoney(ls.profit)}
+              {/* profit is sales − cogs − expenses, so a failure in any of the
+                  three reads makes this card a fiction — "—" not a green zero. */}
+              {profitAvailable ? (
+                <p
+                  className="text-2xl font-bold"
+                  style={{
+                    color: ls.profit >= 0 ? "var(--color-green-600)" : "var(--color-red-600)",
+                  }}
+                >
+                  {formatMoney(ls.profit)}
+                </p>
+              ) : (
+                <p className="text-2xl font-bold text-muted-foreground">—</p>
+              )}
+              <p className="text-sm text-muted-foreground mt-1">
+                {profitAvailable ? "صافي الربح الحالي" : "تعذّرت قراءة الربح من الدفتر"}
               </p>
-              <p className="text-sm text-muted-foreground mt-1">صافي الربح الحالي</p>
             </div>
           </div>
 
@@ -1432,7 +1519,9 @@ export function PartnersFinancePage() {
                               currentShare >= 0 ? "var(--color-green-600)" : "var(--color-red-600)",
                           }}
                         >
-                          {formatMoney(currentShare)}
+                          {/* A share of an unread profit is not zero — the cell
+                              says the number is unavailable instead. */}
+                          {profitAvailable ? formatMoney(currentShare) : "—"}
                         </TableCell>
                         <TableCell className="text-center px-4 font-mono text-green-600 whitespace-nowrap">
                           {formatMoney(earnings.totalEarnings)}

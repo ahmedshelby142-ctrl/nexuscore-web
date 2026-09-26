@@ -1,4 +1,6 @@
 import { stockIsAuthoritative } from "@/lib/ledger/stockSnapshot";
+import { moneyFigure, statusOf } from "@/lib/figure";
+import { LoadError } from "@/components/ui/load-error";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { nextDocumentNumber } from "@/services/documentNumber";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
@@ -177,11 +179,12 @@ export default function CheckoutForm() {
   // The reported bug: this used to read a STORED wallet balance, so the number
   // beside "الخزينة" never moved after a sale even though the sale itself was
   // written to the ledger correctly. It is now SUM(wallet) for that wallet.
+  const wallets = useBalances("wallet");
   const {
     amountOf: walletBalance,
     error: walletError,
     refresh: refreshWallets,
-  } = useBalances("wallet");
+  } = wallets;
 
   // `costOf` still comes from the ledger — the weighted average a sale
   // snapshots. Quantities on screen come from `sellableStock`.
@@ -209,7 +212,8 @@ export default function CheckoutForm() {
   const { promoDiscounts, wholesaleClients, wholesaleInvoices, addWholesaleInvoice } = useBusinessStore();
   // What the selected تاجر owes us right now. A wholesale return settles
   // against this before any cash changes hands — see `buildWholesaleReturnLines`.
-  const { amountOf: debtOf, refresh: refreshDebt } = useBalances("receivable_client");
+  const clientDebt = useBalances("receivable_client");
+  const { amountOf: debtOf, refresh: refreshDebt } = clientDebt;
   // نسبة الضريبة from الإعدادات, read reactively so turning VAT on shows up
   // without a reload. 0 means the shop does not charge it yet — every tax line
   // below simply does not render.
@@ -702,6 +706,21 @@ export default function CheckoutForm() {
         // already proved every one of them against an invoice belonging to THIS
         // trader with that much still returnable on it.
         if (isWholesaleReturn) {
+          // Settled against the trader's debt. A debt read that failed answers
+          // 0, and a return settled against that 0 hands back cash that should
+          // have come off their balance. Refuse rather than post it.
+          if (statusOf(clientDebt) !== "ready") {
+            setResult({
+              success: false,
+              message: clientDebt.error
+                ? "تعذّرت قراءة رصيد التاجر من الدفتر، فالمرتجع مش هيتسجل لحد ما يتقري. جرّب تاني."
+                : "رصيد التاجر لسه بيتحمّل. جرّب تاني بعد لحظة.",
+            });
+            if (clientDebt.error) refreshDebt();
+            setIsProcessing(false);
+            gate.exit();
+            return;
+          }
           if (resolvedWholesaleReturn.error) {
             setResult({ success: false, message: resolvedWholesaleReturn.error });
             setIsProcessing(false);
@@ -1022,16 +1041,15 @@ export default function CheckoutForm() {
         </div>
       )}
 
+      {/* The balances are withdrawn from the wallet picker while this is up —
+          it used to say they were unreliable and show them anyway. */}
       {walletError && (
-        <div className="rounded-xl p-4 flex items-start gap-3 bg-red-50 border border-red-200">
-          <AlertCircle className="size-5 text-red-600 mt-0.5" />
-          <div>
-            <p className="font-semibold text-red-900">تعذّرت قراءة أرصدة الخزائن</p>
-            <p className="text-sm text-red-800 mt-1">
-              الرصيد المعروض مش موثوق — راجعه قبل ما تقفل الوردية. {walletError}
-            </p>
-          </div>
-        </div>
+        <LoadError
+          message="تعذّرت قراءة أرصدة الخزائن، فالأرصدة مش معروضة. متقفلش الوردية على رقم مش ظاهر."
+          detail={walletError}
+          onRetry={refreshWallets}
+          busy={wallets.loading}
+        />
       )}
 
       {stockError && (
@@ -1284,7 +1302,7 @@ export default function CheckoutForm() {
               >
                 {Object.entries(WALLET_LABELS).map(([key, label]) => (
                   <option key={key} value={key}>
-                    {label} - {formatCurrency(walletBalance(key))} ج.م
+                    {label} - {moneyFigure(walletBalance(key), wallets)}
                   </option>
                 ))}
               </select>
@@ -1485,6 +1503,7 @@ export default function CheckoutForm() {
               <div className="pt-3 border-t border-border/50">
                 <WholesaleReturnPanel
                   debt={wholesaleDebt}
+                  debtRead={clientDebt}
                   returnValue={wholesaleReturnValue}
                   paidInput={settlePaidInput}
                   onPaidChange={setSettlePaidInput}

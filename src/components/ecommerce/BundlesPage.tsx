@@ -1,4 +1,5 @@
 import { useRunOnce } from "@/hooks/useSubmitGate";
+import { CollectionGate } from "@/components/ui/collection-gate";
 import { useMemo, useState } from "react";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import { Boxes, Package, Plus, Trash2, Save, CheckCircle2 } from "lucide-react";
@@ -290,7 +291,7 @@ export function BundlesPage() {
               {bundles.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-muted-foreground py-12">
-                    لا توجد تجميعات محفوظة
+                    <CollectionGate tables={["products"]}>لا توجد تجميعات محفوظة</CollectionGate>
                   </TableCell>
                 </TableRow>
               ) : (

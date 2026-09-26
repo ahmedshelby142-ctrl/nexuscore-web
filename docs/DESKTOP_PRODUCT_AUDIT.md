@@ -468,12 +468,86 @@ from the dead refresh token. No new errors.
 
 ## E. P1 required work
 
-### P1-1 — Loading is indistinguishable from empty and from failure
+### P1-1 / P1-D — Loading, empty and error were one state — **FIXED**
 
-14 tables hydrate **serially** (`cloudHydrate.ts:104`, `for … await`) into
-stores that start empty. During that window — and permanently after a failed
-read — `/products` says "لا توجد منتجات" to a shop with 134 products.
-`useSyncStatus` exists and only the Sidebar reads it.
+**Was.** Two readers answered "nothing" in situations that were not nothing.
+The hydrated stores start empty, so `rows.length === 0` meant *no data*, *not
+arrived yet* and *the read failed* at once, and every list said «لا توجد …»
+for all three. `useBalances` answers `total = 0` / `amountOf() = 0` before its
+read lands **and** after it fails, so every money figure built on it printed
+«٠ ج.م» for a read that never happened. `useSyncStatus` existed; only the
+Sidebar read it.
+
+**The worse finding — commit paths decided on those zeros.** Found during
+this sweep, and the reason this was not a labelling fix:
+
+| Path | What an unread 0 did |
+|---|---|
+| Supplier return (الشراء) | settled against a debt of 0 → posted as a **cash refund** instead of reducing the payable |
+| Trader return — جملة, نقاط البيع, الطلبات (3 paths) | the same, on `receivable_client` — the variant this codebase had already measured for the *stale* case (ORD-QA-WS: +800, panel showing ٠) but not the *failed* one |
+| جرد (stock count) | `systemQty = qtyOf() = 0` → a count of 10 booked **+10 phantom surplus** |
+| Dividend distribution | a working partner's draws read as 0 → **paid their share twice** |
+| Store settings | a failed `pullSettings` left defaults in the form, and `updateSettings` pushes on every keystroke → one letter sent «محلي» and blanks **over the real store name, phone and tax number** |
+| Courier statement / capital PDF / client list PDF | printed signed-looking documents full of zeros |
+| الشركاء | a failed wallet read prompted "record your opening balances" → a **second** opening entry |
+
+Every one of these now refuses (with a retry) until its read has answered.
+
+**The model.** One rule, one component each, reused on every screen:
+
+| Piece | What it is |
+|---|---|
+| `lib/figure.ts` | `statusOf(...reads)` → loading / error / ready, **error outranks loading**; `moneyFigure` / `figureOr` render `formatMoney(null)` («— ج.م», the project's own form) on error, «…» while loading, the number only when every read under it succeeded |
+| `useSyncStatus.tables` | per-table `loading / ready / failed`, recorded by the hydrate; an absent entry is *loading*, never empty |
+| `hydrateTable(table)` | the body of `hydrateAll`'s loop, now the one reader both boot and retry use — same `cloudList`, same sink, empties nothing else, a second call for a table already in flight is a no-op |
+| `CollectionGate` | wraps only the **empty branch** of a list: rows present are real rows; no rows → skeleton / `LoadError` / the existing empty message |
+| `LoadError` | the dashboard's existing banner, lifted out unchanged, with a retry that refuses a second click while `busy` and within 1 s (a ref, so two same-frame clicks cannot both pass) |
+| `useBalances` | now reports a *recovering* read as loading — so `busy` means something — but not a routine refresh, which would blank the till after every sale |
+
+**Coverage of the 21 screens.**
+
+| Screen | Change |
+|---|---|
+| نظرة عامة | money from the RPC (P1-E); restock count waits for products + ledger; stock-only failure gets its own retry |
+| المنتجات | empty gated on `products`; cost column withdrawn on a failed `useStock` |
+| المخزون | empty gated; stock value waits for ledger **and** list; `useStock` failure surfaced |
+| الجرد | commit refused on an unread ledger; value card; audit log gets loading + retry |
+| الشراء | supplier balance, header totals, payment prefill; **return commit guarded**; 3 lists gated |
+| الجملة | receivables, «حساب جيد» badge, totals, client export; **return commit guarded**; 4 lists gated |
+| الشركاء + رأس المال | per-card status (loading was missing), one retry for all 7 reads, opening-balance prompt; **distribution needs draws**; profit error ≠ spinner; PDF guarded; wallets |
+| نقاط البيع | wallet picker balances; **wholesale return guarded** |
+| الطلبات أونلاين | customer LTV withheld until read |
+| الطلبات | **wholesale return guarded**; list gated |
+| حسابات الشحن | every courier figure, per-courier rows, PDF guarded, retry |
+| البوكسات · الخصومات · المرتجعات · الفروع | lists gated; the returns log read `getState()` in render and never re-rendered on hydrate — now reactive |
+| العملاء | LTV figures + retry; 4 empty states gated |
+| الإعدادات | push refused until the pull succeeded; form disabled with a retry; status not persisted |
+| المستخدمين | a failed staff read no longer says «مفيش مستخدمين غيرك» |
+| التفضيلات · التكاملات · النسخ الاحتياطي | no cloud read — local state only, nothing to conflate |
+
+**Deliberately not gated:** the courier *list* on حسابات الشحن. Its hydrate
+sink is part of the separate, uncommitted courier work; gating on a table the
+committed hydrate never marks ready would spin forever.
+
+**Runtime proof** (in-app browser, localhost). No QA credentials exist in the
+project and none were invented, so the gated screens could not be opened
+signed-in. Instead a temporary, uncommitted page mounted the **real**
+`CollectionGate`, `LoadError`, `useBalances`, `hydrateTable`, `useSyncStatus`
+and `useOwnerFinancialSummary`, with only the network controlled (HTTP 500,
+then the live QA-STORE figures) and identity stood in for:
+
+| Phase | List | Revenue | Net profit |
+|---|---|---|---|
+| failed | `LoadError` + retry — **not** «لسه مفيش منتجات» | `— ج.م` — **not** `٠ ج.م` | withdrawn; banner + retry |
+| double-click retry (still failing) | **1** request | **1** request | **1** request |
+| retry in flight | skeleton; buttons disabled | `— ج.م` (no stale value) | withdrawn |
+| recovered | the rows | `٧٬٥٠٠ ج.م` = SQL 750000 | `١٩٨٫٩٣ ج.م` = SQL 19893 |
+| success, 0 rows | «لسه مفيش منتجات» | — | — |
+
+The page also caught a real defect in the (interrupted-attempt) Owner hook:
+`void promise.finally(...)` re-rejected into nothing, so every failed read
+logged an *Uncaught (in promise)*. Fixed (`promise.then(clear, clear)`) and
+re-proven: 2 failed reads, **0** unhandled rejections.
 
 ### P1-2 — E-commerce order numbers are a client timestamp — **FIXED**
 
@@ -617,12 +691,60 @@ is still opened only under `isCloudSyncMode() && authenticated`, the boot
 hydrate still returns early on `!authenticated`, and the hook still returns
 `sessionState` to `ProtectedRoute`. Three separate mutations confirm each.
 
-### P1-5 — Two implementations of owner financials, never compared
+### P1-5 / P1-E — Owner financials from two places — **FIXED** (one authority, one client definition)
 
-Desktop `fetchPnl` (TypeScript, `lib/ledger/reports.ts`) vs Mobile
-`owner_financial_summary` (SQL). The only test that compares them —
-*"period filter and Owner reader (live database)"* — is **skipped** for want
-of `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `VITE_SUPABASE_ANON_KEY`.
+**What was actually duplicated.** `owner_financial_summary` is itself built
+on `ledger_balances` — the same SQL function Desktop's `balances()` driver
+calls. So there was never a second *aggregation*: every SUM has one SQL
+authority. What was duplicated was the arithmetic on top. Net profit was
+written **four** times — the RPC, `pnl()`, `summarise()`, and الشركاء inline —
+plus a fifth copy of `summarise`'s counting logic that the interrupted attempt
+had pasted into the dashboard. They agreed, which is what made them
+dangerous.
+
+**Classification.**
+
+| Metric | Authority | Desktop reads it as |
+|---|---|---|
+| revenue · cogs · expenses · returns · sales by channel | `ledger_balances` (SQL) | RPC on نظرة عامة; `balances()` elsewhere — the same function |
+| gross profit · net profit | subtraction over the above | RPC on نظرة عامة; **`netProfitOf`** everywhere else — one client definition |
+| stock value · wallets · supplier payable · courier receivable/payable · customer receivable | `ledger_balances` lifetime (SQL) | RPC on نظرة عامة; `useBalances` elsewhere |
+| net worth · total assets | derived display | `netWorthOf` / `totalAssetsOf` — already one definition |
+| order / return counts · top product | `ledger_events` / `ledger_balances` | `windowCounts` — one definition, shared by `summarise` and the dashboard |
+| average order value | derived display | RPC revenue ÷ `windowCounts` orders |
+
+**Why Desktop still computes anywhere.** Moving everything onto the RPC was
+checked and rejected on the evidence: migration 034 makes the RPC ADMIN-only
+*by decision* — "ACCOUNTANT is refused HERE on purpose. It keeps every
+financial screen it already has on Desktop … through the unchanged
+`useBalances` path". `/partners` is granted to ACCOUNTANT. The reports tab needs
+up to 60 buckets per report. So:
+
+* **نظرة عامة** (ADMIN-only — the Owner cockpit on Desktop) consumes the RPC
+  and computes **no** money figure. A read failure withdraws the whole grid.
+* **Everything else** computes through `netProfitOf`, which is pinned to the
+  SQL formula by test, and whose display is pinned to SQL's integer result by
+  a 2,001-case sweep (piastres in SQL, EGP floats on the client — no float
+  residue reaches the screen).
+
+No SQL was changed; no second SQL function was created.
+
+**Cross-check — SQL authority vs Desktop reads, live.** Impersonating the real
+ADMIN of QA-STORE (disposable), `owner_financial_summary` compared against the
+exact `ledger_balances` calls Desktop makes, with Desktop's formulas applied:
+**13 metrics × 5 windows (lifetime · today · 7d · 30d · this month) = 65
+comparisons, 0 mismatches.** Lifetime, in piastres:
+
+| revenue | cogs | gross | expenses | net | returns | stock | wallets | supplier payable | courier recv | courier pay | customer recv |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 750000 | 346964 | 403036 | 383143 | 19893 | 827000 | 1042643 | 646000 | 110000 | 223000 | 109000 | −50000 |
+
+Sales by channel matched subject-for-subject (pos 437000, wholesale 153000,
+forfeited_deposit 130000, exchange 90000, ecommerce −60000).
+
+**Not crossable: the production tenant.** المحل التجاري has 0 members
+(§M-2), so no one can read it through the ADMIN-gated RPC. That is the
+existing M-2 finding, unchanged.
 
 ### P1-6 — 66 domain types are `any`
 
@@ -631,10 +753,11 @@ loss. Practical effect this pass: `orderLifecycle.ts`'s
 `Record<EcommerceOrderStatus, …>` — the state machine the whole order flow
 rests on — is `Record<any, …>` and exhaustiveness is unchecked.
 
-### P1-7 — Five test files assert against code that moved
+### P1-7 — Five test files assert against code that moved — **FIXED** (2026-09-22)
 
-All 5 failures are stale locations, not regressions. Each behaviour was
-verified present at its new home during this audit (§N.11).
+All 5 failures were stale locations, not regressions. They were rebased onto
+the canonical sources in the login-regression fix (`1cb38ce`); none was
+deleted or weakened, and the suite has been fully green since.
 
 ---
 
@@ -677,6 +800,21 @@ verified present at its new home during this audit (§N.11).
   off — and the team default re-applies it to new projects. Attaching a domain
   makes the access path independent of that setting. The URL works today;
   this is hardening, not a blocker.
+* **F-14** *(verified in P1 Wave 2)* The `expenses` realtime handler merges
+  every INSERT/UPDATE unconditionally, although the table carries the same
+  `updated_at` BIGINT clock the other handlers compare.
+  **Exposure today: none.** Expense rows are insert-once (new UUID per
+  record) and removed by hard `DELETE` (`cloudDelete`), which realtime
+  delivers as a DELETE the handler removes correctly; no Desktop path
+  updates an expense. Live data: 2 rows.
+  **Latent risk:** the day an expense can be edited, an older UPDATE
+  delivered after a newer one overwrites that row in the expense *document*
+  list until the next hydrate. Money is not affected — every expense total
+  is `SUM(expense)` over the ledger, never this table.
+  **Fix:** one line — move `expenses` into the `reference()` factory in
+  `useRealtimeSync`, which already compares `updated_at`. Left out of Wave 2
+  on purpose: it would reopen P1-C's handlers for a risk nothing triggers.
+  Do it together with any expense-edit feature.
 
 ---
 
@@ -851,10 +989,9 @@ P1-4 closed the gap, and the three still excluded are excluded on purpose.
 | stores | ✅ | ❌ **by decision** | licence and identity — `useSessionReconciliation` owns it |
 | branches | ✅ | ❌ **by decision** | structural; created once and then left alone |
 
-**`expenses` still has no Last-Write-Wins guard.** It is a pre-existing
-asymmetry, it is not new, and it was left alone rather than folded into this
-wave: the four original handlers are load-bearing and the point of P1-4 was
-coverage, not rewriting merges that work. Carried forward as P2.
+**`expenses` still has no Last-Write-Wins guard** — verified in P1 Wave 2,
+and classified **P2 (F-14)**, with the exact risk stated there. Short version:
+no Desktop code path updates an expense row today, so nothing triggers it.
 
 ### Other findings
 
@@ -1124,6 +1261,24 @@ opt-in P0-1 live check). The 5 failures are **the same 5 stale pre-existing
 ones** classified in O-1 below — unchanged in count, name and cause. Zero NEW
 failures.
 
+**After P1 Wave 2 (2026-09-26):**
+
+```
+  tests 1354 · pass 1348 · fail 0 · skipped 6 · cancelled 0 · todo 0
+```
+
++45 tests: `check_load_states.mjs` (32 — the figure rule and per-table
+status driven for real, every screen's wiring on comment-stripped source) and
+`check_owner_authority.mjs` (13 — `netProfitOf` driven, the 2,001-case
+piastre sweep, the cockpit's single source, 034's ACCOUNTANT decision pinned).
+**Zero failures, and no pre-existing test needed changing.**
+
+**Mutation-tested: 32 mutations, 32 caught**, every touched file verified
+byte-identical after the run. Among them: each of the five commit guards
+removed, failure made to outrank nothing, an unasked table counted as ready,
+the settings status persisted, the profit formula dropping a term, the
+cockpit deriving its own profit, and a failed Owner read keeping its figures.
+
 **After P1 Wave 1 (2026-09-22):**
 
 ```
@@ -1224,11 +1379,11 @@ Each step is independently shippable and leaves the suite green.
 | ~~3~~ | ~~**P0-4 / I-1** gate `ProtectedRoute` on `SessionReconciliationState`~~ | ✅ **DONE** 2026-09-21 — plus the membership re-read and the realtime gate |
 | ~~4~~ | ~~**P0-3 / H-4** default the two flags on~~ | ✅ **DONE** 2026-09-21 — default + `version: 1` migration |
 | ~~5~~ | ~~**O-1** repoint the 5 stale tests~~ | ✅ **DONE** 2026-09-21 — suite green |
-| 6 | **P1-1 / C-71** one boot gate driven by `useSyncStatus` | Fixes "empty vs loading vs failed" for all 21 screens at once |
+| ~~6~~ | ~~**P1-1 / C-71** one boot gate driven by `useSyncStatus`~~ | ✅ **DONE** 2026-09-26 (P1-D) — per-table status + `CollectionGate` + the figure rule, all 21 screens; five commit paths that decided on unread zeros now refuse |
 | ~~7~~ | ~~**P1-2 / K** move order numbers onto `next_document_number("ecommerce_order","ECO-")` + add the unique index~~ | ✅ **DONE** 2026-09-22 — migration 042, two call sites (the route and the store fallback), history untouched |
 | ~~8~~ | ~~**P1-4 / J** subscribe the 11 unsubscribed tables (or unpublish the ones nobody wants)~~ | ✅ **DONE** 2026-09-22 — 8 subscribed, 3 excluded with reasons, listeners now driven by the handler map |
 | 9 | **O-2** get the 4 live tests running in CI | Prerequisite for trusting steps 10–11 |
-| 10 | **P1-5 / H-2** assert Desktop `fetchPnl` == SQL `owner_financial_summary` on one real period | Needs step 9 |
+| ~~10~~ | ~~**P1-5 / H-2** assert Desktop `fetchPnl` == SQL `owner_financial_summary` on one real period~~ | ✅ **DONE** 2026-09-26 (P1-E) — 65 live comparisons, 0 mismatches; one client profit definition; cockpit on the RPC. The CI-run of the live test (step 9) is still open |
 | 11 | **I-2 / I-3** narrow `insert_ledger_lines` by kind; collapse the two `products` policies | Needs step 9 to prove no role loses a write it needs |
 | ~~12~~ | ~~**P1-3 / H-1** decide whether the mirror stays; if it does, add a reconciliation check~~ | ✅ **DONE** 2026-09-22 — the mirror STAYS (it is what makes a 200-row list cheap); the three commit paths now refuse to decide on it |
 | 13 | **F-1 / F-2** logos → SVG/WebP, `manualChunks`, parallel hydrate | Pure performance, no behaviour change |

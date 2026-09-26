@@ -12,6 +12,7 @@
  */
 
 import { formatQty } from "@/lib/math";
+import { statusOf, type ReadState } from "@/lib/figure";
 import { reconcileWholesaleReturn } from "@/lib/ledger/wholesale";
 
 /**
@@ -53,6 +54,13 @@ export interface WholesaleReturnPanelProps {
   clientMissing?: boolean;
   /** Whose debt this is. Defaults to a trader's. */
   variant?: ReconcileVariant;
+  /**
+   * The state of the balance read `debt` came from. Required: `useBalances`
+   * answers 0 before its read lands and after it fails, and every line below
+   * — المتبقي, the cash going back — is arithmetic on that debt. Rendered from
+   * an unread 0 it shows a trader a refund they are not owed.
+   */
+  debtRead: ReadState;
 }
 
 export function WholesaleReturnPanel({
@@ -62,7 +70,9 @@ export function WholesaleReturnPanel({
   onPaidChange,
   clientMissing = false,
   variant = "client",
+  debtRead,
 }: WholesaleReturnPanelProps) {
+  const debtStatus = statusOf(debtRead);
   const copy = COPY[variant];
   const { remainingDebt, cashBack, newDebt } = reconcileWholesaleReturn(
     returnValue,
@@ -76,6 +86,12 @@ export function WholesaleReturnPanel({
 
       {clientMissing ? (
         <p className="text-sm text-amber-800 dark:text-amber-300">{copy.missing}</p>
+      ) : debtStatus !== "ready" ? (
+        <p className="text-sm text-amber-800 dark:text-amber-300">
+          {debtStatus === "error"
+            ? "تعذّرت قراءة الرصيد من الدفتر، فالتسوية مش معروضة ومش هتتسجل لحد ما يتقري."
+            : "الرصيد بيتحمّل…"}
+        </p>
       ) : (
         <>
           <div className="flex items-center justify-between text-base">

@@ -1,24 +1,27 @@
 /**
- * نظرة عامة — the summary screen, entirely derived.
+ * نظرة عامة — the summary screen.
  *
- * Every figure here is a `SUM()` over the ledger for the selected window. The
- * screen this replaced read `useBusinessStore().transactions` (a store the
- * ledger conversion left behind), `orders.length`, a hardcoded "+12.5%" growth
- * badge and a list of three integrations described as "متصل ومفعل" that nobody
- * had connected. None of it was real, and none of it moved when the shop
- * traded.
+ * The MONEY on this screen is the `owner_financial_summary` RPC's answer, read
+ * through `useOwnerFinancialSummary` — the one reader that checks who is
+ * asking, and the single authority for revenue, net profit and the four
+ * positions behind صافي القيمة. Nothing here re-derives those figures; the
+ * only arithmetic allowed on them is presentational — netting the four
+ * positions into net worth, dividing revenue by the order count.
  *
- * It is a SUMMARY, not a report: six cards, one trend, one period filter. The
- * full aggregates with P&L per month/quarter/year live in الشركاء والمالية
+ * The COUNTS (orders, returns, the top product) and the trend line come from
+ * the same ledger through `ledger_balances` and `ledger_events_page`, because
+ * the RPC does not carry counts.
+ *
+ * The screen this replaced read `useBusinessStore().transactions` (a store the
+ * ledger conversion left behind) and a hardcoded "+12.5%" growth badge — none
+ * of it moved when the shop traded.
+ *
+ * It is a SUMMARY, not a report: seven cards, one trend, one period filter.
+ * The full aggregates with P&L per month/quarter/year live in الشركاء والمالية
  * (brief §3.12) and must not be duplicated here.
- *
- * ponytail: the trend asks the ledger once per day in the window (7 or 30
- * cheap local aggregates, in parallel). If that ever shows up in a profile,
- * the upgrade is one `GROUP BY date(occurred_at)` in the driver — no caller
- * changes.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   TrendingUp,
@@ -43,17 +46,18 @@ import {
 import { balances, events } from "@/lib/ledger";
 import {
   PERIOD_LABELS,
-  TREND_DAYS,
-  summarise,
   netWorthOf,
   sumOf,
+  windowCounts,
   trendDays,
   windowFor,
   periodLabel,
   type Period,
 } from "@/lib/dashboard";
 import { useStock } from "@/lib/ledger/useStock";
-import { useBalances } from "@/lib/ledger/useBalances";
+import { useOwnerFinancialSummary } from "@/lib/ledger/useOwnerFinancialSummary";
+import { LoadError } from "@/components/ui/load-error";
+import { useCollectionStatus } from "@/components/ui/collection-gate";
 import { matchesStockFilter } from "@/components/inventory/StockSummaryCards";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useSubscriptionStore } from "@/store/useSubscriptionStore";
@@ -62,23 +66,33 @@ import { formatMoney, formatQty } from "@/lib/math";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-interface Figures extends ReturnType<typeof summarise> {
-  trend: { date: string; revenue: number }[];
-}
+type WindowCounts = ReturnType<typeof windowCounts>;
 
 /**
- * Every number on this screen, for one window, from the ledger.
+ * The counts and the trend — everything this screen shows that the Owner
+ * summary RPC does not carry.
  *
- * `revenue` already carries returns as negatives (a `return_confirmed` writes
- * `revenue −`), so net profit needs no separate correction for them.
+ * An order is any `sale` (POS or wholesale) plus any online order placed in
+ * the window; a return is a confirmed one. The top product is the subject
+ * whose goods left at the highest cost — a per-product `SUM(cogs)` off the
+ * same ledger the money figures read, not a second opinion about any money
+ * total. The trend asks the ledger once per day in the window (7 or 30 cheap
+ * local aggregates, in parallel); if that ever shows up in a profile, the
+ * upgrade is one `GROUP BY date(occurred_at)` in the driver — no caller
+ * changes.
  */
-function useFigures(period: Period) {
-  const [figures, setFigures] = useState<Figures | null>(null);
+function useWindowCounts(period: Period) {
+  const [counts, setCounts] = useState<WindowCounts | null>(null);
+  const [trend, setTrend] = useState<{ date: string; revenue: number }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [tick, setTick] = useState(0);
+  // Reads issued but not settled. A retry while one is running is a no-op.
+  const pending = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    pending.current += 1;
     setLoading(true);
 
     void (async () => {
@@ -86,34 +100,37 @@ function useFigures(period: Period) {
         const { from, to } = windowFor(period);
         const days = trendDays(period);
 
-        const [revenueRows, cogsRows, expenseRows, windowEvents, ...dailyRevenue] =
-          await Promise.all([
-            balances({ account: "revenue", from, to }),
-            balances({ account: "cogs", from, to }),
-            balances({ account: "expense", from, to }),
-            events({ from, to, limit: 2000 }),
-            // One aggregate per day of the trend. Same query the cards use,
-            // just narrower — the line and the cards cannot disagree.
-            ...days.map((d) => balances({ account: "revenue", from: d.from, to: d.to })),
-          ]);
+        const [cogsRows, windowEvents, ...dailyRevenue] = await Promise.all([
+          balances({ account: "cogs", from, to }),
+          events({ from, to, limit: 2000 }),
+          // One aggregate per day of the trend. Same account the money figures
+          // sum, just narrower — the line and the cards cannot disagree.
+          ...days.map((d) => balances({ account: "revenue", from: d.from, to: d.to })),
+        ]);
         if (cancelled) return;
 
-        setFigures({
-          ...summarise({ revenueRows, cogsRows, expenseRows, events: windowEvents }),
-          trend: dailyRevenue.map((rows, i) => ({
-            date: period === "thisYear"
-              ? days[i].from.toLocaleDateString("ar-EG", { month: "long" })
-              : days[i].from.toLocaleDateString("ar-EG", { day: "numeric", month: "numeric" }),
+        setCounts(windowCounts({ cogsRows, events: windowEvents }));
+        setTrend(
+          dailyRevenue.map((rows, i) => ({
+            date:
+              period === "thisYear"
+                ? days[i].from.toLocaleDateString("ar-EG", { month: "long" })
+                : days[i].from.toLocaleDateString("ar-EG", { day: "numeric", month: "numeric" }),
             revenue: sumOf(rows),
           })),
-        });
+        );
         setError(null);
       } catch (e) {
         if (cancelled) return;
         // A failed read must never render as zeros — a dashboard of zeros
-        // reads as "a quiet day", not as "we could not ask".
+        // reads as "a quiet day", not as "we could not ask". The old counts
+        // go too: a number from the last successful window under a failed
+        // retry is worse than no number.
         setError(e instanceof Error ? e.message : String(e));
+        setCounts(null);
+        setTrend([]);
       } finally {
+        pending.current -= 1;
         if (!cancelled) setLoading(false);
       }
     })();
@@ -121,10 +138,21 @@ function useFigures(period: Period) {
     return () => {
       cancelled = true;
     };
-  }, [period]);
+  }, [period, tick]);
 
-  return { figures, error, loading };
+  // A retry while a read is running is a no-op: the answer it is waiting for
+  // is the answer this retry wants. Keeps a double-clicked button from
+  // stampeding the ledger.
+  const reload = useCallback(() => {
+    if (pending.current > 0) return;
+    setTick((t) => t + 1);
+  }, []);
+
+  return { counts, trend, error, loading, reload };
 }
+
+const FIGURES_FAILED_MESSAGE =
+  "مقدرناش نقرأ الأرقام من الدفتر، فمفيش أرقام معروضة دلوقتي. جرّب تاني.";
 
 interface KpiProps {
   label: string;
@@ -174,28 +202,44 @@ function Kpi({ label, value, hint, icon: Icon, tone = "default", onClick }: KpiP
 export function ExecutiveDashboard() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState<Period>("today");
-  const { figures, error, loading } = useFigures(period);
+
+  // The money, from the one RPC that checks who is asking. The window's `to`
+  // is "now" for most periods, so it is resolved once per period choice and
+  // once per retry — NOT once per render, or the hooks keyed on its
+  // milliseconds would refetch after every state change.
+  const [windowStamp, setWindowStamp] = useState(0);
+  const ownerWindow = useMemo(() => windowFor(period), [period, windowStamp]);
+  const owner = useOwnerFinancialSummary(ownerWindow);
+  const windowFigures = useWindowCounts(period);
 
   const allProducts = useBusinessStore((s) => s.products);
   const products = useMemo(() => activeProducts(allProducts), [allProducts]);
-  const { qtyOf } = useStock();
+  const { qtyOf, loading: stockLoading, error: stockError, refresh: refreshStock } = useStock();
+  // المنتجات المنخفضة counts the product LIST, which arrives by hydrate — so
+  // the card is only a number once both the list and the ledger have landed.
+  // Otherwise an unloaded list reads as "0 need restocking".
+  const productsState = useCollectionStatus(["products"]);
+  const restockStatus: "loading" | "error" | "ready" =
+    stockError || productsState.status === "error"
+      ? "error"
+      : stockLoading || productsState.status === "loading"
+        ? "loading"
+        : "ready";
 
   /**
-   * صافي القيمة is a point-in-time BALANCE, not a period figure, so it does not
-   * come through `useFigures` (which windows everything by date). Four account
-   * sums, read as they stand right now — hence the "دلوقتي" label, the same one
-   * the restock card carries.
+   * صافي القيمة is a point-in-time BALANCE, not a period figure — the RPC
+   * returns the four positions lifetime, ignoring the window, which is exactly
+   * the "دلوقتي" the card promises. Netting them here is presentation, not a
+   * second authority: every input is the server's own number.
    */
-  const { total: walletsTotal } = useBalances("wallet");
-  const { total: inventoryValue } = useBalances("stock");
-  const { total: receivableClient } = useBalances("receivable_client");
-  const { total: payableSupplier } = useBalances("payable_supplier");
-  const netWorth = netWorthOf({
-    walletsTotal,
-    inventoryValue,
-    receivableClient,
-    payableSupplier,
-  });
+  const netWorth = owner.data
+    ? netWorthOf({
+        walletsTotal: owner.data.walletBalances.reduce((sum, w) => sum + w.amount, 0),
+        inventoryValue: owner.data.stockValue,
+        receivableClient: owner.data.receivableClient,
+        payableSupplier: owner.data.supplierPayable.reduce((sum, s) => sum + s.amount, 0),
+      })
+    : null;
   const { isProPlan } = useSubscriptionStore();
 
   // Same predicate the stock cards count with, so this number always equals
@@ -209,9 +253,55 @@ export function ExecutiveDashboard() {
     [products, qtyOf],
   );
 
-  const topProductName = figures?.topProductId
-    ? (allProducts.find((p) => p.id === figures.topProductId)?.name ?? "—")
+  // The two figure sources fail separately; either failure means no figure may
+  // be painted. The owner's message wins the banner because a refusal explains
+  // itself better than a transport error does.
+  const error = owner.error ?? (windowFigures.error ? FIGURES_FAILED_MESSAGE : null);
+  const detail = owner.error ? owner.detail : windowFigures.error;
+  const loading = owner.loading || windowFigures.loading;
+
+  // متوسط قيمة العملية — the one figure assembled on the client, from two
+  // server numbers: the RPC's revenue over the event page's order count. A
+  // ratio for reading, not a second opinion about the money.
+  const avgOrderValue =
+    owner.data && windowFigures.counts && windowFigures.counts.orders > 0
+      ? owner.data.revenue / windowFigures.counts.orders
+      : 0;
+
+  const topProductId = windowFigures.counts?.topProductId ?? null;
+  const topProductName = topProductId
+    ? (allProducts.find((p) => p.id === topProductId)?.name ?? "—")
     : "—";
+
+  // One button, every source. A retry while either figure read is running is a
+  // no-op — the in-flight answer is the retry's answer — so a double click
+  // issues one round of reads, not two.
+  const retry = useCallback(() => {
+    if (owner.loading || windowFigures.loading) return;
+    setWindowStamp((s) => s + 1);
+    owner.reload();
+    windowFigures.reload();
+    refreshStock();
+  }, [
+    owner.loading,
+    owner.reload,
+    windowFigures.loading,
+    windowFigures.reload,
+    refreshStock,
+  ]);
+
+  // When another device's ledger events arrive, re-resolve the window (its
+  // `to` may have moved past the last retry) and re-read both sources. The
+  // hooks no-op their own reads if one is already running.
+  useEffect(() => {
+    const onPulled = () => {
+      setWindowStamp((s) => s + 1);
+      owner.reload();
+      windowFigures.reload();
+    };
+    window.addEventListener("ledger-sync-pulled", onPulled);
+    return () => window.removeEventListener("ledger-sync-pulled", onPulled);
+  }, [owner.reload, windowFigures.reload]);
 
   return (
     <div className="space-y-6">
@@ -260,12 +350,19 @@ export function ExecutiveDashboard() {
         </div>
       </div>
 
-      {error && (
-        <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-4">
-          <p className="text-sm text-destructive">
-            مقدرناش نقرأ الأرقام من الدفتر، فمفيش أرقام معروضة دلوقتي. جرّب تاني. ({error})
-          </p>
-        </div>
+      {error && <LoadError message={error} detail={detail} onRetry={retry} busy={loading} />}
+      {/* The stock read can fail on its own. The money cards are still true
+          then, so they stay — only the restock count is withdrawn, and this
+          is the button its «جرّب تاني» promises. */}
+      {!error && restockStatus === "error" && (
+        <LoadError
+          message="تعذّرت قراءة المخزون، فعدد المنتجات المنخفضة مش معروض دلوقتي."
+          detail={stockError ?? productsState.error}
+          onRetry={() => {
+            refreshStock();
+            productsState.retry();
+          }}
+        />
       )}
 
       {/*
@@ -280,22 +377,22 @@ export function ExecutiveDashboard() {
         <div className="grid grid-cols-1 min-[360px]:grid-cols-2 lg:grid-cols-3 gap-4">
           <Kpi
             label={periodLabel(period)}
-            value={loading ? "…" : formatMoney(figures?.netProfit ?? 0)}
+            value={loading ? "…" : formatMoney(owner.data?.netProfit ?? 0)}
             hint="صافي الربح (مبيعات − تكلفة − مصاريف)"
             icon={TrendingUp}
-            tone={(figures?.netProfit ?? 0) < 0 ? "bad" : "good"}
+            tone={(owner.data?.netProfit ?? 0) < 0 ? "bad" : "good"}
             onClick={() => navigate("/partners")}
           />
           <Kpi
             label={periodLabel(period)}
-            value={loading ? "…" : formatQty(figures?.orders ?? 0)}
+            value={loading ? "…" : formatQty(windowFigures.counts?.orders ?? 0)}
             hint="عدد العمليات (بيع + أونلاين)"
             icon={ShoppingCart}
             onClick={() => navigate("/orders")}
           />
           <Kpi
             label={periodLabel(period)}
-            value={loading ? "…" : formatMoney(figures?.avgOrderValue ?? 0)}
+            value={loading ? "…" : formatMoney(avgOrderValue)}
             hint="متوسط قيمة العملية"
             icon={Receipt}
             onClick={() => navigate("/orders")}
@@ -309,28 +406,38 @@ export function ExecutiveDashboard() {
           />
           <Kpi
             label={periodLabel(period)}
-            value={loading ? "…" : formatQty(figures?.returns ?? 0)}
+            value={loading ? "…" : formatQty(windowFigures.counts?.returns ?? 0)}
             hint="مرتجعات مؤكدة"
             icon={Undo2}
-            tone={(figures?.returns ?? 0) > 0 ? "warn" : "default"}
+            tone={(windowFigures.counts?.returns ?? 0) > 0 ? "warn" : "default"}
             onClick={() => navigate("/returns")}
           />
           <Kpi
             label="دلوقتي"
             value={
-              netWorth >= 0 ? formatMoney(netWorth) : `-${formatMoney(Math.abs(netWorth))}`
+              loading || netWorth === null
+                ? "…"
+                : netWorth >= 0
+                  ? formatMoney(netWorth)
+                  : `-${formatMoney(Math.abs(netWorth))}`
             }
             hint="صافي القيمة (أصول − ديون الموردين)"
             icon={Landmark}
-            tone={netWorth < 0 ? "bad" : "good"}
+            tone={netWorth !== null && netWorth < 0 ? "bad" : "good"}
             onClick={() => navigate("/partners")}
           />
           <Kpi
             label="دلوقتي"
-            value={formatQty(needsRestock)}
-            hint="منتجات منخفضة أو نافدة"
+            value={
+              restockStatus === "error"
+                ? "—"
+                : restockStatus === "loading"
+                  ? "…"
+                  : formatQty(needsRestock)
+            }
+            hint={restockStatus === "error" ? "تعذّرت قراءة المخزون — جرّب تاني" : "منتجات منخفضة أو نافدة"}
             icon={AlertTriangle}
-            tone={needsRestock > 0 ? "warn" : "default"}
+            tone={restockStatus === "error" || (restockStatus === "ready" && needsRestock > 0) ? "warn" : "default"}
             onClick={() => navigate("/inventory")}
           />
         </div>
@@ -344,17 +451,17 @@ export function ExecutiveDashboard() {
               <p className="text-xs tracking-wider text-muted-foreground">المبيعات</p>
               <h3 className="font-display text-xl font-bold mt-1">
                 {period === "thisYear"
-                  ? `أشهر السنة حتى الآن (${figures?.trend?.length ?? 0})`
-                  : `آخر ${figures?.trend?.length ?? 0} أيام`}
+                  ? `أشهر السنة حتى الآن (${windowFigures.trend.length})`
+                  : `آخر ${windowFigures.trend.length} أيام`}
               </h3>
             </div>
             <span className="text-sm text-muted-foreground">
-              إجمالي الفترة: {formatMoney(figures?.revenue ?? 0)}
+              إجمالي الفترة: {loading ? "…" : formatMoney(owner.data?.revenue ?? 0)}
             </span>
           </div>
           <div className="h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={figures?.trend ?? []}>
+              <LineChart data={windowFigures.trend}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
                 <XAxis
                   dataKey="date"

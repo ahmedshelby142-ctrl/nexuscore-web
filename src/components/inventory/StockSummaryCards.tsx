@@ -13,7 +13,8 @@
 
 import { Package, AlertTriangle, PackageCheck, DollarSign } from "lucide-react";
 import { productMinLevel, sellableStock } from "@/lib/product";
-import { formatMoney } from "@/lib/math";
+import { figureOr, moneyFigure, type ReadState } from "@/lib/figure";
+import { useCollectionStatus } from "@/components/ui/collection-gate";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -77,9 +78,19 @@ interface StockSummaryCardsProps {
    * has `useStock`, so there is nothing to make this convenient for.
    */
   costOf: (productId: string) => number;
+  /**
+   * The state of the `useStock` read `costOf` came from. Required for the same
+   * reason `costOf` is: a failed read makes `costOf` answer 0 for every
+   * product, and «إجمالي قيمة المخزون: ٠» is a figure an owner acts on.
+   */
+  read: ReadState;
 }
 
-export function StockSummaryCards({ products, value, onChange, costOf }: StockSummaryCardsProps) {
+export function StockSummaryCards({ products, value, onChange, costOf, read }: StockSummaryCardsProps) {
+  // The counts below are counts of the product LIST, which arrives by hydrate.
+  // Before it lands — or when it fails — they are not zero, they are unknown.
+  const { read: listRead } = useCollectionStatus(["products"]);
+  const count = (n: number) => figureOr(() => String(n), listRead);
 
   let lowStock = 0;
   let outOfStock = 0;
@@ -125,7 +136,7 @@ export function StockSummaryCards({ products, value, onChange, costOf }: StockSu
     {
       key: "all" as const,
       label: "إجمالي المنتجات",
-      figure: String(products.length),
+      figure: count(products.length),
       icon: Package,
       colour: "var(--chart-1)",
       onClick: () => onChange("all"),
@@ -133,7 +144,7 @@ export function StockSummaryCards({ products, value, onChange, costOf }: StockSu
     {
       key: "low" as const,
       label: "منتجات منخفضة",
-      figure: String(lowStock),
+      figure: count(lowStock),
       icon: AlertTriangle,
       colour: "#f59e0b",
       onClick: () => toggle("low"),
@@ -141,7 +152,7 @@ export function StockSummaryCards({ products, value, onChange, costOf }: StockSu
     {
       key: "out" as const,
       label: "منتجات نافدة",
-      figure: String(outOfStock),
+      figure: count(outOfStock),
       icon: PackageCheck,
       colour: "var(--destructive)",
       onClick: () => toggle("out"),
@@ -191,7 +202,7 @@ export function StockSummaryCards({ products, value, onChange, costOf }: StockSu
             <div>
               <p className="text-xs tracking-wider text-muted-foreground">إجمالي قيمة المخزون</p>
               <p className="font-display text-3xl font-semibold mt-2">
-                {formatMoney(totalValue)}
+                {moneyFigure(totalValue, read, listRead)}
               </p>
             </div>
             <div

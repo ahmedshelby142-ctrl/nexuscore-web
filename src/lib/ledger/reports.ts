@@ -276,6 +276,23 @@ export interface Pnl {
   netProfit: number;
 }
 
+/**
+ * Net profit. The ONE client-side definition — `pnl()` below, the dashboard's
+ * `summarise()` and الشركاء والمالية all call this rather than writing the
+ * subtraction themselves.
+ *
+ * There were three copies. They agreed, which is exactly what made them
+ * dangerous: nothing would have noticed the day one of them grew a fourth
+ * term. `owner_financial_summary` performs the same subtraction in SQL, and
+ * `check_owner_authority.mjs` pins the two definitions to each other.
+ *
+ * Plain subtraction on EGP. Every input is already a ledger SUM converted once
+ * at the driver boundary; nothing here rounds or clamps.
+ */
+export function netProfitOf(x: { revenue: number; cogs: number; expenses: number }): number {
+  return x.revenue - x.cogs - x.expenses;
+}
+
 export function pnl(input: PnlInput): Pnl {
   const sum = (rows: Row[]) => rows.reduce((total, r) => total + r.amount, 0);
   const isShipping = (r: Row) => (SHIPPING_SUBJECTS as readonly string[]).includes(r.subjectId);
@@ -297,7 +314,7 @@ export function pnl(input: PnlInput): Pnl {
     expenses,
     returns: -input.returnsRevenue,
     purchases: input.purchases,
-    netProfit: netSales - input.cogs - expenses,
+    netProfit: netProfitOf({ revenue: netSales, cogs: input.cogs, expenses }),
   };
 }
 

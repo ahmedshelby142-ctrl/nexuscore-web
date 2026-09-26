@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/ui/empty-state";
+import { CollectionGate } from "@/components/ui/collection-gate";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useOrderStore } from "@/store/useOrderStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
@@ -766,7 +767,7 @@ export function Returns() {
           variant="outline"
           onClick={handleExportPdf}
           className="gap-2"
-          disabled={useBusinessStore.getState().returnRecords.length === 0}
+          disabled={returnRecords.length === 0}
         >
           <Printer className="size-4" />
           تصدير PDF
@@ -845,9 +846,11 @@ export function Returns() {
         )}
 
         {deliveredOrders.length === 0 && (
-          <p className="text-sm text-muted-foreground text-center py-4">
-            مفيش أوردرات متسلّمة لسه — المرتجع بيبقى لأوردر اتسلّم فعلاً.
-          </p>
+          <CollectionGate tables={["orders"]} rows={1}>
+            <p className="text-sm text-muted-foreground text-center py-4">
+              مفيش أوردرات متسلّمة لسه — المرتجع بيبقى لأوردر اتسلّم فعلاً.
+            </p>
+          </CollectionGate>
         )}
       </div>
 
@@ -1052,15 +1055,19 @@ export function Returns() {
         <p className="text-sm font-semibold text-muted-foreground tracking-wide mb-4">
           سجل المرتجعات والاستبدال
         </p>
-        {useBusinessStore.getState().returnRecords.length === 0 ? (
+        {/* Reactive, not `getState()`: read once per render, the log never
+            learned about records the hydrate delivered after it drew. */}
+        {returnRecords.length === 0 ? (
+          <CollectionGate tables={["return_records"]}>
           <EmptyState
             icon={Inbox}
             title="لا توجد عمليات إرجاع أو استبدال حتى الآن"
             className="py-12"
           />
+          </CollectionGate>
         ) : (
           <div className="space-y-2 max-h-60 overflow-y-auto">
-            {[...useBusinessStore.getState().returnRecords]
+            {[...returnRecords]
               .reverse()
               .slice(0, 20)
               .map((rec) => (
@@ -1102,11 +1109,13 @@ export function Returns() {
               تأكيد استلام مرتجع شحن
             </p>
             {returnedOrders.length === 0 ? (
+              <CollectionGate tables={["orders"]}>
               <EmptyState
                 icon={Inbox}
                 title="مفيش أوردرات معلقة في حالة مرتجع حاليا"
                 className="py-12"
               />
+              </CollectionGate>
             ) : (
               <div className="space-y-3">
                 {returnedOrders.map((o) => (

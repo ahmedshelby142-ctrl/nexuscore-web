@@ -60,6 +60,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LoadError } from "@/components/ui/load-error";
+import { CollectionGate } from "@/components/ui/collection-gate";
+import { moneyFigure } from "@/lib/figure";
 import { BulkImportProduct } from "./BulkImportProduct";
 import { ProductRemovalDialog } from "./ProductRemovalDialog";
 import { QuickRestockDialog } from "./QuickRestockDialog";
@@ -113,7 +116,8 @@ export function ProductsPage() {
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   // Stock on this screen is the ledger's SUM, and an opening balance is how a
   // shop that already has stock gets its first numbers in.
-  const { qtyOf, costOf, refresh: refreshStock } = useStock();
+  const stock = useStock();
+  const { qtyOf, costOf, refresh: refreshStock } = stock;
   const userRole = useAuthStore((s) => s.userRole);
   const isOwner = toAppRole(userRole) === "ADMIN";
 
@@ -415,6 +419,7 @@ export function ProductsPage() {
           value={stockStatusFilter}
           onChange={setStockStatusFilter}
           costOf={costOf}
+          read={stock}
         />
       )}
 
@@ -467,6 +472,18 @@ export function ProductsPage() {
           </div>
         </div>
         <CardContent className="p-0">
+          {/* متوسط التكلفة comes from the ledger. A failed read would print
+              every product's cost as 0 — so the cells withdraw the figure and
+              this is the retry. */}
+          {stock.error && (
+            <LoadError
+              className="m-4"
+              message="تعذّرت قراءة التكلفة من الدفتر، فعمود متوسط التكلفة مش معروض."
+              detail={stock.error}
+              onRetry={refreshStock}
+              busy={stock.loading}
+            />
+          )}
           <Table>
             <TableHeader>
               <TableRow>
@@ -485,6 +502,9 @@ export function ProductsPage() {
               {filteredProducts.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={9} className="py-12">
+                    {/* Only reached with NO rows — which during the hydrate
+                        or after a failed read is not "no products". */}
+                    <CollectionGate tables={["products"]}>
                     {showArchived ? (
                       <EmptyState
                         icon={Inbox}
@@ -504,6 +524,7 @@ export function ProductsPage() {
                         description="جرب بحث تاني أو غيّر التصنيف"
                       />
                     )}
+                    </CollectionGate>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -541,7 +562,7 @@ export function ProductsPage() {
                         </span>
                       </TableCell>
                       <TableCell className="text-center px-4 whitespace-nowrap">
-                        {formatMoney(costOf(product.id))}
+                        {moneyFigure(costOf(product.id), stock)}
                       </TableCell>
                       <TableCell className="text-center px-4 whitespace-nowrap">
                         {formatMoney(product.unitPrice)}

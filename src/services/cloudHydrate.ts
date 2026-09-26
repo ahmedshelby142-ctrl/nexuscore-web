@@ -19,6 +19,7 @@
  */
 
 import { clearStockSnapshot } from "@/lib/ledger/stockSnapshot";
+import { useSyncStatus } from "@/store/useSyncStatus";
 import { cloudList } from "./cloudData";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
@@ -99,11 +100,15 @@ export async function hydrateAll(): Promise<HydrationResult> {
     .pullSettings()
     .catch((e) => console.error("[Hydrate] store settings failed:", e));
 
+  // Every table is emptied above, so every table is loading until its own read
+  // lands — including the ones at the end of the serial loop below, which
+  // would otherwise still claim "ready" from the previous hydrate while
+  // holding nothing.
+  for (const table of Object.keys(SINKS)) useSyncStatus.getState().markTable(table, "loading");
+
   for (const table of Object.keys(SINKS)) {
     try {
-      const rows = await cloudList(table);
-      SINKS[table](rows);
-      loaded[table] = rows.length;
+      loaded[table] = await hydrateTable(table);
     } catch (e) {
       failed[table] = e instanceof Error ? e.message : String(e);
       console.error(`[Hydrate] ${table} failed:`, failed[table]);
@@ -111,6 +116,43 @@ export async function hydrateAll(): Promise<HydrationResult> {
   }
 
   return { loaded, failed };
+}
+
+/** Tables with a read in flight. A second ask for the same one is a no-op. */
+const hydrating = new Set<string>();
+
+/**
+ * Re-read ONE table into its store. The body of `hydrateAll`'s loop, and the
+ * thing a screen's retry button calls — the same `cloudList`, the same sink,
+ * so a retry is not a second way of loading data.
+ *
+ * Unlike `hydrateAll` it empties nothing: a products screen retrying its
+ * failed read must not blank the orders another screen is showing.
+ *
+ * Returns the row count; THROWS on failure, having recorded it in
+ * `useSyncStatus` for every screen that lists this table. Resolves to -1
+ * without reading when the same table is already being read — the answer
+ * that read is waiting for is this call's answer too.
+ */
+export async function hydrateTable(table: string): Promise<number> {
+  const sink = SINKS[table];
+  if (!sink) throw new Error(`[Hydrate] no sink for ${table}`);
+  if (hydrating.has(table)) return -1;
+
+  hydrating.add(table);
+  const status = useSyncStatus.getState();
+  status.markTable(table, "loading");
+  try {
+    const rows = await cloudList(table);
+    sink(rows);
+    status.markTable(table, "ready");
+    return rows.length;
+  } catch (e) {
+    status.markTable(table, "failed", e instanceof Error ? e.message : String(e));
+    throw e;
+  } finally {
+    hydrating.delete(table);
+  }
 }
 
 /**

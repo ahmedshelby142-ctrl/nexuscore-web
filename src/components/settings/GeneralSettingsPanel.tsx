@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useSettingsStore } from "@/store/useSettingsStore";
+import { LoadError } from "@/components/ui/load-error";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,13 @@ export function GeneralSettingsPanel() {
     vatRate,
     updateSettings,
     pushSettings,
+    pullSettings,
+    settingsStatus,
+    settingsError,
   } = useSettingsStore();
+  // Editable only once the fields hold the server's values — see
+  // `SettingsStatus`. Before that, an edit would push defaults over them.
+  const editable = settingsStatus === "ready";
 
   const [isSaving, setIsSaving] = useState(false);
   // One submit at a time; state cannot close the same-tick window.
@@ -41,6 +48,17 @@ export function GeneralSettingsPanel() {
 
   return (
     <div className="space-y-6">
+      {settingsStatus === "failed" && (
+        <LoadError
+          message="تعذّر تحميل إعدادات المحل من السحابة، فالتعديل مقفول لحد ما تتقري — عشان منحفظش قيم افتراضية فوق بياناتك."
+          detail={settingsError}
+          onRetry={() => void pullSettings()}
+        />
+      )}
+      {(settingsStatus === "idle" || settingsStatus === "loading") && (
+        <p className="text-sm text-muted-foreground">جاري تحميل إعدادات المحل…</p>
+      )}
+      <fieldset disabled={!editable} className="min-w-0 disabled:opacity-60">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Store Information */}
         <div className="space-y-4">
@@ -121,6 +139,7 @@ export function GeneralSettingsPanel() {
           </div>
         </div>
       </div>
+      </fieldset>
 
       <div className="pt-4 border-t border-border flex items-center justify-between">
         <div className="text-sm">
@@ -130,7 +149,7 @@ export function GeneralSettingsPanel() {
             </span>
           )}
         </div>
-        <Button onClick={handleSave} disabled={isSaving} className="gap-2 px-8">
+        <Button onClick={handleSave} disabled={isSaving || !editable} className="gap-2 px-8">
           {isSaving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
           حفظ التغييرات
         </Button>

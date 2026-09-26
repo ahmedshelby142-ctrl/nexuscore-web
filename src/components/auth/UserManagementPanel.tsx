@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { LoadError } from "@/components/ui/load-error";
 import { useUsersStore, type StaffMember } from "@/store/useUsersStore";
 import { APP_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS, type AppRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
@@ -212,6 +213,19 @@ export function UserManagementPanel() {
                 <TableRow>
                   <TableCell colSpan={4} className="text-center py-10 text-muted-foreground">
                     جاري التحميل...
+                  </TableCell>
+                </TableRow>
+              ) : staffMembers.length === 0 && error ? (
+                // A failed read is not "no staff". The banner above can also
+                // carry an invite/role error, so the list says it itself.
+                <TableRow>
+                  <TableCell colSpan={4} className="py-6">
+                    <LoadError
+                      message="تعذّر تحميل فريق العمل."
+                      detail={error}
+                      onRetry={() => void fetchStaffMembers()}
+                      busy={isLoading}
+                    />
                   </TableCell>
                 </TableRow>
               ) : staffMembers.length === 0 ? (

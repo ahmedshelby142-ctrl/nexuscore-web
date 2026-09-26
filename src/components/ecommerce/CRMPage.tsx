@@ -19,6 +19,9 @@ import {
   Search,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LoadError } from "@/components/ui/load-error";
+import { CollectionGate } from "@/components/ui/collection-gate";
+import { moneyFigure } from "@/lib/figure";
 import { useCustomerStore } from "@/store/useCustomerStore";
 import { activeCustomers, duplicateOf, isCustomerArchived, orderBelongsTo, saleBelongsTo, deriveCustomerMetrics, type CustomerMetrics } from "@/lib/customers";
 import { CustomerRemovalDialog } from "@/components/ecommerce/CustomerRemovalDialog";
@@ -60,7 +63,8 @@ export function CRMPage() {
   // a customer is attached. The screen used to read a stored `lifetimeValue`
   // that only the e-commerce order path ever added to, so a POS sale to a
   // named customer wrote a real ledger line and this screen showed nothing.
-  const { amountOf: ltvOf, error: ltvError } = useBalances("customer_ltv");
+  const ltv = useBalances("customer_ltv");
+  const { amountOf: ltvOf, error: ltvError } = ltv;
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   
   const [posSales, setPosSales] = useState<LedgerEvent[]>([]);
@@ -249,12 +253,16 @@ export function CRMPage() {
         <p className="text-muted-foreground mt-1">
           CRM مغلق الحلقة: كل بيعة أو طلب باسم العميل بيزوّد الـ LTV بتاعه ويحدّث المنتجات المفضلة
         </p>
+        {/* A failed read must not render as 0 — that reads as a customer who
+            never bought anything. The figures are withdrawn, not caveated. */}
         {ltvError && (
-          // A failed read must not render as 0 — that reads as a customer who
-          // never bought anything.
-          <p className="text-sm text-destructive mt-2">
-            مقدرناش نقرأ إجمالي مشتريات العملاء من الدفتر، فالأرقام دي مش مضمونة. جرّب تاني.
-          </p>
+          <LoadError
+            className="mt-2"
+            message="مقدرناش نقرأ إجمالي مشتريات العملاء من الدفتر، فالأرقام دي مش معروضة."
+            detail={ltvError}
+            onRetry={ltv.refresh}
+            busy={ltv.loading}
+          />
         )}
       </div>
 
@@ -310,6 +318,7 @@ export function CRMPage() {
               {listed.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5} className="py-12">
+                    <CollectionGate tables={["customers"]}>
                     {showArchived ? (
                       <EmptyState
                         icon={Inbox}
@@ -327,6 +336,7 @@ export function CRMPage() {
                         title="لا توجد نتائج مطابقة للبحث"
                       />
                     )}
+                    </CollectionGate>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -349,7 +359,7 @@ export function CRMPage() {
                       {customerMetrics.get(customer.id)?.totalOrders || 0}
                     </TableCell>
                     <TableCell className="text-center px-4 font-mono text-green-600">
-                      {formatMoney(ltvOf(customer.id))}
+                      {moneyFigure(ltvOf(customer.id), ltv)}
                     </TableCell>
                     <TableCell className="text-center px-4 text-xs text-muted-foreground">
                       {customerMetrics.get(customer.id)?.lastOrderAt
@@ -451,7 +461,7 @@ export function CRMPage() {
                     <div>
                       <p className="text-xs text-muted-foreground">LTV</p>
                       <p className="text-2xl font-bold text-green-600">
-                        {formatMoney(ltvOf(selectedCustomer.id))}
+                        {moneyFigure(ltvOf(selectedCustomer.id), ltv)}
                       </p>
                     </div>
                     {!isCustomerArchived(selectedCustomer) && (
@@ -481,10 +491,11 @@ export function CRMPage() {
                       متوسط قيمة الطلب
                     </div>
                     <p className="text-2xl font-bold mt-2">
-                      {formatMoney(
+                      {moneyFigure(
                         selectedMetrics.totalOrders
                           ? ltvOf(selectedCustomer.id) / selectedMetrics.totalOrders
                           : 0,
+                        ltv,
                       )}
                     </p>
                   </div>
@@ -504,7 +515,7 @@ export function CRMPage() {
                 <h3 className="font-display text-xl font-bold mb-4">المنتجات المفضلة</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {selectedMetrics.preferredProducts.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">لا توجد منتجات مفضلة بعد</p>
+                    <CollectionGate tables={["orders"]} rows={1}><p className="text-sm text-muted-foreground">لا توجد منتجات مفضلة بعد</p></CollectionGate>
                   ) : (
                     selectedMetrics.preferredProducts.map((product) => (
                       <div
@@ -542,10 +553,12 @@ export function CRMPage() {
                     {timelineEvents.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={5} className="py-12">
+                          <CollectionGate tables={["orders"]}>
                           <EmptyState
                             icon={Inbox}
                             title="لا توجد طلبات لهذا العميل"
                           />
+                          </CollectionGate>
                         </TableCell>
                       </TableRow>
                     ) : (
@@ -598,11 +611,13 @@ export function CRMPage() {
             </>
           ) : (
             <div className="rounded-2xl border border-border bg-card p-12">
+              <CollectionGate tables={["customers"]}>
               <EmptyState
                 icon={Users}
                 title="لا يوجد عملاء لعرضهم"
                 description="اختر عميلاً من القائمة أو أضف عميلاً جديداً"
               />
+              </CollectionGate>
             </div>
           )}
         </div>

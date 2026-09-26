@@ -12,6 +12,7 @@
 
 import type { Balance, LedgerEvent } from "@/lib/ledger";
 import { add, subtract, round } from "./math.ts";
+import { netProfitOf } from "./ledger/reports.ts";
 
 export type Period = "today" | "week" | "month" | "thisMonth" | "thisYear" | string;
 
@@ -119,11 +120,34 @@ export interface Summary {
 }
 
 /**
+ * The counts for a window: how many operations, how many returns, and which
+ * product moved the most cost.
+ *
+ * Split out of `summarise` because نظرة عامة now takes its MONEY from
+ * `owner_financial_summary` and still needs these — and the alternative was a
+ * second copy of "what counts as an order" living in the component, which is
+ * how two screens start disagreeing about the same day. An order is any `sale`
+ * (POS or wholesale) plus any online order placed in the window.
+ */
+export function windowCounts(input: {
+  cogsRows: Balance[];
+  events: Pick<LedgerEvent, "kind">[];
+}): Pick<Summary, "orders" | "returns" | "topProductId"> {
+  const top = [...input.cogsRows].sort((a, b) => b.amount - a.amount)[0];
+  return {
+    orders: input.events.filter((e) => e.kind === "sale" || e.kind === "order_placed").length,
+    returns: input.events.filter((e) => e.kind === "return_confirmed").length,
+    topProductId: top && top.amount > 0 ? top.subjectId : null,
+  };
+}
+
+/**
  * The six figures.
  *
  * `revenue` already carries returns as negatives — a `return_confirmed` writes
- * `revenue −` — so nothing here subtracts them a second time. An order is any
- * `sale` (POS or wholesale) plus any online order placed in the window.
+ * `revenue −` — so nothing here subtracts them a second time. Profit goes
+ * through `netProfitOf`, the one client-side definition; the counts through
+ * `windowCounts`.
  */
 export function summarise(input: {
   revenueRows: Balance[];
@@ -132,18 +156,17 @@ export function summarise(input: {
   events: Pick<LedgerEvent, "kind">[];
 }): Summary {
   const revenue = sumOf(input.revenueRows);
-  const orders = input.events.filter(
-    (e) => e.kind === "sale" || e.kind === "order_placed",
-  ).length;
-  const top = [...input.cogsRows].sort((a, b) => b.amount - a.amount)[0];
+  const counts = windowCounts(input);
 
   return {
     revenue,
-    netProfit: revenue - sumOf(input.cogsRows) - sumOf(input.expenseRows),
-    orders,
-    returns: input.events.filter((e) => e.kind === "return_confirmed").length,
-    avgOrderValue: orders > 0 ? revenue / orders : 0,
-    topProductId: top && top.amount > 0 ? top.subjectId : null,
+    netProfit: netProfitOf({
+      revenue,
+      cogs: sumOf(input.cogsRows),
+      expenses: sumOf(input.expenseRows),
+    }),
+    ...counts,
+    avgOrderValue: counts.orders > 0 ? revenue / counts.orders : 0,
   };
 }
 

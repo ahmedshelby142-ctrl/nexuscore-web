@@ -14,6 +14,8 @@ import {
   Users as UsersIcon,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LoadError } from "@/components/ui/load-error";
+import { moneyFigure, statusOf } from "@/lib/figure";
 import { useFinancialStore } from "@/store/useFinancialStore";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { distributionFor } from "@/lib/partners";
@@ -58,7 +60,11 @@ export function CapitalEquityPage() {
   // What each working partner has already drawn: SUM(owner_budget) keyed by
   // partner id. Zero until the Owner Budget path (7.3) writes `owner_draw`
   // events — the read is here now so the rule is visible where it applies.
-  const { amountOf: drawsOf } = useBalances("owner_budget");
+  // What each working partner has already drawn. Subtracted from their
+  // share below — so a read that failed (answering 0) would pay them their
+  // share a second time. Its state gates the distribution.
+  const draws = useBalances("owner_budget");
+  const { amountOf: drawsOf } = draws;
 
   const [isShareholderOpen, setIsShareholderOpen] = useState(false);
   const [shareholderForm, setShareholderForm] = useState({
@@ -91,12 +97,13 @@ export function CapitalEquityPage() {
 
   // Every wallet figure on this screen is SUM(wallet) for that wallet — the
   // same source the POS picker reads, so the two screens cannot disagree.
+  const walletRead = useBalances("wallet");
   const {
     amountOf: walletBalance,
     total: walletsTotal,
     error: walletError,
     refresh: refreshWallets,
-  } = useBalances("wallet");
+  } = walletRead;
 
   const [isOpeningOpen, setIsOpeningOpen] = useState(false);
   const [openingWallet, setOpeningWallet] = useState<WalletType>("inStoreSafe");
@@ -142,6 +149,11 @@ export function CapitalEquityPage() {
     const amount = parseFloat(transferForm.amount);
     if (!amount || amount <= 0 || transferForm.fromWallet === transferForm.toWallet) return;
 
+    // An unread balance is 0, and "متاح ٠" is not true — it is unknown.
+    if (statusOf(walletRead) !== "ready") {
+      setWalletActionError("أرصدة الخزائن مش متاحة دلوقتي، فالتحويل مش هيتسجل لحد ما تتقري.");
+      return;
+    }
     if (amount > walletBalance(transferForm.fromWallet)) {
       setWalletActionError(
         `الرصيد مش كفاية — متاح ${formatMoney(walletBalance(transferForm.fromWallet))} بس`,
@@ -213,6 +225,8 @@ export function CapitalEquityPage() {
    */
   const [periodProfit, setPeriodProfit] = useState<number | null>(null);
   const [profitError, setProfitError] = useState<string | null>(null);
+  // Bumped by the retry button: the same `fetchPnl`, asked again.
+  const [profitTick, setProfitTick] = useState(0);
 
   useEffect(() => {
     const w = customWindow(dividendPeriod.startDate, dividendPeriod.endDate);
@@ -239,20 +253,27 @@ export function CapitalEquityPage() {
     return () => {
       cancelled = true;
     };
-  }, [dividendPeriod]);
+  }, [dividendPeriod, profitTick]);
 
   const distributions = useMemo(
     () =>
-      periodProfit === null
+      periodProfit === null || statusOf(draws) !== "ready"
         ? []
         : activePartners.map((p) => ({
             partner: p,
             ...distributionFor(p, periodProfit, drawsOf(p.id)),
           })),
-    [activePartners, periodProfit, drawsOf],
+    [activePartners, periodProfit, drawsOf, draws.loading, draws.error],
   );
 
+  // A distribution document is something partners are paid from. It is only
+  // printed when every number on it was actually read — never with a profit
+  // of 0 standing in for a failed one.
+  const exportReady =
+    periodProfit !== null && statusOf(walletRead) === "ready" && statusOf(draws) === "ready";
+
   const handleExportPdf = () => {
+    if (!exportReady) return;
     // The printout covers the period the SCREEN is showing. It used to print
     // its own fixed last-30-days window, so the PDF and the table above it
     // could disagree about the same distribution.
@@ -334,12 +355,12 @@ export function CapitalEquityPage() {
           <Button variant="outline" onClick={() => setIsTransferOpen(true)}>
             <ArrowUpFromDot className="size-4 ml-2" /> تحويل بين الخزائن
           </Button>
-          <Button variant="outline" onClick={handleExportPdf}>
+          <Button variant="outline" onClick={handleExportPdf} disabled={!exportReady}>
             <FileText className="size-4 ml-2" /> تصدير PDF
           </Button>
         </div>
         <div className="text-sm text-muted-foreground">
-          الرصيد الإجمالي للخزائن: {formatMoney(walletsTotal)}
+          الرصيد الإجمالي للخزائن: {moneyFigure(walletsTotal, walletRead)}
         </div>
       </div>
 
@@ -354,7 +375,20 @@ export function CapitalEquityPage() {
           {/* The number the whole table hangs on, stated out loud — it is the
               same one تبويب «التقارير المالية» reports for the same window. */}
           {profitError ? (
-            <p className="text-sm text-red-600 mt-2">تعذّر حساب صافي الربح: {profitError}</p>
+            <LoadError
+              className="mt-2"
+              message="تعذّر حساب صافي الربح للفترة، فمفيش توزيع معروض."
+              detail={profitError}
+              onRetry={() => setProfitTick((t) => t + 1)}
+            />
+          ) : draws.error ? (
+            <LoadError
+              className="mt-2"
+              message="تعذّرت قراءة مسحوبات الشركاء، فالتوزيع مش معروض — من غيرها هيتدفع للشريك نصيبه مرتين."
+              detail={draws.error}
+              onRetry={draws.refresh}
+              busy={draws.loading}
+            />
           ) : periodProfit === null ? (
             <p className="text-sm text-muted-foreground mt-2">بنحسب صافي الربح من دفتر الحركات…</p>
           ) : (
@@ -382,7 +416,11 @@ export function CapitalEquityPage() {
               {partners.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="py-12">
-                    {periodProfit === null ? (
+                    {profitError ? (
+                      <p className="text-center text-sm text-destructive py-4">
+                        تعذّر حساب صافي الربح — شوف الرسالة فوق.
+                      </p>
+                    ) : periodProfit === null ? (
                       <div className="flex justify-center items-center gap-2 text-muted-foreground py-4">
                         <Loader2 className="size-4 animate-spin" />
                         <span>استنّي شوية — بنحسب أرباح الفترة</span>
@@ -445,11 +483,13 @@ export function CapitalEquityPage() {
           </Button>
         </div>
         {walletError && (
-          <div className="mb-4 rounded-lg p-3 bg-red-50 border border-red-200">
-            <p className="text-sm font-medium text-red-900">
-              تعذّرت قراءة أرصدة الخزائن — الأرقام دي مش موثوقة. {walletError}
-            </p>
-          </div>
+          <LoadError
+            className="mb-4"
+            message="تعذّرت قراءة أرصدة الخزائن، فالأرصدة مش معروضة."
+            detail={walletError}
+            onRetry={refreshWallets}
+            busy={walletRead.loading}
+          />
         )}
         {walletActionError && (
           <div className="mb-4 rounded-lg p-3 bg-red-50 border border-red-200">
@@ -464,7 +504,7 @@ export function CapitalEquityPage() {
                 <span className="font-medium">{WALLET_LABELS[type]}</span>
               </div>
               {/* SUM(wallet) for this wallet — no stored balance anywhere. */}
-              <p className="text-xl font-bold font-mono">{formatMoney(walletBalance(type))}</p>
+              <p className="text-xl font-bold font-mono">{moneyFigure(walletBalance(type), walletRead)}</p>
             </div>
           ))}
         </div>
@@ -528,7 +568,7 @@ export function CapitalEquityPage() {
                 ))}
               </select>
               <p className="text-xs text-muted-foreground">
-                الرصيد الحالي: {formatMoney(walletBalance(openingWallet))}
+                الرصيد الحالي: {moneyFigure(walletBalance(openingWallet), walletRead)}
               </p>
             </div>
             <div className="space-y-1.5">

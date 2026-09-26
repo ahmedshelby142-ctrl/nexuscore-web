@@ -21,7 +21,6 @@ import {
   X,
   Trash2,
   Printer,
-  AlertCircle,
   AlertTriangle,
   Loader2,
   Inbox,
@@ -35,6 +34,9 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LoadError } from "@/components/ui/load-error";
+import { CollectionGate, useCollectionStatus } from "@/components/ui/collection-gate";
+import { figureOr, moneyFigure, statusOf } from "@/lib/figure";
 import {
   Select,
   SelectContent,
@@ -129,12 +131,15 @@ export function WholesalePage() {
 
   const { costOf, refresh: refreshStock } = useStock();
 
+  const clientDebt = useBalances("receivable_client");
   const {
     amountOf: debtOf,
     total: totalReceivables,
     error: debtError,
     refresh: refreshDebt,
-  } = useBalances("receivable_client");
+  } = clientDebt;
+  // The documents this screen counts and sums arrive by hydrate.
+  const docs = useCollectionStatus(["wholesale_invoices", "wholesale_clients"]);
 
   const [activeTab, setActiveTab] = useState<Tab>("invoices");
   const [searchQuery, setSearchQuery] = useState("");
@@ -363,6 +368,18 @@ export function WholesalePage() {
     }
     if (returnRequests.length === 0) {
       setReturnError("اختر بند من فاتورة وحدد الكمية الراجعة");
+      return;
+    }
+    // The return is settled against what this client owes. A debt read that
+    // failed answers 0, and a return settled against that 0 refunds cash the
+    // client should have had knocked off their balance instead. Refuse.
+    if (statusOf(clientDebt) !== "ready") {
+      setReturnError(
+        debtError
+          ? "تعذّرت قراءة رصيد التاجر من الدفتر، فالمرتجع مش هيتسجل لحد ما يتقري. جرّب تاني."
+          : "رصيد التاجر لسه بيتحمّل. جرّب تاني بعد لحظة.",
+      );
+      if (debtError) refreshDebt();
       return;
     }
 
@@ -865,6 +882,9 @@ export function WholesalePage() {
   }, [wholesaleClients, searchQuery]);
 
   const handleExportPdf = () => {
+    // The client list prints each balance. A printout is never made from
+    // balances that did not load.
+    if (activeTab !== "invoices" && statusOf(clientDebt) !== "ready") return;
     if (activeTab === "invoices") {
       printTableAsPdf({
         title: "فواتير الجملة",
@@ -926,16 +946,15 @@ export function WholesalePage() {
         </div>
       </div>
 
+      {/* It used to say the figures on screen were unreliable and then show
+          them anyway. They are withdrawn now, and this is how to get them. */}
       {debtError && (
-        <div className="rounded-xl p-4 flex items-start gap-3 bg-red-50 border border-red-200">
-          <AlertCircle className="size-5 text-red-600 mt-0.5 shrink-0" />
-          <div>
-            <p className="font-semibold text-red-900">تعذّرت قراءة مديونيات العملاء</p>
-            <p className="text-sm text-red-800 mt-1">
-              الأرقام المعروضة مش موثوقة — متحصّلش قبل ما ده يتصلّح. {debtError}
-            </p>
-          </div>
-        </div>
+        <LoadError
+          message="تعذّرت قراءة مديونيات العملاء، فالأرصدة مش معروضة. متحصّلش على رقم مش ظاهر."
+          detail={debtError}
+          onRetry={refreshDebt}
+          busy={clientDebt.loading}
+        />
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
@@ -945,7 +964,7 @@ export function WholesalePage() {
               <div>
                 <p className="text-xs tracking-wider text-muted-foreground">إيرادات الجملة</p>
                 <p className="font-display text-3xl font-semibold mt-2">
-                  {formatMoney(stats.totalRevenue)}
+                  {moneyFigure(stats.totalRevenue, docs.read)}
                 </p>
               </div>
               <div
@@ -970,7 +989,7 @@ export function WholesalePage() {
                 <p className="font-display text-3xl font-semibold mt-2">
                   {/* The heading flips with the sign. A bare «؜-٥٠٠ ج.م» under
                       «الديون المستحقة» reads as the opposite of a credit. */}
-                  {formatMoney(Math.abs(totalReceivables))}
+                  {moneyFigure(Math.abs(totalReceivables), clientDebt)}
                 </p>
               </div>
               <div
@@ -990,7 +1009,7 @@ export function WholesalePage() {
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs tracking-wider text-muted-foreground">العملاء النشطون</p>
-                <p className="font-display text-3xl font-semibold mt-2">{stats.activeClients}</p>
+                <p className="font-display text-3xl font-semibold mt-2">{figureOr(() => String(stats.activeClients), docs.read)}</p>
               </div>
               <div
                 className="size-10 rounded-xl flex items-center justify-center"
@@ -1073,11 +1092,13 @@ export function WholesalePage() {
                 {filteredInvoices.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8} className="py-12">
+                      <CollectionGate tables={["wholesale_invoices"]}>
                       <EmptyState
                         icon={searchQuery ? Search : Inbox}
                         title={searchQuery ? "لا توجد نتائج مطابقة للبحث" : "مفيش فواتير جملة"}
                         description={searchQuery ? "جرب بحث تاني" : "الفواتير اللي هتسجلها هتظهر هنا"}
                       />
+                      </CollectionGate>
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -1170,11 +1191,13 @@ export function WholesalePage() {
                   {filteredClients.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={8} className="py-12">
+                        <CollectionGate tables={["wholesale_clients"]}>
                         <EmptyState
                           icon={searchQuery ? Search : Inbox}
                           title={searchQuery ? "لا توجد نتائج مطابقة للبحث" : "مفيش عملاء متسجلين"}
                           description={searchQuery ? "جرب بحث تاني" : "ابدأ بإضافة عميل جديد"}
                         />
+                        </CollectionGate>
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -1219,7 +1242,7 @@ export function WholesalePage() {
                               (hasDebt ? " text-amber-600 dark:text-amber-500" : "")
                             }
                           >
-                            {formatBalance(owed)}
+                            {figureOr(() => formatBalance(owed), clientDebt)}
                           </TableCell>
                           <TableCell className="text-right px-4">
                             <Badge
@@ -1271,17 +1294,19 @@ export function WholesalePage() {
                 <div className="text-left">
                   <p className="text-sm text-muted-foreground">إجمالي الديون</p>
                   <p className="font-bold text-lg">
-                    {formatMoney(debtOf(selectedClientData.id))}
+                    {moneyFigure(debtOf(selectedClientData.id), clientDebt)}
                   </p>
                 </div>
               </div>
               <CardContent className="p-0">
                 {selectedClientInvoices.length === 0 ? (
+                  <CollectionGate tables={["wholesale_invoices"]}>
                   <EmptyState
                     icon={Inbox}
                     title="لا توجد فواتير لهذا العميل"
                     className="py-12"
                   />
+                  </CollectionGate>
                 ) : (
                   <Table>
                     <TableHeader>
@@ -2015,9 +2040,15 @@ export function WholesalePage() {
                 <div className="hidden print:block text-center text-2xl font-black mb-6 border-b pb-4">كشف حساب عميل - Statement of Account</div>
                 <DialogTitle className="flex items-center gap-3">
                   <span className="text-2xl font-bold">{selectedMerchant.companyName}</span>
-                  <Badge variant={mOwed > 0 ? "destructive" : "default"} className={mOwed <= 0 ? "bg-green-600 hover:bg-green-700" : ""}>
-                    {mOwed > 0 ? "عليه مديونية" : mOwed < 0 ? "له رصيد عندنا" : "حساب جيد"}
-                  </Badge>
+                  {/* «حساب جيد» is a claim about a balance. It is only made
+                      when the balance was actually read. */}
+                  {statusOf(clientDebt) === "ready" ? (
+                    <Badge variant={mOwed > 0 ? "destructive" : "default"} className={mOwed <= 0 ? "bg-green-600 hover:bg-green-700" : ""}>
+                      {mOwed > 0 ? "عليه مديونية" : mOwed < 0 ? "له رصيد عندنا" : "حساب جيد"}
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline">{clientDebt.error ? "الرصيد مش متاح" : "بيتحمّل…"}</Badge>
+                  )}
                 </DialogTitle>
                 <DialogDescription className="flex items-center gap-4 text-base pt-1">
                   <span className="flex items-center gap-1.5"><User className="size-4" /> {selectedMerchant.contactPerson}</span>
@@ -2050,7 +2081,7 @@ export function WholesalePage() {
                       {mOwed < 0 ? "رصيد له عندنا" : "المتبقي / المديونية"}
                     </p>
                     <p className="text-2xl font-bold text-amber-700 dark:text-amber-400">
-                      {formatMoney(Math.abs(mOwed))}
+                      {moneyFigure(Math.abs(mOwed), clientDebt)}
                     </p>
                   </CardContent>
                 </Card>
@@ -2073,7 +2104,7 @@ export function WholesalePage() {
                     {mInvoices.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                          لا توجد فواتير مسجلة
+                          <CollectionGate tables={["wholesale_invoices"]}>لا توجد فواتير مسجلة</CollectionGate>
                         </TableCell>
                       </TableRow>
                     ) : (
@@ -2179,6 +2210,7 @@ export function WholesalePage() {
           {resolvedReturn.ok && resolvedReturn.ok.lines.length > 0 && (
             <WholesaleReturnPanel
               debt={returnClientDebt}
+              debtRead={clientDebt}
               returnValue={returnValue}
               paidInput={returnSettleInput}
               onPaidChange={setReturnSettleInput}

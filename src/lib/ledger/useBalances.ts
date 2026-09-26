@@ -12,7 +12,7 @@
  * only on a deliberate user action.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { balances } from "./index";
 import type { Account, EventKind } from "./types";
 import { canonicalWallet } from "@/types";
@@ -41,9 +41,17 @@ export function useBalances(account: Account, kind?: EventKind): BalancesView {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
+  // Mirrors `error` for the effect below without making it a dependency.
+  const failed = useRef(false);
+  failed.current = error !== null;
 
   useEffect(() => {
     let cancelled = false;
+    // A re-read that is RECOVERING from a failure reports itself as loading, so
+    // a retry button can refuse a second click while the first is in flight.
+    // A routine refresh after a successful read does not: flipping to loading
+    // after every sale would blank the till's balances for a frame each time.
+    if (failed.current) setLoading(true);
 
     void (async () => {
       try {

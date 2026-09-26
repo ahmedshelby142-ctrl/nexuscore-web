@@ -1059,16 +1059,22 @@ export function OrdersPage() {
             })),
           );
 
-          // The DOCUMENTS, so the per-invoice «متبقي» matches the balance the
-          // ledger now holds — see `recordWholesaleReturn`.
-          for (const line of resolved.lines) {
-            await useBusinessStore
-              .getState()
-              .recordWholesaleReturn(line.invoiceId, line.unitPrice * line.quantity)
-              .catch(() => {});
+          // The return itself — records, the invoice's «متبقي», the ledger
+          // event — is complete and atomic at this point: the credit ran INSIDE
+          // `commitWholesaleReturn`, before the event. What follows is the
+          // ORDER's own status document. If that write
+          // fails, the money and the invoice are already right, so the shared
+          // catch below («لم تُسجَّل العملية ولم يتغيّر أي رصيد») would be a lie.
+          // Say what actually happened instead. The return ceiling stops a retry
+          // from returning the same goods twice.
+          try {
+            await useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date() });
+            await updateOrderStatus(order.id, "returned");
+          } catch (e) {
+            setActionError(
+              `المرتجع اتسجّل في الدفتر واتخصم من الفاتورة، لكن حالة الطلب ما اتحدّثتش — حدّثها تاني. ${e instanceof Error ? e.message : String(e)}`,
+            );
           }
-          await useOrderStore.getState().updateOrder(order.id, { returnConfirmedAt: new Date() });
-          await updateOrderStatus(order.id, "returned");
           refreshStock();
           refreshDebt();
           setReturnSettleInput("");

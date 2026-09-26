@@ -464,6 +464,66 @@ Console on that boot carried only the expected
 `[Auth] local session flag with no Supabase session — signing out` and one 400
 from the dead refresh token. No new errors.
 
+### P0-5 — Committed code called a store method that was never committed — **FIXED** (2026-09-26)
+
+**Found by isolation testing** at the end of P1 Wave 2: a clean worktree of
+`207160d` did not typecheck. Every earlier suite/tsc figure had been measured
+on the working tree, which carried the missing code uncommitted.
+
+**Root cause.** `dccf949` ("finalize desktop core updates", 2026-09-16)
+committed three call sites — `WholesalePage`, `CheckoutForm` (POS), and
+`OrdersPage` — that credit the source invoice with
+`useBusinessStore.getState().recordWholesaleReturn(...)`. The store method
+itself stayed in the uncommitted diff of `useBusinessStore.ts`. So on committed
+`main` the call was `undefined(...)`.
+
+**Why it was a financial bug and not a typing one.** Each call ran **after**
+`commitWholesaleReturn` had appended the `return_confirmed` event. The sequence
+on `main` was: return records written → ledger event appended → TypeError →
+the screen's catch said «لم يُسجَّل المرتجع ولم يتغيّر أي رصيد». The money and
+stock had moved, the invoice «متبقي» had not, and the operator was told the
+opposite. Even with the method present, the call was `.catch(() => {})`, so a
+refused invoice write was silent.
+
+**Fix.** The invoice credit moved **inside** the canonical command and
+**before** the ledger event, so the event is the last step and nothing that
+can fail runs after an append-only write:
+
+1. return records (the returnable ceiling)
+2. each source invoice's open balance credited
+3. the ledger event
+
+The order and the undo live in `lib/wholesaleReturnTxn.ts` (import-free,
+driven by tests). A refusal at step 2 or 3 restores every credited invoice to
+the **exact** balance it held — not by adding the credit back, which a clamp
+at 0 makes wrong — deletes the records, and rethrows the original error, which
+makes the screens' existing «لم يُسجَّل المرتجع ولم يتغيّر أي رصيد» true. If
+the undo itself fails, `WholesaleReturnUndoError` names what was left behind.
+The store method throws on a missing invoice instead of returning quietly. No
+screen calls it any more; the three post-ledger loops are gone.
+
+On `/orders` the order's own status is still written after the return (the
+app-wide document-follows-ledger pattern). If that write fails, the operator
+is now told the return **was** recorded, instead of «لم يتغيّر أي رصيد».
+
+**Role matrix — a business question this surfaced (§G-14).** A trader return
+writes three things, and live RLS lets only ADMIN write all three:
+
+| Write | Allowed |
+|---|---|
+| `return_records` | ADMIN, POS_ECOMMERCE, ECOMMERCE_ONLY |
+| `wholesale_invoices` | ADMIN, ACCOUNTANT |
+| `ledger_events` (`return_confirmed`) | ADMIN, POS_ECOMMERCE, ECOMMERCE_ONLY, ACCOUNTANT |
+
+POS_ECOMMERCE and ECOMMERCE_ONLY can open a trader return on `/orders`.
+Before, theirs half-posted (records + ledger, invoice refused and swallowed).
+Now it is refused at the credit and rolled back completely — proven live:
+their upsert is refused with 42501. No Supabase change was made.
+
+**Runtime (live, self-aborting):** ADMIN credits an own-store invoice (1 row);
+ADMIN crediting **another tenant's** invoice touches 0 rows and leaves it at
+500; POS_ECOMMERCE's upsert is refused 42501. Nothing persisted.
+
 ---
 
 ## E. P1 required work
@@ -837,6 +897,7 @@ Nothing below is invented. Each is a real fork the code and data leave open.
 | G-11 | Business profiles | Keep and wire up (8 placeholder modules), or delete the concept and the routes? |
 | G-12 | Feature toggles | Per-device localStorage, or a store-level setting in `stores`? Today two of them hide core navigation |
 | G-13 | Business-data backup/restore | `KNOWN_LIMITATIONS.md` #1. Supabase PITR plan, out-of-band `pg_dump`, or an in-app tenant export? |
+| G-14 | Who may complete a trader return | §P0-5. Live RLS lets only ADMIN write all three things a trader return needs. POS_ECOMMERCE / ECOMMERCE_ONLY reach it on `/orders` and are now refused cleanly. Allow them to credit `wholesale_invoices` (a policy change), or hide the action from them? |
 
 ---
 
@@ -1260,6 +1321,33 @@ npm run test:units
 opt-in P0-1 live check). The 5 failures are **the same 5 stale pre-existing
 ones** classified in O-1 below — unchanged in count, name and cause. Zero NEW
 failures.
+
+**After P0-5, the wholesale-return fix (2026-09-26):**
+
+```
+  working tree   tests 1369 · pass 1363 · fail 0 · skipped 6
+```
+
++15 tests (`check_wholesale_return_txn.mjs` — the transaction core driven with
+a fake ledger/invoice/record world, every failure direction forced). One
+pre-existing test (`check_session7_core` · *a wholesale return writes the
+invoice documents back*) was repointed from "each screen calls the credit" to
+"each screen calls the command, and the command credits BEFORE the ledger" —
+the same invariant, stricter. **11 mutations, 11 caught.**
+
+**Isolated vs working tree.** Measured in a clean worktree, the committed tree
+is the number that matters, and they differ because unrelated courier work
+stays uncommitted by instruction. Before this fix, a clean `207160d`: 3 tsc
+errors (all `recordWholesaleReturn`) and 2 failing tests. After it, isolated:
+**tsc 0**, suite 1369 / 1361 / 2 fail / 6 skipped. The 2 are unchanged and both
+depend on work excluded from commits by instruction:
+
+* *couriers are a synced entity* — needs the uncommitted `couriers` hydrate
+  sink and `useCourierStore` change;
+* *P2-6 · the home screen is no longer named a placeholder* — a stale
+  COMMITTED build artifact, `dist-mobile/assets/index-6LGpkZa9.js.map`, still
+  names `MobileHomePlaceholder`. The working tree already deletes it;
+  `dist-mobile/**` is excluded from commits.
 
 **After P1 Wave 2 (2026-09-26):**
 

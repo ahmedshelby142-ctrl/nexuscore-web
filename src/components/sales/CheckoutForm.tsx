@@ -785,14 +785,8 @@ export default function CheckoutForm() {
             })),
           );
 
-          // The DOCUMENTS, so the per-invoice «متبقي» matches the balance the
-          // ledger now holds — see `recordWholesaleReturn`.
-          for (const line of resolved.lines) {
-            await useBusinessStore
-              .getState()
-              .recordWholesaleReturn(line.invoiceId, line.unitPrice * line.quantity)
-              .catch(() => {});
-          }
+          // The invoice's «متبقي» was credited INSIDE `commitWholesaleReturn`,
+          // before the ledger event — nothing that can fail runs after it.
 
           refreshStock();
           refreshWallets();

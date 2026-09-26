@@ -141,13 +141,25 @@ test("the trader balance comes from the ledger on every screen", () => {
 test("a wholesale return writes the invoice documents back", () => {
   // Otherwise the per-invoice «متبقي» keeps showing an amount that has already
   // come back, which is the other half of the same reported inversion.
+  //
+  // Each screen reaches the credit through `commitWholesaleReturn`, which runs
+  // it INSIDE the transaction and BEFORE the ledger event. It used to be
+  // called by each screen after the event, failure swallowed — and on
+  // committed main the method did not exist, so it threw after the money had
+  // moved. See `check_wholesale_return_txn.mjs` for the order and the undo.
   for (const file of [
     "../src/components/wholesale/WholesalePage.tsx",
     "../src/components/ecommerce/OrdersPage.tsx",
     "../src/components/sales/CheckoutForm.tsx",
   ]) {
-    assert.match(read(file), /recordWholesaleReturn\(/, `${file} must credit the invoice`);
+    assert.match(read(file), /await commitWholesaleReturn\(/, `${file} must return through the command that credits the invoice`);
   }
+  const cmd = read("../src/lib/wholesaleReturnDoc.ts");
+  assert.match(cmd, /store\(\)\.recordWholesaleReturn\(invoiceId, amount\)/, "the command must credit the invoice");
+  const txn = read("../src/lib/wholesaleReturnTxn.ts");
+  const credit = txn.indexOf("await steps.creditInvoice(");
+  const ledger = txn.indexOf("await steps.appendLedger()");
+  assert.ok(credit > -1 && credit < ledger, "the invoice is credited BEFORE the ledger event, never after");
   const store = read("../src/store/useBusinessStore.ts");
   // And it must NOT inflate `paidAmount`: a return is not a payment, and كشف
   // الحساب prints that field.

@@ -166,6 +166,13 @@ interface BusinessState {
     invoice: Omit<WholesaleInvoice, "id" | "createdAt" | "updatedAt">,
   ) => Promise<WholesaleInvoice>;
   recordWholesalePayment: (invoiceId: string, amount: number) => Promise<void>;
+  /**
+   * Credit goods back against ONE invoice's open balance. Not a payment.
+   * Resolves with the open balance it REPLACED, so an undo can restore it.
+   */
+  recordWholesaleReturn: (invoiceId: string, amount: number) => Promise<number>;
+  /** Put an invoice's open balance back to exactly `remaining` — the undo of the above. */
+  restoreWholesaleInvoiceRemaining: (invoiceId: string, remaining: number) => Promise<void>;
   /** Soft-hide (tombstone). What a client WITH invoice history gets. */
   archiveWholesaleClient: (id: string) => Promise<void>;
   // Returns the created supplier so a caller that registered one inline (the
@@ -455,6 +462,56 @@ export const useBusinessStore = create<BusinessState>()(
           paidAmount,
           remainingAmount,
           status: remainingAmount <= 0 ? "paid" : "partial",
+          updatedAt: new Date(),
+          updated_at: Date.now(),
+        } as WholesaleInvoice);
+      },
+
+      /**
+       * Goods coming back, credited against ONE invoice's open balance.
+       *
+       * Measured on QA-STORE: `QA-UAT-WHOLESALE` showed `receivable_client`
+       * −500 while its four invoice documents still summed to 1,300 open. The
+       * returns had moved the LEDGER and nothing had ever written back to the
+       * documents — FJ-0002 was returned in full and still read «متبقي 800».
+       * That gap is the two different numbers the same trader was showing in
+       * two different places.
+       *
+       * Deliberately NOT `recordWholesalePayment`: a return is not a payment.
+       * Adding it to `paidAmount` would report money that never arrived, and
+       * كشف الحساب prints that field. Only the open balance moves — and
+       * `getInvoiceStatus` already keys on `remaining <= 0`, so a fully
+       * returned invoice renders settled without inventing a payment.
+       */
+      //
+      // Called ONLY from `commitWholesaleReturn`, before the ledger event, so a
+      // refusal here rolls the whole return back. It throws rather than
+      // returning quietly when the invoice is missing: a credit that silently
+      // did nothing is the "two numbers for one trader" bug again.
+      //
+      // The clamp at 0 makes a credit impossible to reverse by subtraction —
+      // 300 open, 500 credited, 0 left — so the balance it replaced is handed
+      // back and `restoreWholesaleInvoiceRemaining` puts exactly that back.
+      recordWholesaleReturn: async (invoiceId, amount) => {
+        const invoice = get().wholesaleInvoices.find((i) => i.id === invoiceId);
+        if (!invoice) throw new Error(`فاتورة الجملة ${invoiceId} مش موجودة — مينفعش نخصم منها المرتجع`);
+        const before = invoice.remainingAmount ?? 0;
+        if (!(amount > 0)) return before;
+        await commitRow(set, "wholesale_invoices", "wholesaleInvoices", {
+          ...invoice,
+          remainingAmount: Math.max(0, before - amount),
+          updatedAt: new Date(),
+          updated_at: Date.now(),
+        } as WholesaleInvoice);
+        return before;
+      },
+
+      restoreWholesaleInvoiceRemaining: async (invoiceId, remaining) => {
+        const invoice = get().wholesaleInvoices.find((i) => i.id === invoiceId);
+        if (!invoice) throw new Error(`فاتورة الجملة ${invoiceId} مش موجودة — مينفعش نرجّع رصيدها`);
+        await commitRow(set, "wholesale_invoices", "wholesaleInvoices", {
+          ...invoice,
+          remainingAmount: remaining,
           updatedAt: new Date(),
           updated_at: Date.now(),
         } as WholesaleInvoice);

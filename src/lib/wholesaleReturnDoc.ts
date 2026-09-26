@@ -30,6 +30,7 @@
 
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { deleteThrough } from "@/services/cloudData";
+import { invoiceCredits, runWholesaleReturn } from "@/lib/wholesaleReturnTxn";
 import {
   WHOLESALE_RETURN_TYPE,
   type ResolvedWholesaleReturn,
@@ -64,10 +65,12 @@ export interface WholesaleReturnClient {
  *                                they are entitled to return — visible,
  *                                complainable, and fixable.
  *
- * So the record goes first and the ledger event follows. If the event is
- * refused, the records are deleted again — deterministic compensation, not a
- * hope. If that deletion ALSO fails, the state that survives is the second one
- * above, which is the harmless direction.
+ * So the record goes first, then each source invoice's open balance is
+ * credited, and the ledger event is LAST. If the credit or the event is
+ * refused, the invoices are put back to the exact balance they held and the
+ * records are deleted — deterministic compensation, not a hope — and the
+ * original error is rethrown. If an undo ALSO fails, that is thrown as a
+ * `WholesaleReturnUndoError` naming what was left behind.
  *
  * `appendLedger` is passed in rather than built here so this stays the only
  * place that knows the ordering, while each screen keeps its own event shape.
@@ -79,25 +82,26 @@ export async function commitWholesaleReturn(
   appendLedger: () => Promise<unknown>,
   notes = "",
 ): Promise<void> {
-  const recordIds = await recordWholesaleReturn(resolved, client, paidNow, notes);
-  try {
-    await appendLedger();
-  } catch (e) {
-    // The money did not move, so the ceiling must go back where it was.
-    for (const id of recordIds) {
-      try {
-        await deleteThrough("return_records", id);
-        useBusinessStore.setState((state: any) => ({
-          returnRecords: (state.returnRecords ?? []).filter((r: any) => r.id !== id),
-        }));
-      } catch {
-        // Left in place on purpose. A record with no ledger event only makes
-        // this line LESS returnable, which is the safe direction — unlike the
-        // alternative, which hands the client the same goods' value twice.
-      }
-    }
-    throw e;
-  }
+  // The invoice credit is INSIDE the unit now, and before the ledger event.
+  // It used to run after this function returned — in each of three screens,
+  // after the money had already moved, with its failure swallowed — and on
+  // committed main the store method it called did not exist, so it threw a
+  // TypeError after the ledger event and the screen said nothing was
+  // recorded. See `runWholesaleReturn` for the order and the undo.
+  const store = () => useBusinessStore.getState();
+  await runWholesaleReturn(invoiceCredits(resolved.lines), {
+    writeRecords: () => writeReturnRecords(resolved, client, paidNow, notes),
+    deleteRecord: async (id) => {
+      await deleteThrough("return_records", id);
+      useBusinessStore.setState((state: any) => ({
+        returnRecords: (state.returnRecords ?? []).filter((r: any) => r.id !== id),
+      }));
+    },
+    creditInvoice: (invoiceId, amount) => store().recordWholesaleReturn(invoiceId, amount),
+    restoreInvoice: (invoiceId, remaining) =>
+      store().restoreWholesaleInvoiceRemaining(invoiceId, remaining),
+    appendLedger,
+  });
 }
 
 /**
@@ -107,7 +111,7 @@ export async function commitWholesaleReturn(
  * Deliberately allowed to throw: a refused write means the returnable ceiling
  * was not recorded, and nothing may move afterwards.
  */
-async function recordWholesaleReturn(
+async function writeReturnRecords(
   resolved: ResolvedWholesaleReturn,
   client: WholesaleReturnClient | undefined,
   paidNow: number,

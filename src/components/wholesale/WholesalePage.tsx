@@ -442,15 +442,8 @@ export function WholesalePage() {
         })),
       );
 
-      // The DOCUMENTS, so the per-invoice «متبقي» matches the balance the
-      // ledger now holds. Without this the invoice list kept showing an open
-      // amount that had already come back — see `recordWholesaleReturn`.
-      for (const line of resolved.lines) {
-        await useBusinessStore
-          .getState()
-          .recordWholesaleReturn(line.invoiceId, line.unitPrice * line.quantity)
-          .catch(() => {});
-      }
+      // The invoice's «متبقي» was credited INSIDE `commitWholesaleReturn`,
+      // before the ledger event — nothing that can fail runs after it.
 
       refreshStock();
       refreshDebt();

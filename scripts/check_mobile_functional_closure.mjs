@@ -234,7 +234,7 @@ test("mobile stock quantities are the ledger's, never the products.quantity mirr
 
 test("no mobile reader turns a failed read into a zero or an empty answer", () => {
   const readers = code("src/mobile/data/mobileReaders.ts");
-  assert.match(readers, /const \{ data, error \} = await clientOrThrow\(\)\s*\.from\("orders"\)\s*\.select\("customerId, createdAt"\)[\s\S]*?if \(error\) throw/, "customer order counts");
+  assert.match(readers, /const \{ data, error \} = await clientOrThrow\(\)\s*\.from\(ORDERS_SOURCE\)\s*\.select\("customerId, createdAt"\)[\s\S]*?if \(error\) throw/, "customer order counts");
   assert.doesNotMatch(readers, /balanceOf\("customer_ltv", customerId\)\.catch/, "lifetime value");
   assert.match(readers, /if \(customerRead\.error\) throw/, "wasted-trip debt");
   assert.doesNotMatch(readers, /ledgerEvents\([^)]*\)[\s\S]{0,40}catch \{\s*return \[\]/, "order timeline");

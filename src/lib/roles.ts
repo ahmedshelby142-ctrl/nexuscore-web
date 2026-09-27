@@ -230,10 +230,11 @@ export function canReturnWholesale(role: string | null | undefined): boolean {
  * shipping fee). Cost is the owner's and finance's. Every other role keeps
  * exactly what it saw before this rule existed.
  *
- * This decides what the app READS and SHOWS. It is not the security boundary:
- * every financial SELECT policy is still `is_store_member`, so a Moderator's
- * token can read `ledger_lines` directly — see SUPABASE NOTES S-1..S-3 in
- * `docs/ROLE_PERMISSIONS_AUDIT.md`.
+ * This decides what the app READS and SHOWS. The boundary is the database:
+ * since migration 048 the financial SELECT policies require
+ * `can_read_store_finance` (the same four roles), so a Moderator's own token
+ * cannot read the ledger, order cost or the financial tables either — see
+ * §6 of `docs/ROLE_PERMISSIONS_AUDIT.md`.
  */
 export function canViewCost(role: string | null | undefined): boolean {
   return toAppRole(role) !== "MODERATOR";

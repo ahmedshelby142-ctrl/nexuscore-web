@@ -63,8 +63,13 @@ test("F2: no mobile reader selects a column `orders` does not have", () => {
 });
 
 test("F2: the order timeline is read from the ledger, the only place it exists", () => {
-  assert.match(readers, /refType: "ecommerce_order"/, "the ledger ref type the order writers stamp");
-  assert.match(readers, /ledgerEvents\(/, "must go through the shared ledger reader");
+  // Since 047/048 through `mobile_order_timeline`: the same ledger events,
+  // by order NUMBER, without payload or lines (a Moderator cannot read
+  // `ledger_events` itself).
+  assert.match(readers, /rpc\("mobile_order_timeline", \{ p_order_number: orderNumber \}\)/, "the ledger's own events for this order");
+  const m047 = read("../docs/migrations/047_operational_read_projection.sql");
+  assert.match(m047, /e\.ref_type = 'ecommerce_order'/, "the ledger ref type the order writers stamp");
+  assert.match(m047, /e\.ref_id = p_order_number/, "by order number, never the uuid");
   assert.match(readers, /order_delivered/, "delivered is an event, not a column");
   assert.match(readers, /rto_confirmed/, "so is a refused delivery");
 });

@@ -1,5 +1,7 @@
 # NEXUS CORE — Role Permissions + Data Visibility Audit
 
+> **Status:** client-side minimisation `a331d08`; server-side read security (S-1/S-2/S-3/S-5) **FIXED** by migrations 047 + 048, in production — §6.
+
 **2026-09-27, from HEAD `5cf4434`.** Built from the live code and the live
 database (`oczgqpxeixlrufvevitz`, read-only catalog queries), not from older
 documents. Focus: **MODERATOR**, the operations supervisor.
@@ -47,8 +49,8 @@ expenses, transactions, purchase_invoices, suppliers, wholesale_invoices,
 wholesale_clients, courier_claims, couriers, discount_codes, shipping_rates,
 branches, return_records, store_members. `ledger_balances` and
 `ledger_events_page` are SECURITY INVOKER, so they return whatever those
-policies allow. **A Moderator's own token can therefore read every financial
-row in its store** — see §6.
+policies allow. **A Moderator's own token could therefore read every financial
+row in its store.** **FIXED 2026-09-27 by migrations 047 + 048** — see §6.
 
 ---
 
@@ -129,92 +131,186 @@ any more — it was never displayed.
 
 ---
 
-## 6. SUPABASE NOTES FOR CLAUDE CODE (not applied)
+## 6. SERVER-SIDE READ SECURITY — S-1 / S-2 / S-3 / S-5 FIXED (2026-09-27)
 
-The client changes shrink what the app **holds and shows**. They are not the
-boundary: the Moderator's JWT can still read every row below directly. The
-M3.2 audit (see `lib/ledger/ownerFinancials.ts`) chose not to narrow these
-policies because operational roles read stock and customer totals through the
-same tables. The plan below keeps those reads working. Apply in order, with
-the deposit-boundary sequencing (server first, client, then tighten), each
-step QA'd in a rolled-back transaction with simulated JWT claims per role.
+Migrations **047** (additive) and **048** (restrictive), both **applied to
+production** (`oczgqpxeixlrufvevitz`) and recorded in
+`supabase_migrations.schema_migrations`. The database is now the boundary: a
+Moderator's own JWT, through the ordinary authenticated client, cannot read
+the rows below. No historical row was modified; writes, 043–046 and every
+other role's reads are unchanged.
 
-### S-3 — financial tables no Moderator screen reads (safe, do first)
+### Root cause
 
-- **Tables:** `expenses`, `transactions`, `purchase_invoices`, `suppliers`,
-  `wholesale_invoices`, `wholesale_clients`, `courier_claims`.
-- **Exposure:** SELECT `is_store_member` → Moderator reads expenses, partner
-  capital/draws, supplier payables, purchase and wholesale amounts.
-- **Verified:** no Moderator Mobile reader touches them (Purchasing is
-  route-guarded; realtime no longer subscribes it; Desktop no longer hydrates
-  for it).
-- **Change** (for each table `T`):
-  ```sql
-  ALTER POLICY select_T ON public.T
-    USING (is_store_member(store_id) AND NOT has_role(store_id, 'MODERATOR'));
-  ```
-- **RLS implications:** every other role unchanged; realtime stops delivering
-  those rows to Moderators too.
-- **Regression:** per role, count visible rows before/after (ADMIN/ACCOUNTANT/
-  POS/ECOM equal; MODERATOR 0); Mobile Purchasing and Desktop screens unchanged.
+Every SELECT policy was `is_store_member(store_id)` — "any member of the
+store". `ledger_balances` / `ledger_events_page` are SECURITY INVOKER over
+those policies; `list_store_members()` (DEFINER) returned every colleague's
+email and role to any member. Measured before the fix (rolled back), as
+MODERATOR: 500 ledger lines (111 with `unit_cost`), 5 wallet balances via
+`ledger_balances`, 34 orders with `cogsAmount` and line `unitCost`, 2
+expenses, 12 purchase invoices, 1 supplier, 5 wholesale invoices, 20 return
+records, 7 discount codes, 2 staff emails — identical to ADMIN.
 
-### S-1 — the ledger (needs RPCs first)
+### The predicate
 
-- **Tables/RPCs:** `ledger_lines` (amount_delta, unit_cost), `ledger_events`
-  (payload: wallet, supplierName, amounts), `ledger_balances`,
-  `ledger_events_page` (INVOKER).
-- **Exposure:** Moderator reads every revenue, COGS, wallet, payable, owner
-  draw and unit cost line; `ledger_balances(p_account='wallet')` returns
-  treasury balances; `ledger_balances(p_account='stock')` returns shelf cost.
-- **What the Moderator legitimately needs from the ledger:** stock **quantity**
-  per product, the order timeline's event kinds and times, `customer_ltv`
-  (pending B-1), and a "ledger changed" realtime cue.
-- **Change:**
-  1. Add SECURITY DEFINER RPCs, each checking `is_store_member(p_store)`:
-     `mobile_stock_qty(p_store uuid, p_product_ids text[]) → (product_id, qty)`
-     (no amount); `mobile_order_timeline(p_store uuid, p_order_number text) →
-     (id, kind, occurred_at)` (no payload, no lines).
-  2. Mobile readers use them when `!canViewCost(role)`.
-  3. Then: `ALTER POLICY select_ledger_lines / select_ledger_events … USING
-     (is_store_member(store_id) AND NOT has_role(store_id, 'MODERATOR'))`.
-  4. Realtime cue for Moderators: `ledger_events` rows stop reaching them, so
-     stock/shortage refresh needs another cue (e.g. a Broadcast from an
-     `AFTER INSERT` trigger carrying only `store_id`), or the shortage
-     screen's existing refresh on `orders`/`products` is accepted.
-- **Regression:** Moderator Stock/Shortages/Product Details/Order timeline
-  still correct; `ledger_balances` as Moderator returns 0 rows; ADMIN/
-  ACCOUNTANT/POS/ECOM unchanged; `mobile_shortages` (already DEFINER) unchanged.
+`can_read_store_finance(store)` (047) = `member_role(store) ∈ {ADMIN,
+ACCOUNTANT, POS_ECOMMERCE, ECOMMERCE_ONLY}`. An explicit allow-list: MODERATOR
+and any role this build does not know are outside it. Built on `member_role`,
+not `has_role`, because `has_role` also requires a live licence — `NOT
+has_role(…,'MODERATOR')` would reopen the ledger to a Moderator the day a
+licence lapses (tested: still 0 with the licence expired).
 
-### S-2 — cost inside `orders`
+### S-1 — ledger (FIXED)
 
-- **Columns:** `cogsAmount`, `courierFee`, `stockItems[].unitCost`,
-  `items[].unitCost`.
-- **Exposure:** RLS cannot hide columns per app role (everyone is the
-  `authenticated` Postgres role), and PostgREST cannot drop keys inside JSON.
-- **Change options:** (a) a SECURITY DEFINER `mobile_orders_page(...)` that
-  projects operational columns and strips `unitCost` with `jsonb` functions,
-  used by Moderator readers, then exclude MODERATOR from `select_orders`; or
-  (b) stop storing cost on the order (COGS already lives in the ledger) — a
-  larger change touching the order screens and `place_order`.
-- **Regression:** Moderator Orders/Shipments/Customer history/Home unchanged;
-  other roles unchanged; 045/046 untouched.
+- `select_ledger_lines`, `select_ledger_events` → `can_read_store_finance`.
+  `ledger_balances` / `ledger_events_page` follow automatically.
+- Operational replacements (047), SECURITY DEFINER, **no store argument**
+  (store = the caller's own membership), `anon` revoked:
+  `mobile_stock_quantities(product_ids) → (product_id, qty)` — the same
+  quantity `ledger_balances('stock')` reports, no amount;
+  `mobile_order_timeline(order_number) → (id, kind, occurred_at)` — no
+  payload, no lines.
+- `mobile_shortages` (DEFINER) and `owner_financial_summary` (ADMIN-only)
+  unchanged.
 
-### S-5 — staff list
+### S-2 — order cost (FIXED)
 
-- `list_store_members()` (DEFINER) returns every member's email and role to
-  any member. Suggest `has_role(store, 'ADMIN')` inside it. Check the Desktop
-  user-management screen is its only caller first.
+- `select_orders` → `can_read_store_finance`: a Moderator cannot select the
+  table, so `cogsAmount`, `courierFee` and JSON `unitCost` are unreachable.
+- `orders_operational` (047) is the Mobile order read for every role: the
+  same rows (its own `WHERE is_store_member(store_id)`, `security_barrier`),
+  `cogsAmount` absent for everyone, `courierFee` and line `unitCost` present
+  only for `can_read_store_finance`. Historical JSON is not rewritten —
+  `strip_line_cost` drops the key on the way out. Desktop and every write
+  keep using `orders`.
+- **Accepted advisor finding:** Supabase flags `orders_operational` as a
+  *security definer view* (ERROR level). That is the design — the view must
+  read `orders` with its owner's rights because the Moderator no longer can —
+  and it is safe because its own WHERE applies the tenant check and
+  `security_barrier` stops caller filters running first. Proven: foreign
+  ADMIN 0 rows, `anon` 42501.
 
-### B-1 — business decision
+### S-3 — financial / business tables (FIXED)
 
-Customer Details shows a Moderator the customer's delivered revenue
-(`customer_ltv`). It is a selling figure, not cost, so it was kept. If the
-business treats it as confidential, gate it with `canViewCost` (UI) and drop
-it from the reader.
+`select_*` → `can_read_store_finance` on `expenses`, `transactions`,
+`purchase_invoices`, `suppliers`, `wholesale_invoices`, `wholesale_clients`,
+`courier_claims`, `return_records`, `discount_codes`. Proven unused by any
+Moderator reader: no Mobile reader touches them (Purchasing is route-guarded;
+Desktop hydrates nothing for MODERATOR since `a331d08`). Realtime obeys the
+same RLS, so these rows no longer reach a Moderator socket either.
+`products`, `customers`, `couriers`, `shipping_rates`, `branches`, `stores`,
+`store_licenses` stay member-readable (operational, no cost columns).
+
+### S-5 — staff directory (FIXED)
+
+- `list_store_members()` → only for the store's ADMIN (`member_role`);
+  `anon` revoked.
+- `select_store_members` → `user_id = auth.uid() OR member_role = 'ADMIN'`.
+  Every client read of the table is the caller's own row (login, session
+  reconciliation, store context); invite/re-role/remove are ADMIN paths;
+  `invite-staff` checks with `staff_invite_context` and writes as the caller
+  (INSERT, unaffected). `has_role` / `is_store_member` / `member_role` are
+  DEFINER and unaffected.
+
+### Realtime
+
+`postgres_changes` delivers whole rows, so a subscription is a read. Mobile no
+longer subscribes to `orders` or `ledger_events` for any role: it listens to
+`store_activity` (047) — `(store_id, source, created_at)`, written only by
+AFTER triggers on `orders` and `ledger_events` (DEFINER, no EXCEPTION block —
+043), member-readable, not client-writable, pruned to one hour — and turns
+each row's `source` into the same cue the screens already used. Moderator
+socket: `products`, `customers`, `store_activity`. Purchasing roles add
+`purchase_invoices`.
+
+### Role matrix (after 048, measured in production)
+
+| Data area | ADMIN | ACCOUNTANT | POS_ECOMMERCE | ECOMMERCE_ONLY | MODERATOR |
+|---|---|---|---|---|---|
+| Ledger financial rows | ALLOW | ALLOW | ALLOW | ALLOW | **DENY** (0) |
+| Stock quantity | ALLOW | ALLOW | ALLOW | ALLOW | **MINIMAL PROJECTION** (`mobile_stock_quantities`) |
+| Product cost / stock value | ALLOW | ALLOW | ALLOW | ALLOW | **DENY** |
+| Order cost (cogsAmount, courierFee, line unitCost) | ALLOW | ALLOW | ALLOW | ALLOW | **DENY** |
+| Expenses | ALLOW | ALLOW | ALLOW | ALLOW | **DENY** (0) |
+| Supplier finance (suppliers, purchase invoices) | ALLOW | ALLOW | ALLOW | ALLOW | **DENY** (0) |
+| Courier finance (courier_claims) | ALLOW | ALLOW | ALLOW | ALLOW | **DENY** (0) |
+| Owner finance (`owner_financial_summary`) | ALLOW | DENY (42501) | DENY | DENY | DENY (42501) |
+| Member emails / roles | ALLOW | own row only | own row only | own row only | own row only |
+| Orders operational fields | ALLOW | ALLOW | ALLOW | ALLOW | **MINIMAL PROJECTION** (`orders_operational`) |
+| Order timeline | ALLOW | ALLOW | ALLOW | ALLOW | **MINIMAL PROJECTION** (`mobile_order_timeline`) |
+| Shipments (orders status/courier/COD) | ALLOW | ALLOW | ALLOW | ALLOW | MINIMAL PROJECTION |
+| Customers operational fields | ALLOW | ALLOW | ALLOW | ALLOW | ALLOW |
+
+ACCOUNTANT / POS / ECOMMERCE_ONLY lost only the colleague directory, which no
+screen of theirs reads (the staff screen is ADMIN-only).
+
+### QA and production evidence
+
+`scripts/security/047_048_read_matrix.sql`, every probe through the caller's
+JWT (`set local role authenticated` + `request.jwt.claims`), rolled back:
+
+| Probe | ADMIN | ACC | POS | ECOM | MOD |
+|---|---|---|---|---|---|
+| ledger_lines | 501 | 501 | 501 | 501 | **0** |
+| ledger_balances wallet | 5 | 5 | 5 | 5 | **0** |
+| orders (table) | 35 | 35 | 35 | 35 | **0** |
+| orders_operational | 35 | 35 | 35 | 35 | 35 |
+| … with line unitCost / courierFee | 35 / 35 | 35 / 35 | 35 / 35 | 35 / 35 | **0 / 0** |
+| mobile_stock_quantities | 6 | 6 | 6 | 6 | 6 |
+| … qty ≠ ledger_balances | 0 | 0 | 0 | 0 | — |
+| mobile_order_timeline | 90 | 90 | 90 | 90 | 90 |
+| expenses / purchase_invoices / suppliers | 2/12/1 | 2/12/1 | 2/12/1 | 2/12/1 | **0/0/0** |
+| wholesale / returns / discount codes | 5/20/7 | 5/20/7 | 5/20/7 | 5/20/7 | **0/0/0** |
+| list_store_members | 2 | 0 | 0 | 0 | **0** |
+| owner_financial_summary | ✓ | 42501 | 42501 | 42501 | 42501 |
+| insert into store_activity | — | — | — | — | 42501 |
+
+Also: MODERATOR with the licence expired — ledger 0, expenses 0. Foreign
+store's ADMIN — 0 on every QA-STORE surface. `anon` — 42501 on the view, both
+functions, the ledger, `store_activity`, `list_store_members`. `place_order`
+still succeeds with the triggers in place and emits one `orders` and one
+`ledger_events` signal. The same matrix re-run against production after
+apply gave the same numbers (34→35 orders includes the rolled-back probe
+order); afterwards 0 QA rows, POS role and licence unchanged.
+
+**Mutation (real database, rolled back):** reverting each protection alone
+brought back exactly its exposure — ledger policy → 500 lines; expenses
+policy → 2 rows; view without the line strip → 34 orders with unitCost;
+staff list for any member → 2 emails.
+
+### B-1 — resolved
+
+A Moderator no longer receives a customer's lifetime revenue: the reader
+does not ask (`customer_ltv` is ledger, 048 refuses it), and Customer Details
+omits the tile rather than showing «٠».
+
+### Remaining (not in this phase)
+
+- Pre-existing advisor warnings: `has_role`, `is_store_member`,
+  `member_role`, the discount RPCs and two trigger functions are executable by
+  `anon` (they answer false/refuse without a session); Leaked Password
+  Protection is off in Auth settings.
+- `products`, `customers`, `couriers` stay readable by every member,
+  including Moderator — operational by design.
+- The Mobile PWA still has no production deployment (Mobile audit P0-1), so
+  the new Mobile client paths are verified by tests and the stubbed-backend
+  harness, not yet by a deployed Mobile build.
 
 ---
 
 ## 7. Tests
+
+Server-side (047/048): `scripts/check_read_security_048.mjs` (19 — the
+predicate is an allow-list on `member_role`, the twelve policies, no
+`USING (true)`, the view's projection and tenant WHERE, no-store-argument
+functions, the signal table, the staff directory, writes untouched; each
+critical predicate mutation-checked) and `scripts/security/047_048_read_matrix.sql`
+(live, rolled back — §6). Client (`check_moderator_visibility.mjs`, now 18):
+every Mobile order read goes through `orders_operational`; a Moderator's stock
+comes from `mobile_stock_quantities` and never from the ledger; the timeline
+from `mobile_order_timeline`; lifetime revenue is null, not 0; the socket
+hears orders/ledger only through `store_activity`.
+
 
 `scripts/check_moderator_visibility.mjs` — the real readers, hydrator, role
 matrix and realtime table sets against stubbed Supabase/stores:

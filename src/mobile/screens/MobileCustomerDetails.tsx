@@ -149,10 +149,13 @@ export function MobileCustomerDetails() {
           <EmptyState messageAr="لا توجد بيانات مالية لهذا العميل." />
         ) : (
           <div className="mobile-customer-financial-grid">
-            <div>
-              <span>إيراد المسلم (مُسجل)</span>
-              <strong style={{ color: "var(--success)" }}>{formatArabicCurrency(financials.deliveredRevenue)}</strong>
-            </div>
+            {/* Not read for a role without finance (048) — absent, never «٠». */}
+            {financials.deliveredRevenue !== null && (
+              <div>
+                <span>إيراد المسلم (مُسجل)</span>
+                <strong style={{ color: "var(--success)" }}>{formatArabicCurrency(financials.deliveredRevenue)}</strong>
+              </div>
+            )}
             <div>
               <span>المستحقات المفتوحة (COD)</span>
               <strong style={{ color: "var(--warning)" }}>{formatArabicCurrency(financials.openExposure)}</strong>

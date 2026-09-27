@@ -154,7 +154,13 @@ test("H · a realtime payload is a cue, never state and never arithmetic", () =>
   // scoped again when it asks. Merging the payload would bypass the second.
   assert.match(realtime, /_payload/, "the payload argument must be unused");
   assert.doesNotMatch(code(realtime), /setState|useBusinessStore|useOrderStore|useFinancialStore/);
-  assert.doesNotMatch(code(realtime), /payload\.(new|old)/);
+  // The ONE payload read: which cue a `store_activity` row stands for (047).
+  // It carries store, source and time only, and only `source` is looked at.
+  assert.equal((code(realtime).match(/payload\.(new|old)/g) ?? []).length, 1, "no other payload is read");
+  assert.match(realtime, /activityCue\(payload\.new as Record<string, unknown> \| undefined\)/);
+  const cue = realtime.slice(realtime.indexOf("function activityCue"), realtime.indexOf("function activityCue") + 260);
+  assert.match(cue, /const source = row\?\.source;/);
+  assert.doesNotMatch(cue, /row\?\.(?!source)\w/, "nothing but `source` is read from the row");
   // No money maths anywhere near the socket.
   assert.doesNotMatch(code(realtime), /amount|qty_delta|revenue|cogs/i);
 });

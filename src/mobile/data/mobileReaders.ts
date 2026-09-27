@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "@/lib/supabase";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
-import { balanceOf, events as ledgerEvents } from "@/lib/ledger";
+import { balanceOf } from "@/lib/ledger";
 import { buildableFromRecipe, variantStockFrom } from "@/lib/product";
 import { canViewCost } from "@/lib/roles";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -39,6 +39,7 @@ async function readPage<T>(
   configure: (builder: any) => any,
   map: (row: any) => T,
   columns = "*",
+  source = table,
 ): Promise<MobilePage<T>> {
   const client = clientOrThrow();
   const pageSize = Math.min(Math.max(query.pageSize ?? MOBILE_PAGE_SIZE, 1), 100);
@@ -48,7 +49,7 @@ async function readPage<T>(
   // Soft-deleted rows are not rows. `mobile_shortages` and every desktop
   // reader exclude them; this did not, so a deleted order stayed on the phone
   // — and stayed in the phone's `count` — after the desktop removed it.
-  let builder = client.from(table).select(columns, { count: "exact" }).is("deleted_at", null);
+  let builder = client.from(source).select(columns, { count: "exact" }).is("deleted_at", null);
   builder = configure(builder).range(from, to);
   const { data, count, error } = await builder;
   if (error) throw new Error(`[${table}] ${error.message}`);
@@ -69,9 +70,10 @@ async function readPage<T>(
 // cost, «عمولة المندوب») rides along only for roles that may see cost, and
 // line `unitCost` is dropped from `items`/`stockItems` for the rest.
 //
-// This minimises what the APP holds. It is not the boundary: the Moderator's
-// token can still `select` these columns directly, and PostgREST cannot drop a
-// key inside a JSON column — SUPABASE FOLLOW-UP S-1/S-2.
+// The database enforces the same thing (047/048): these columns are read
+// from `orders_operational`, which withholds cost from a Moderator itself, and
+// a Moderator cannot select `orders` at all. This keeps the app's own state
+// minimal on top of that.
 const ORDER_COLUMNS = [
   "id", "orderNumber", "customerName", "customerPhone", "address", "governorate", "city",
   "items", "stockItems", "totalAmount", "shippingFee", "paymentMethod", "depositAmount",
@@ -80,6 +82,31 @@ const ORDER_COLUMNS = [
   "codSettledAt", "returnConfirmedAt", "returnType", "return_cause", "isExchange",
   "original_order_id", "wholesaleClientId", "shippingPenaltyApplied", "store_id", "deleted_at",
 ].join(",");
+
+/**
+ * Where Mobile reads orders: `orders_operational` (migration 047), the same
+ * rows as `orders` for any member of the store, with `cogsAmount` absent and —
+ * for a role without finance — `courierFee` and line `unitCost` withheld BY THE
+ * DATABASE. Since 048 a Moderator cannot select `orders` at all. Desktop and
+ * every write still use `orders`.
+ */
+const ORDERS_SOURCE = "orders_operational";
+
+/**
+ * A product's shelf, as this viewer may know it.
+ *
+ * Roles with finance read the ledger balance — quantity AND the cost of what
+ * is on the shelf — exactly as before. A Moderator cannot read the ledger
+ * (048); it asks `mobile_stock_quantities`, which returns the same quantity
+ * the ledger reports and no money.
+ */
+async function stockOf(productId: string): Promise<{ qty: number; amount?: number }> {
+  if (viewerSeesCost()) return balanceOf("stock", productId);
+  const { data, error } = await clientOrThrow().rpc("mobile_stock_quantities", { p_product_ids: [productId] });
+  if (error) throw new Error(`[mobile_stock_quantities] ${error.message}`);
+  const row = (data ?? [])[0] as { qty?: number | string } | undefined;
+  return { qty: Number(row?.qty ?? 0) || 0 };
+}
 
 function viewerSeesCost(): boolean {
   return canViewCost(useAuthStore.getState().userRole);
@@ -118,7 +145,7 @@ export function readMobileOrders(query: MobileListQuery = {}) {
     }
     if (search) next = next.or(`orderNumber.ilike.%${search}%,customerName.ilike.%${search}%,customerPhone.ilike.%${search}%`);
     return next;
-  }, toViewerOrder, orderColumns());
+  }, toViewerOrder, orderColumns(), ORDERS_SOURCE);
 }
 
 export async function readMobileCustomers(query: MobileListQuery = {}) {
@@ -139,7 +166,7 @@ export async function readMobileCustomers(query: MobileListQuery = {}) {
   if (ids.length === 0) return page;
 
   const { data, error } = await clientOrThrow()
-    .from("orders")
+    .from(ORDERS_SOURCE)
     .select("customerId, createdAt")
     .in("customerId", ids)
     .is("deleted_at", null);
@@ -198,7 +225,7 @@ export function readMobileShipments(query: MobileListQuery = {}) {
     if (query.status === "delivered") next = next.eq("status", "delivered");
     if (search) next = next.or(`orderNumber.ilike.%${search}%,customerName.ilike.%${search}%,courierName.ilike.%${search}%`);
     return next;
-  }, toViewerOrder, orderColumns());
+  }, toViewerOrder, orderColumns(), ORDERS_SOURCE);
 }
 
 /**
@@ -254,7 +281,7 @@ export async function readMobileProducts(query: MobileListQuery = {}) {
   // `buildableFromRecipe` rule desktop uses, fed from the ledger instead of
   // from hydrated product records.
   const rows = await Promise.all(page.rows.map(async (product: any) => {
-    const stockBalance = await balanceOf("stock", String(product.id));
+    const stockBalance = await stockOf(String(product.id));
     const recipe = product?.isBundle ? (product.bundleItems ?? product.metadata?.bundleItems) : null;
 
     if (!recipe?.length) {
@@ -285,7 +312,7 @@ export async function readMobileProducts(query: MobileListQuery = {}) {
         const id = String(c.productId);
         if (componentStock.has(id)) return;
         const [b, row] = await Promise.all([
-          balanceOf("stock", id),
+          stockOf(id),
           readMobileRawProduct(id),
         ]);
         componentStock.set(id, Math.max(0, b.qty));
@@ -414,7 +441,7 @@ export async function readMobileOrderTimeline(orderId: string): Promise<MobileOr
   const client = clientOrThrow();
 
   const { data: order, error: orderError } = await client
-    .from("orders")
+    .from(ORDERS_SOURCE)
     .select("id, orderNumber, createdAt, courierId, depositAmount")
     .eq("id", orderId)
     .maybeSingle();
@@ -486,8 +513,17 @@ export async function readMobileOrderTimeline(orderId: string): Promise<MobileOr
  * الطلب»: a delivered, settled order drawn as one nothing had happened to.
  * The detail screen reads this separately and renders its own retry.
  */
-function ledgerEventsFor(orderNumber: string) {
-  return ledgerEvents({ refType: "ecommerce_order", refId: orderNumber, limit: 200 });
+async function ledgerEventsFor(orderNumber: string): Promise<{ id: string; kind: string; occurredAt: string }[]> {
+  // `mobile_order_timeline` (047): which lifecycle events happened and when —
+  // no payload, no lines, no money — for every role, from the caller's own
+  // store. A Moderator cannot read `ledger_events` since 048.
+  const { data, error } = await clientOrThrow().rpc("mobile_order_timeline", { p_order_number: orderNumber });
+  if (error) throw new Error(`[mobile_order_timeline] ${error.message}`);
+  return ((data ?? []) as { id: string; kind: string; occurred_at: string }[]).map((e) => ({
+    id: String(e.id),
+    kind: String(e.kind),
+    occurredAt: String(e.occurred_at),
+  }));
 }
 
 export interface MobileProductWaitingOrder {
@@ -503,7 +539,7 @@ export async function readMobileProductWaitingOrders(productId: string): Promise
   const client = clientOrThrow();
   
   const { data: orders, error } = await client
-    .from("orders")
+    .from(ORDERS_SOURCE)
     .select("id, orderNumber, customerName, items, stockItems, status, createdAt")
     .eq("status", "pending")
     // A deleted order is waiting for nothing; `mobile_shortages` agrees.
@@ -540,7 +576,8 @@ export interface MobileCustomerFinancialSummary {
   deliveredOrders: number;
   returnedOrders: number;
   cancelledOrders: number;
-  deliveredRevenue: number;
+  /** Null for a role without finance: not read, and not a zero. */
+  deliveredRevenue: number | null;
   openExposure: number;
   wastedTrips: number;
 }
@@ -573,7 +610,7 @@ export async function readMobileCustomerFinancialSummary(customerId: string): Pr
 
   const [{ data: orders, error }, ltv, customerRead] = await Promise.all([
     client
-      .from("orders")
+      .from(ORDERS_SOURCE)
       .select("id, status, expectedCod, customerId, customerPhone")
       .or(`customerId.eq.${customerId},customerPhone.eq.${customerId}`)
       // Same population as the order history below it, which already
@@ -582,7 +619,9 @@ export async function readMobileCustomerFinancialSummary(customerId: string): Pr
     // The ledger's own answer. Returns have already been deducted from it.
     // NOT caught: a failed ledger read used to become «٠ ج.م.» lifetime value,
     // a money zero nobody measured. The screen renders an error + retry.
-    balanceOf("customer_ltv", customerId),
+    // A Moderator cannot read the ledger (048), and a customer's lifetime
+    // revenue is not operational — it is not asked for, rather than shown as 0.
+    viewerSeesCost() ? balanceOf("customer_ltv", customerId) : Promise.resolve(null),
     client
       .from("customers")
       .select("returned_orders_count")
@@ -613,7 +652,7 @@ export async function readMobileCustomerFinancialSummary(customerId: string): Pr
     returnedOrders: statusCounts.returned,
     cancelledOrders: statusCounts.cancelled,
     // `customer_ltv`, net of every confirmed return — the Desktop authority.
-    deliveredRevenue: Math.max(0, Number(ltv?.amount ?? 0)),
+    deliveredRevenue: ltv === null ? null : Math.max(0, Number(ltv?.amount ?? 0)),
     openExposure,
     // The shipping DEBT, which settles back down. Never a count of returns.
     wastedTrips: Math.max(0, Number(customer?.returned_orders_count ?? 0)),
@@ -625,7 +664,7 @@ export async function readMobileCustomerOrderHistory(customerId: string, page = 
     let next = builder.order("createdAt", { ascending: false }).order("id", { ascending: false });
     if (customerId) next = next.eq("customerId", customerId);
     return next;
-  }, toViewerOrder, orderColumns());
+  }, toViewerOrder, orderColumns(), ORDERS_SOURCE);
 }
 
 /**
@@ -643,7 +682,7 @@ export async function readMobileProductsForRestock(query: MobileListQuery = {}):
 
   // Attach current stock from ledger for each product
   const rows = await Promise.all(page.rows.map(async (product: any) => {
-    const stockBalance = await balanceOf("stock", String(product.id));
+    const stockBalance = await stockOf(String(product.id));
     return { ...product, mobileStock: Math.max(0, stockBalance.qty), mobileCost: viewerSeesCost() ? stockBalance.amount : undefined };
   }));
   return { ...page, rows };

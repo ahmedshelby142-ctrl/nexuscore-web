@@ -88,17 +88,35 @@ let channel: RealtimeChannel | null = null;
 let channelTables = "";
 
 /**
+ * The tables a socket actually subscribes to. Not the same list as the CUES
+ * above: `orders` and `ledger_events` arrive as `store_activity` rows.
+ */
+export type MobileSubscriptionTable = "products" | "customers" | "store_activity" | "purchase_invoices";
+
+/**
  * The tables this ROLE subscribes to.
  *
  * `postgres_changes` delivers the whole row, not just "something changed", so
- * a subscription is a read. `purchase_invoices` rows are supplier amounts, and
- * only a role with المشتريات has a screen that re-reads on them — the
- * Moderator is not subscribed. (`ledger_events` still is: it is what keeps a
- * Moderator's stock and shortages live. Its payload is SUPABASE FOLLOW-UP S-1.)
+ * a subscription is a read. So:
+ *
+ *   - `orders` and `ledger_events` are never subscribed. Their rows carry cost
+ *     (line `unitCost`, `cogsAmount`, event payloads) and, since migration
+ *     048, a Moderator cannot select them at all. Every role hears them as
+ *     `store_activity` (047): store, source, time — nothing else.
+ *   - `purchase_invoices` rows are supplier amounts; only a role with
+ *     المشتريات has a screen that re-reads on them.
  */
-export function realtimeTablesFor(role: string | null | undefined): MobileRealtimeTable[] {
+export function realtimeTablesFor(role: string | null | undefined): MobileSubscriptionTable[] {
   const capabilities = getMobileCapabilities(toAppRole(role));
-  return MOBILE_REALTIME_TABLES.filter((table) => table !== "purchase_invoices" || capabilities.has("purchasing"));
+  const tables: MobileSubscriptionTable[] = ["products", "customers", "store_activity"];
+  if (capabilities.has("purchasing")) tables.push("purchase_invoices");
+  return tables;
+}
+
+/** The cue a `store_activity` row stands for. Anything else is ignored. */
+function activityCue(row: Record<string, unknown> | undefined): MobileRealtimeTable | null {
+  const source = row?.source;
+  return source === "orders" || source === "ledger_events" ? source : null;
 }
 let listeners = 0;
 let closeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -107,7 +125,7 @@ function announce(detail: MobileRealtimeDetail): void {
   window.dispatchEvent(new CustomEvent<MobileRealtimeDetail>(MOBILE_REALTIME_EVENT, { detail }));
 }
 
-function openChannel(tables: readonly MobileRealtimeTable[]): void {
+function openChannel(tables: readonly MobileSubscriptionTable[]): void {
   const key = tables.join(",");
   if (channel && channelTables === key) return;
   // Same tables, same socket. A different set — the verified role replaced a
@@ -132,6 +150,18 @@ function openChannel(tables: readonly MobileRealtimeTable[]): void {
   // on its way out, so a fresh open always gets fresh binding ids.
   let next = client.channel(`mobile-sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
   for (const table of tables) {
+    if (table === "store_activity") {
+      // Inserts only: the table prunes itself, and a delete means nothing.
+      next = next.on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table },
+        (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+          const cue = activityCue(payload.new as Record<string, unknown> | undefined);
+          if (cue) announce({ table: cue });
+        },
+      );
+      continue;
+    }
     next = next.on(
       "postgres_changes",
       { event: "*", schema: "public", table },

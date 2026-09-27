@@ -16,8 +16,9 @@
  *   pushing rows to it.
  *
  * The readers and the hydrator run for real against stubbed Supabase/stores.
- * The database boundary itself is SUPABASE FOLLOW-UP S-1..S-3 (every financial
- * SELECT policy is still `is_store_member`), documented, not claimed here.
+ * The database boundary itself (047/048) is pinned by
+ * `check_read_security_048.mjs` and proven by the rolled-back SQL matrix in
+ * `scripts/security/047_048_read_matrix.sql`.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -31,6 +32,8 @@ const stub = (src) => `data:text/javascript,${encodeURIComponent(src)}`;
 // ── Shared, settable fakes ──────────────────────────────────────────────────
 globalThis.__auth = { isAuthenticated: true, userRole: "ADMIN" };
 globalThis.__selects = [];
+globalThis.__rpc = [];
+globalThis.__balances = [];
 globalThis.__cloudList = [];
 globalThis.__rows = {
   orders: [{
@@ -50,15 +53,31 @@ const STUBS = {
       const b = { table, cols: null,
         select(cols) { b.cols = cols; globalThis.__selects.push({ table, cols }); return b; },
         is() { return b; }, eq() { return b; }, in() { return b; }, gte() { return b; }, neq() { return b; },
-        or() { return b; }, order() { return b; }, range() { return b; }, limit() { return b; }, maybeSingle() { return b; },
-        then(res) { const rows = globalThis.__rows[table] ?? []; return Promise.resolve({ data: rows, count: rows.length, error: null }).then(res); },
+        or() { return b; }, order() { return b; }, range() { return b; }, limit() { return b; }, maybeSingle() { b.single = true; return b; },
+        then(res) {
+          // orders_operational is served as migration 047 defines it: no
+          // cogsAmount for anyone; courierFee and line unitCost only for a
+          // finance role. (The SQL itself is proven by the 047/048 matrix.)
+          const finance = globalThis.__auth.userRole !== "MODERATOR";
+          const strip = (lines) => Array.isArray(lines) ? lines.map(({ unitCost, ...l }) => l) : lines;
+          const rows = table === "orders_operational"
+            ? (globalThis.__rows.orders ?? []).map(({ cogsAmount, ...o }) => finance ? o : { ...o, courierFee: null, items: strip(o.items), stockItems: strip(o.stockItems) })
+            : (globalThis.__rows[table] ?? []);
+          return Promise.resolve({ data: b.single ? rows[0] ?? null : rows, count: rows.length, error: null }).then(res);
+        },
       };
       return b;
     };
-    export const getSupabaseClient = () => ({ from: q });
+    const rpc = async (name, args) => {
+      globalThis.__rpc.push(name);
+      if (name === "mobile_stock_quantities") return { data: args.p_product_ids.map((id) => ({ product_id: id, qty: 3 })), error: null };
+      if (name === "mobile_order_timeline") return { data: [{ id: "e1", kind: "order_placed", occurred_at: "2026-09-27T00:00:00Z" }], error: null };
+      return { data: null, error: { message: "unknown rpc " + name } };
+    };
+    export const getSupabaseClient = () => ({ from: q, rpc });
     export const isCloudSyncMode = () => true;`),
   "@/services/api/fieldMapping": stub(`export const fromRemoteRow = (_t, row) => ({ ...row });`),
-  "@/lib/ledger": stub(`export const balanceOf = async () => ({ qty: 3, amount: 420 }); export const events = async () => [];`),
+  "@/lib/ledger": stub(`export const balanceOf = async (account) => { globalThis.__balances.push(account); return account === "customer_ltv" ? { qty: 0, amount: 999 } : { qty: 3, amount: 420 }; }; export const events = async () => [];`),
   "@/lib/product": stub(`export const buildableFromRecipe = () => 0; export const variantStockFrom = () => 0;`),
   // cloudHydrate's collaborators
   "@/lib/ledger/stockSnapshot": stub(`export const clearStockSnapshot = () => {};`),
@@ -90,7 +109,7 @@ const { getMobileCapabilities } = await import(new URL("src/mobile/navigation/mo
 const { realtimeTablesFor } = await import(new URL("src/mobile/data/useMobileRealtime.ts", root).href);
 
 const as = (role, authenticated = true) => { globalThis.__auth = { isAuthenticated: authenticated, userRole: role }; };
-const orderSelect = () => globalThis.__selects.filter((s) => s.table === "orders").at(-1).cols;
+const orderSelect = () => globalThis.__selects.filter((s) => s.table === "orders_operational").at(-1).cols;
 
 // ── The role rule itself ────────────────────────────────────────────────────
 
@@ -145,13 +164,54 @@ test("ADMIN still receives the courier fee and line cost; COGS stays out for eve
 
 test("stock quantity reaches the Moderator; the shelf's cost does not", async () => {
   as("MODERATOR");
+  globalThis.__rpc = []; globalThis.__balances = [];
   const product = await readers.readMobileProduct("p1");
   assert.equal(product.mobileStock, 3, "ledger quantity is operational");
   assert.equal(product.mobileCost, undefined, "cost is not held — not zero, absent");
+  assert.deepEqual(globalThis.__rpc, ["mobile_stock_quantities"], "the no-money quantity path (047)");
+  assert.deepEqual(globalThis.__balances, [], "a Moderator never asks the ledger (048 refuses it)");
   as("ADMIN");
   assert.equal((await readers.readMobileProduct("p1")).mobileCost, 420, "ADMIN unchanged");
   as("ACCOUNTANT");
   assert.equal((await readers.readMobileProduct("p1")).mobileCost, 420, "ACCOUNTANT unchanged");
+});
+
+test("every Mobile order read goes through the operational projection", async () => {
+  for (const role of ["MODERATOR", "ADMIN"]) {
+    as(role);
+    globalThis.__selects = [];
+    await readers.readMobileOrders({});
+    await readers.readMobileShipments({});
+    await readers.readMobileCustomerOrderHistory("c1");
+    await readers.readMobileCustomers({});
+    await readers.readMobileProductWaitingOrders("p1");
+    await readers.readMobileCustomerFinancialSummary("c1");
+    await readers.readMobileOrderTimeline("o1");
+    const tables = new Set(globalThis.__selects.map((x) => x.table));
+    assert.ok(!tables.has("orders"), `${role}: no Mobile read selects the orders TABLE (048 refuses it to a Moderator)`);
+    assert.ok(tables.has("orders_operational"));
+  }
+});
+
+test("the order timeline reads events without payload, for every role", async () => {
+  as("MODERATOR");
+  globalThis.__rpc = [];
+  const timeline = await readers.readMobileOrderTimeline("o1");
+  assert.deepEqual(globalThis.__rpc, ["mobile_order_timeline"]);
+  assert.equal(timeline.find((e) => e.status === "order_placed")?.labelAr, "تم إنشاء الطلب");
+});
+
+test("a Moderator's customer summary carries no lifetime revenue — null, not 0", async () => {
+  as("MODERATOR");
+  globalThis.__balances = [];
+  const summary = await readers.readMobileCustomerFinancialSummary("c1");
+  assert.equal(summary.deliveredRevenue, null);
+  assert.deepEqual(globalThis.__balances, [], "customer_ltv is not asked for");
+  assert.equal(typeof summary.openExposure, "number", "operational COD exposure stays");
+  as("ADMIN");
+  assert.equal((await readers.readMobileCustomerFinancialSummary("c1")).deliveredRevenue, 999, "ADMIN unchanged");
+  const screen = read("src/mobile/screens/MobileCustomerDetails.tsx");
+  assert.match(screen, /financials\.deliveredRevenue !== null && \(/, "the tile is absent, not «٠»");
 });
 
 // ── Mobile screens ──────────────────────────────────────────────────────────
@@ -184,7 +244,14 @@ test("the Moderator's Mobile surface is exactly the operational one", () => {
 
 test("a Moderator's socket is not subscribed to supplier invoices", () => {
   // postgres_changes delivers the whole row: a subscription IS a read.
-  assert.deepEqual(realtimeTablesFor("MODERATOR"), ["orders", "products", "customers", "ledger_events"]);
+  assert.deepEqual(realtimeTablesFor("MODERATOR"), ["products", "customers", "store_activity"]);
+  // No role subscribes to order or ledger ROWS on Mobile any more: they carry
+  // cost, and 048 refuses them to a Moderator. store_activity (047) is the cue.
+  for (const role of ["ADMIN", "ACCOUNTANT", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "MODERATOR"]) {
+    const tables = realtimeTablesFor(role);
+    assert.ok(!tables.includes("orders") && !tables.includes("ledger_events"), `${role} is not sent order/ledger rows`);
+    assert.ok(tables.includes("store_activity"), `${role} still hears orders and ledger changes`);
+  }
   for (const role of ["ADMIN", "ACCOUNTANT"]) {
     assert.ok(realtimeTablesFor(role).includes("purchase_invoices"), `${role} keeps its purchasing refresh`);
   }

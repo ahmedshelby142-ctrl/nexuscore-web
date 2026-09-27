@@ -17,6 +17,11 @@
 -- 32f9d480), foreign ADMIN d626358d of store c58d76ab, and an ADMIN
 -- `purchase` event 767d9ac5 that already existed (2 lines). The expected
 -- column states the answer; any row whose outcome disagrees is a failure.
+--
+-- 2026-09-27 (044): the legitimate events use builder-real shapes — 044
+-- refuses the synthetic ones this file first used (a sale with no revenue, an
+-- order_placed carrying a courier receivable). G and CAVEAT append a VALID
+-- sale so that it is 043's same-transaction rule they exercise, not 044's.
 -- ============================================================================
 set local role authenticated;
 create temp table r(n serial, c text, expected text, outcome text);
@@ -37,20 +42,21 @@ do $$ begin
 end $$;
 do $$ begin
   begin
-    perform public.ledger_append('{"id":"qa043-G","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"sale","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","payload":"{}","lines":[{"id":"qa043-A1","account":"wallet","subject_id":"inStoreSafe","amount_delta":1}]}'::jsonb);
+    perform public.ledger_append('{"id":"qa043-G","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"sale","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","payload":"{}","lines":[{"id":"qa043-A1","account":"wallet","subject_id":"inStoreSafe","amount_delta":1},{"id":"qa043-G2","account":"revenue","subject_id":"pos","amount_delta":1}]}'::jsonb);
     insert into r(c,expected,outcome) values ('I2-G append with a bad line','REJECT','ACCEPTED');
   exception when others then insert into r(c,expected,outcome) values ('I2-G append with a bad line','REJECT','REJECTED '||sqlstate); end;
 end $$;
 insert into r(c,expected,outcome) select 'I2-G no orphan event left behind','0','events='||count(*) from ledger_events where id='qa043-G';
 do $$ begin
   begin
-    perform public.ledger_append('{"id":"qa043-SUB","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"sale","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","payload":"{}","lines":[{"id":"qa043-SUB1","account":"wallet","subject_id":"inStoreSafe","amount_delta":1}]}'::jsonb);
+    perform public.ledger_append('{"id":"qa043-SUB","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"sale","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","payload":"{}","lines":[{"id":"qa043-SUB1","account":"wallet","subject_id":"inStoreSafe","amount_delta":1},{"id":"qa043-SUB2","account":"revenue","subject_id":"pos","amount_delta":1}]}'::jsonb);
     insert into r(c,expected,outcome) values ('CAVEAT append inside an EXCEPTION subtransaction','REJECT (documented fail-closed)','ACCEPTED');
   exception when others then insert into r(c,expected,outcome) values ('CAVEAT append inside an EXCEPTION subtransaction','REJECT (documented fail-closed)','REJECTED '||sqlstate); end;
 end $$;
 select set_config('request.jwt.claims','{"sub":"32f9d480-3b2d-47c1-bfa2-0cac96fa4637","role":"authenticated"}',true);
-insert into r(c,expected,outcome) select 'I2-B POS sale via ledger_append','PASS','OK '||ledger_append('{"id":"qa043-B","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"sale","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","payload":"{}","lines":[{"id":"qa043-B1","account":"wallet","subject_id":"inStoreSafe","amount_delta":5000},{"id":"qa043-B2","account":"stock","subject_id":"b8955a15-724f-4c8f-a963-d4f2ac6afeb9","qty_delta":-1,"amount_delta":-1000}]}'::jsonb);
-insert into r(c,expected,outcome) select 'I2-F POS order_placed','PASS','OK '||ledger_append('{"id":"qa043-F4","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"order_placed","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","ref_type":"ecommerce_order","ref_id":"QA043","payload":"{}","lines":[{"id":"qa043-F4a","account":"receivable_courier","subject_id":"qa","amount_delta":700}]}'::jsonb);
+insert into r(c,expected,outcome) select 'I2-B POS sale via ledger_append','PASS','OK '||ledger_append('{"id":"qa043-B","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"sale","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","payload":"{}","lines":[{"id":"qa043-B1","account":"wallet","subject_id":"inStoreSafe","amount_delta":5000},{"id":"qa043-B2","account":"stock","subject_id":"b8955a15-724f-4c8f-a963-d4f2ac6afeb9","qty_delta":-1,"amount_delta":-1000},{"id":"qa043-B3","account":"revenue","subject_id":"pos","amount_delta":5000}]}'::jsonb);
+insert into r(c,expected,outcome) select 'I2-F POS order_placed','PASS','OK '||ledger_append('{"id":"qa043-F4","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"order_placed","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","ref_type":"ecommerce_order","ref_id":"QA043","payload":"{}","lines":[{"id":"qa043-F4a","account":"stock","subject_id":"b8955a15-724f-4c8f-a963-d4f2ac6afeb9","qty_delta":-1,"amount_delta":-1000},{"id":"qa043-F4b","account":"wallet","subject_id":"vodafoneCash","amount_delta":700}]}'::jsonb);
+insert into r(c,expected,outcome) select 'I2-F POS order_delivered (courier now holds 700)','PASS','OK '||ledger_append('{"id":"qa043-F6","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"order_delivered","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","ref_type":"ecommerce_order","ref_id":"QA043-DELIVERED","payload":"{}","lines":[{"id":"qa043-F6a","account":"receivable_courier","subject_id":"qa","amount_delta":700},{"id":"qa043-F6b","account":"revenue","subject_id":"ecommerce","amount_delta":700}]}'::jsonb);
 insert into r(c,expected,outcome) select 'I2-F POS courier_settlement','PASS','OK '||ledger_append('{"id":"qa043-F5","store_id":"db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f","device_id":"e772af92-fa0d-406c-b995-96bb570c6923","kind":"courier_settlement","occurred_at":"2026-09-27T00:00:00Z","created_at":"2026-09-27T00:00:00Z","payload":"{}","lines":[{"id":"qa043-F5a","account":"receivable_courier","subject_id":"qa","amount_delta":-700},{"id":"qa043-F5b","account":"wallet","subject_id":"inStoreSafe","amount_delta":700}]}'::jsonb);
 do $$ begin
   begin
@@ -121,5 +127,5 @@ end $$;
 select set_config('request.jwt.claims','{"sub":"c6b25c1b-8ed9-4566-9e63-e890967270d2","role":"authenticated"}',true);
 insert into r(c,expected,outcome) select 'BALANCE till after legit events only','425800 (423000 + 2800)','till='||sum(amount_delta) from ledger_lines where store_id='db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f' and account='wallet' and subject_id='inStoreSafe';
 insert into r(c,expected,outcome) select 'BALANCE old purchase event lines unchanged','2','lines='||count(*) from ledger_lines where event_id='767d9ac5-f0d8-4e60-a622-97467e8d5f6f';
-insert into r(c,expected,outcome) select 'BALANCE new lines = legit lines only','13','lines='||count(*) from ledger_lines where id like 'qa043-%';
+insert into r(c,expected,outcome) select 'BALANCE new lines = legit lines only','17','lines='||count(*) from ledger_lines where id like 'qa043-%';
 select c, expected, outcome from r order by n;

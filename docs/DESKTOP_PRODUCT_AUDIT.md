@@ -1146,11 +1146,13 @@ bodies and the Supabase security advisor.
 | I-5 | Leaked-password protection is off at the project level; the client-side HIBP check guards the form, not the API, and fails open | LOW |
 | I-6 | Client-side privilege assumptions in `localStorage`: `isAuthenticated`, `userRole`, `isProPlan`, `feature-storage`. Only `isProPlan` and the feature flags change what is *offered*; role and auth are re-checked by Postgres | LOW |
 | I-7 | An expired licence still permits reads (§G-1) | DECISION |
+| I-8 | A NEW ledger event was accepted with any lines at all. 043 stopped lines being added to OLD events, but `ledger_append` validated nothing about the event it created. There was no list of kinds (`bonus` was accepted, through the events policy's ELSE branch), no list of accounts (`free_money` was accepted), and no per-kind equation. **Reproduced 2026-09-27 as POS_ECOMMERCE: five mint paths, till 423,000 → 400,423,000 piastres** (rolled back) | ✅ **FIXED 2026-09-27** — migration 044, in production; see *I-8 — FIXED* below |
 
 ### SUPABASE NOTES FOR CLAUDE CODE
 
 **Both changes below are now APPLIED** — see *I-2 / I-3 — FIXED* directly
-under this paragraph. The two original notes are kept as written for the
+under this paragraph. The follow-up P1 (I-8, new-event semantics) is
+*I-8 — FIXED*, after it. The two original notes are kept as written for the
 evidence trail.
 
 #### I-2 / I-3 — FIXED 2026-09-27 (migration 043, in production)
@@ -1265,6 +1267,113 @@ passed in the matrix.
   passed, a line on an old event was REJECTED, a stock update touched 1 row,
   and an id change was REJECTED. No exploit row was ever committed.
 - The security advisors show only the pre-existing items classified above.
+
+#### I-8 — FIXED 2026-09-27 (migration 044, in production): new-event semantic integrity
+
+**Root cause.** The ledger has three gates: who may post which kind
+(`insert_ledger_events`), which event a line may join (043), and what an event
+may contain. The third did not exist. So any selling role could post, through
+the real `ledger_append` path, an event that was well-formed but meaningless.
+All five of these were **accepted** before the fix:
+
+- a `sale` that is one `wallet +100,000,000` line;
+- a kind that does not exist (`bonus`);
+- an account that does not exist (`free_money`);
+- an `order_delivered` of `receivable_courier +1M` with no goods, then a
+  `courier_settlement` turning it into cash;
+- a `client_payment` top-up of 1M on an order that does not exist.
+
+**Why not "every event balances".** This ledger is not double-entry. A sale
+writes `stock −` at cost, `wallet +` and `revenue +` at price, `cogs +` and
+`customer_ltv +`, and those do not sum to zero. Some legitimate events have no
+in-event counterpart by design:
+
+- a wallet opening balance is one `wallet +`;
+- a deposit is `wallet +` on `order_placed`;
+- a POS refund is a `sale` with every sign flipped.
+
+A global balance rule would have refused real sales. So each kind gets the
+equation **its own builder** satisfies, and every equation was checked against
+the code and against every production event before it was written.
+
+**The invariants** (piastres):
+
+| Kind | Rule |
+|---|---|
+| every line | account ∈ the 11 accounts; only `stock` carries a quantity, never zero or signed against its value; `unit_cost` ≥ 0 and only on stock/cogs; a wallet is one of the 4 canonical wallets |
+| kind | ∈ the 17 `EventKind`s + 038's `deposit_refunded` |
+| `sale` | wallet + receivable_client = revenue; customer_ltv ∈ {0, revenue}; delivery cost ≥ 0 |
+| `order_placed` | stock out (≥ 1 line) + deposit in, nothing else |
+| `order_edited` | stock only |
+| `order_cancelled` | stock in; deposit refunded out, or kept as revenue on `forfeited_deposit` / `deposit_pending_resolution`, not both |
+| `order_returned_pending` | no lines |
+| `order_delivered` | no wallet; everything ≥ 0; **deposits already booked on this order + COD ≤ revenue + shipping** |
+| `return_confirmed` | wallet + receivable_client + receivable_courier − payable_courier + expense = revenue ≤ 0; stock in |
+| `rto_confirmed` | receivable_courier − payable_courier + expense = 0; money only goes back |
+| `purchase` | stock + wallet − payable_supplier = 0 (supplier returns included) |
+| `supplier_payment` | wallet = payable_supplier < 0 |
+| `client_payment` | money in; with a receivable: wallet + receivable_client = 0; without one (order top-up): **the order exists in this store and the top-up ≤ its outstanding `expectedCod`** |
+| `expense`, `payroll` | wallet + expense = 0, money out |
+| `wallet_transfer` | wallet only, ≥ 2 lines, sums to 0 |
+| `courier_settlement` | wallet + receivable_courier − payable_courier + expense = 0; **neither courier balance may go below zero** (serialized per courier with an advisory lock) |
+| `owner_draw` | wallet + owner_budget = 0, money out |
+| `stock_adjustment` | a wallet line only as a lone opening balance; with expense: stock + expense = 0 |
+| `deposit_refunded` | wallet = revenue < 0 |
+
+**Enforcement.** `public.ledger_validate_event(jsonb)` is SECURITY INVOKER,
+reads through the caller's RLS, and raises `23514`. `ledger_append` is
+re-created identical to 032 except that it calls the validator **before its
+first INSERT**, so a refused event writes nothing. After 043, `ledger_append`
+is the only way lines can reach the table: a line needs an event created in
+the same transaction, and PostgREST cannot do two inserts in one request. That
+makes the validator the choke point. There are no exception handlers, per
+043's constraint. No table, column, policy or row was changed, and the 11
+historical events that would fail the new rules were not rewritten: 6 legacy
+empty events, 2 on the QA probe wallet `M21-ATOMICITY-PROBE-WALLET`, and 3
+replay artefacts that pass at their real time.
+
+**Evidence.**
+
+- **Historical replay:** 317 / 328 events pass. The 11 that fail are legacy or
+  QA shapes; the current builders write none of them.
+- **QA** (`scripts/security/044_semantic_matrix.sql`): the migration was
+  applied inside a rolled-back live transaction. Result: **64 / 64 as
+  expected.**
+  - 30 legitimate events, every kind, by the role that writes it.
+  - 31 attacks refused, each with its own rule: the 5 reproduced paths; an
+    invalid wallet, account, sign or direction; a stock/qty/cost combination;
+    a deposit ignored at delivery; a top-up above what is owed; invalid events
+    from ADMIN too; cross-tenant attempts.
+  - 0 refused events or lines exist afterwards, and wallet drift is 0.
+- **Production** (`20260927073903`):
+  - read-only checks: the validator runs before the insert, no exception
+    handler, anon cannot execute it, 043's policy and guard intact, 328 / 689
+    rows unchanged;
+  - the matrix against the deployed objects: 29 legitimate events went
+    through, 11 attacks were refused, nothing was partially written, and wallet
+    drift is 0;
+  - 043's matrix (legitimate rows moved to builder-real shapes): 31 / 31.
+- **Tests** (`check_ledger_semantic_integrity.mjs`, 11 tests):
+  - every real builder, including fractional inputs, satisfies the same rules;
+  - the kind, account and wallet lists are compared with the TypeScript unions;
+  - the SQL is pinned, and each of 18 predicates plus two structural
+    properties is mutated; every mutant is caught.
+
+**Residuals — not closed by 044, stated rather than hidden:**
+
+- **P1 — an `order_placed` deposit is still an unbound cash assertion.** The
+  app appends the event *before* it writes the order row
+  (`routes/ecommerce-orders.tsx`), so the database cannot check the deposit
+  against its order. A selling role can still record a large deposit. Closing
+  it needs the order written first, then the deposit bound to
+  `orders.depositAmount` — an app-flow change plus a rule, not this migration.
+- **P2 — consistency is not truth.** A cashier can record a real-looking sale,
+  or a wholesale "client paid" that creates client credit, for money that never
+  arrived. The books stay internally consistent, and the event names its
+  actor. Detection is till reconciliation, not a database rule.
+- **P2 — the top-up bound reads `orders.expectedCod`,** which selling roles may
+  update. It is therefore only as strong as that document; a guarded
+  `expectedCod` column would tighten it.
 
 #### I-2 — `ledger_lines` accepts lines for events it did not create
 

@@ -17,6 +17,13 @@ not in chat memory. Skim the top few entries at session start to recover where t
 Legend for status: ✅ done · 🔧 in progress · ⏳ flagged, not yet done.
 
 ---
+## Ledger semantic integrity — I-8, new events must make sense for their kind (2026-09-27)
+- Problem: after 043, a NEW event could still carry any lines. Reproduced as POS_ECOMMERCE through `ledger_append` (rolled back), all five accepted: a `sale` that is a lone `wallet +1M`; an invented kind `bonus`; an invented account `free_money`; fake COD cashed via `courier_settlement`; a top-up on a non-existent order. The till went 423,000 → 400,423,000 piastres. No CHECK existed on kind or account at all.
+- Fix: migration 044. `ledger_validate_event` (SECURITY INVOKER, 23514) is called by `ledger_append` before its first insert, so a refused event writes nothing. It adds kind/account/wallet lists, structural line rules, and a per-kind equation taken from each builder (the ledger is not double-entry, so no global balance rule). There are cross-event bounds for COD vs deposits and for top-ups vs the order. A courier cannot settle below zero (advisory lock). No table, policy or row touched; 043 unchanged.
+- Verified: historical replay 317/328 (the 11 are legacy/QA shapes). QA inside a rolled-back live transaction: 64/64. Production (`20260927073903`): 29 legitimate events went through and 11 attacks were refused, with no partial write and zero wallet drift; the 043 matrix still passes 31/31 with its synthetic rows made builder-real. `check_ledger_semantic_integrity.mjs` has 11 tests (real builders vs the rules, list drift guards, 20 mutants). Working tree 1423 / 1417 / 0 fail / 6 skipped; tsc 0; both builds green.
+- Residual: an `order_placed` deposit is still unbound, because the app writes the event before the order row (P1, needs a flow change).
+
+---
 ## Supabase security hardening — I-2 ledger event integrity, I-3 product id (2026-09-27)
 - Problem: `insert_ledger_lines` checked role + store only, so any writing role could POST a line into an EXISTING event. Re-proven before the fix: as POS_ECOMMERCE, a +100,000,000 piastre wallet line on an ADMIN purchase was accepted, and the till went 423,000 → 100,423,000 (rolled back). The product guard also skipped `id`, so POS could re-key a product off its ledger history (1 row).
 - Fix: migration 043 (one policy, one trigger function, no data touched). A ledger line is accepted only for an event created in the same transaction (`e.xmin = pg_current_xact_id()::xid`) in the line's store. `ledger_append` is unaffected, and old events are closed to every role. An existing product's id is immutable for every session user; the check sits before the ADMIN/ACCOUNTANT bypass, and the stock mirror stays writable.

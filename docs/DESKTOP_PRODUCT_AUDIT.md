@@ -1146,6 +1146,7 @@ bodies and the Supabase security advisor.
 | I-5 | Leaked-password protection is off at the project level; the client-side HIBP check guards the form, not the API, and fails open | LOW |
 | I-6 | Client-side privilege assumptions in `localStorage`: `isAuthenticated`, `userRole`, `isProPlan`, `feature-storage`. Only `isProPlan` and the feature flags change what is *offered*; role and auth are re-checked by Postgres | LOW |
 | I-7 | An expired licence still permits reads (§G-1) | DECISION |
+| I-9 | An `order_placed` deposit could be any amount. The order screen appended the event (stock out + deposit into a wallet) **before** it wrote the order row, so the database had no document to bound the deposit against. A refused row also left money and a reservation behind a compensating cancel that could itself fail: 21 orphan `order_placed` events and 2 double placements exist in production. **Reproduced 2026-09-27: POS banked a 1,000,000 EGP "deposit" on one unit** (rolled back) | ✅ **FIXED 2026-09-27** — migrations 045 + 046; see *I-9 — FIXED* below |
 | I-8 | A NEW ledger event was accepted with any lines at all. 043 stopped lines being added to OLD events, but `ledger_append` validated nothing about the event it created. There was no list of kinds (`bonus` was accepted, through the events policy's ELSE branch), no list of accounts (`free_money` was accepted), and no per-kind equation. **Reproduced 2026-09-27 as POS_ECOMMERCE: five mint paths, till 423,000 → 400,423,000 piastres** (rolled back) | ✅ **FIXED 2026-09-27** — migration 044, in production; see *I-8 — FIXED* below |
 
 ### SUPABASE NOTES FOR CLAUDE CODE
@@ -1268,6 +1269,126 @@ passed in the matrix.
   and an id change was REJECTED. No exploit row was ever committed.
 - The security advisors show only the pre-existing items classified above.
 
+#### I-9 — FIXED 2026-09-27 (migrations 045 + 046): the order-deposit boundary
+
+**Current flow, before the fix.** `/ecommerce-orders` is the only writer of
+`order_placed` (checked: every `kind: "order_placed"` in `src/`). It ran as
+separate requests:
+
+1. claim the discount;
+2. draw `ECO-` from the counter;
+3. `appendEvent(order_placed)` — stock out, plus `wallet +deposit`;
+4. `addOrder` — the row;
+5. on a refused row, a compensating `order_cancelled` refunding the deposit.
+
+So the money reached the ledger before any document said what was owed. The
+client never capped the deposit either: `remaining_balance` could go negative,
+and `canSubmit` only checked that it was a number.
+
+**Root cause.** A deposit's counterpart is the order document, and the
+document did not exist yet when the deposit was booked. 044 could bound
+top-ups (by `expectedCod`) and delivery COD (by deposits), but not the first
+deposit.
+
+**The canonical rule** — from the code and all 36 production orders, which
+satisfy every part of it:
+
+- `totalAmount = Σ(items quantity × unitPrice) − discountAmount`
+- `depositAmount + expectedCod = totalAmount + shippingFee`
+- none of those negative
+
+With COD ≥ 0 that gives **deposit ≤ totalAmount + shippingFee**: everything
+the order can ever owe. Later top-ups keep 044's bound (≤ `expectedCod`).
+Rounding tolerance is ½ piastre on EGP sums, and 1 piastre between the row
+(EGP) and the line (piastres), which the real client's float dust needs
+(`expectedCod: 232.23000000000002`).
+
+**Implementation.**
+
+- **045 `place_order(p_order, p_event)`** — SECURITY INVOKER. In **one
+  transaction** it inserts the order row (only the columns sent, so defaults
+  hold) and then calls `ledger_append`. It is idempotent on
+  `(store, orderNumber)` under an advisory lock: a retry that finds its order
+  returns it with `replayed: true`, and a row without its event is refused. The
+  event must name this order and this store. `anon` cannot execute it.
+- **046** re-creates `ledger_validate_event` as **044 byte for byte plus one
+  block** (a test asserts the equality). An `order_placed` must name an order
+  that exists in this store, must be that order's only placement, the order's
+  figures must add up, and the wallet lines must equal its `depositAmount`.
+- **Client:**
+  - `useOrderStore.placeOrder` sends the row (`toRemoteRow`) and the event
+    (`prepareEvent`, split out of `appendEvent`) in that one RPC.
+  - It tells the outcomes apart: a *definite* refusal is a response with an
+    error code, so nothing exists; an *unknown* outcome means no answer came.
+  - The route keeps the draft's number (and its discount claim) until the
+    placement is confirmed, so a retry replays rather than placing twice.
+  - The compensation path is deleted — there is nothing left to compensate.
+  - `canSubmit` refuses an over-deposit, as UX only.
+
+**Atomicity.** A refused row, a refused event, or a lost connection mid-call
+leaves **neither** the order nor the money: one Postgres transaction. There is
+no longer an order-without-ledger or a ledger-without-order state for this flow.
+
+**QA** (`scripts/security/046_deposit_matrix.sql`: 045 + 046 applied inside a
+rolled-back live transaction). Result: **22 / 22 as expected.**
+
+| Case | Result |
+|---|---|
+| A zero deposit | PASS |
+| B deposit = the whole 340.00 | PASS |
+| C deposit 100.00 | PASS |
+| G 123.45 on 299.99 + 40.01; and 12.345 booked as the client rounds it | PASS |
+| M discounted order | PASS |
+| N ADMIN placement | PASS |
+| H duplicate submit | **REPLAYED** — exactly 1 order, 1 event, 1 deposit line |
+| D 341.00 on 340.00 | refused |
+| D2 honest row but 341.00 banked | refused |
+| E 1,000,000 on 340.00 | refused |
+| E2 total inflated over the goods | refused |
+| F negative deposit | refused |
+| I the ledger refuses → no orphan order | refused |
+| J the row refused → no orphan money | refused |
+| L1 old ledger-first path | refused |
+| L2 a second placement | refused |
+| L3 event naming another order | refused |
+| K foreign ADMIN | refused (42501, RLS) |
+
+Afterwards: 0 orders, events or lines from the refusals, and the wallet moved
+by exactly the legitimate 825.79.
+
+The **real client payload** — generated by `toRemoteRow` and the real builder
+— places cleanly, and the same payload banking 1.00 EGP more than its document
+is refused, with no side effect.
+
+**Before the fix, in production** (044 only, rolled back): POS
+`order_placed` banking 1,000,000 EGP on one unit with no order row was
+**ACCEPTED**; `vodafoneCash` went to 100,010,000.
+
+**Tests.** `check_order_deposit_boundary.mjs` (10 tests):
+
+- 046 = 044 + the block;
+- 7 deposit predicates, each mutated and caught;
+- `place_order`'s order of operations, idempotency and invoker security;
+- the real `placeOrder` against a stubbed RPC — one call, and the confirmed,
+  replayed, refused and unknown outcomes;
+- the single placement path and the number-reuse contract.
+
+`check_order_traceability` re-expressed: the order and its placement carry the
+same number in one transaction.
+
+**Production.** 045 was applied (`place_order`) before this commit and verified
+live with a legitimate POS placement (rolled back). **046 is applied after this
+commit's client is deployed**, because it refuses the old client's
+ledger-first placement. The window is sequenced so that neither client version
+meets a database it cannot use. The post-deploy verification is in the phase
+report.
+
+**Residual (P2, unchanged class):** an order's item prices are typed by the
+operator. The deposit is now bounded by the order's own goods and shipping,
+but a fabricated order with inflated prices is the "consistent but not true"
+class 044 already records. It is visible, and it is caught by reconciliation,
+not by a rule.
+
 #### I-8 — FIXED 2026-09-27 (migration 044, in production): new-event semantic integrity
 
 **Root cause.** The ledger has three gates: who may post which kind
@@ -1361,7 +1482,7 @@ replay artefacts that pass at their real time.
 
 **Residuals — not closed by 044, stated rather than hidden:**
 
-- **P1 — an `order_placed` deposit is still an unbound cash assertion.** The
+- ~~**P1 — an `order_placed` deposit is still an unbound cash assertion.**~~ **CLOSED by I-9 (045 + 046).** The
   app appends the event *before* it writes the order row
   (`routes/ecommerce-orders.tsx`), so the database cannot check the deposit
   against its order. A selling role can still record a large deposit. Closing

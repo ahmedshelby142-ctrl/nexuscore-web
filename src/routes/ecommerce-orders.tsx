@@ -3,7 +3,7 @@ import { useRunOnce } from "@/hooks/useSubmitGate";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { CourierSelect } from "@/components/shipping/CourierSelect";
 import { requiresCourierAssignment } from "@/lib/courierBatch";
-import { Component, useState, useMemo, useCallback, useEffect, type ReactNode } from "react";
+import { Component, useState, useMemo, useCallback, useEffect, useRef, type ReactNode } from "react";
 import {
   ShoppingBag,
   Package,
@@ -29,8 +29,7 @@ import { useOrderStore, expandStockItems } from "@/store/useOrderStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
 import { rateFor, shippingFeeFor } from "@/lib/shippingRates";
 import { useSearchParams } from "react-router-dom";
-import { appendEvent } from "@/lib/ledger";
-import { buildOrderPlacedLines, buildOrderCancelledLines } from "@/lib/ledger/orders";
+import { buildOrderPlacedLines } from "@/lib/ledger/orders";
 import {
   exchangeBlock,
   returnedValue,
@@ -164,7 +163,20 @@ function EcommerceOrdersInner() {
   // ── Live state from global stores ──────────────────────────
   // The Settings matrix is the only source of a shipping price.
   const shippingRates = useShippingRatesStore((s) => s.rows);
-  const addOrder = useOrderStore((s) => s.addOrder);
+  const placeOrder = useOrderStore((s) => s.placeOrder);
+  /**
+   * The number (and discount use) of the order this form is trying to place,
+   * kept until the database CONFIRMS the placement.
+   *
+   * A submit whose answer never arrived may have placed the order. Drawing a
+   * fresh number for the retry would then place it twice — second order,
+   * second deposit. Reusing this one lets `place_order` recognise its own
+   * order and return it (`replayed`). Cleared only on a confirmed success.
+   */
+  const pendingPlacement = useRef<{
+    orderNumber: string;
+    claimed: { id: string; amount: number } | null;
+  } | null>(null);
   const allOrders = useOrderStore((s) => s.orders);
   const updateCustomer = useCustomerStore((s) => s.updateCustomer);
   // Stock and cost from the ledger — the same numbers POS and جملة sell against.
@@ -554,6 +566,10 @@ function EcommerceOrdersInner() {
     if (rows.length === 0 || !rows.every(rowIsSound)) return false;
     if (!Number.isFinite(total_price) || !Number.isFinite(shipping_fee)) return false;
     if (!Number.isFinite(depositVal) || !Number.isFinite(remaining_balance)) return false;
+    // A deposit is part of what the order costs, never more than it and never
+    // negative. For the button only: `place_order` + `ledger_validate_event`
+    // (045/046) refuse it whatever this screen says.
+    if (depositVal < 0 || remaining_balance < 0) return false;
     // الإعدادات → «تفعيل شرط العربون الإلزامي». The toggle has existed, and been
     // described to the owner as disabling the submit button, since it was
     // added — and nothing read it. A switch that promises to enforce a rule and
@@ -744,50 +760,106 @@ function EcommerceOrdersInner() {
     // two order forms a millisecond apart. Every failure path below gives the
     // claim back, so a refused order never leaves a use burnt — and on a
     // one-use code, never burns the only one.
-    let claimedDiscount: { id: string; amount: number } | null = null;
-    if (appliedDiscount?.id && discountAmount > 0) {
+    //
+    // A retry of a placement whose outcome is unknown keeps that attempt's
+    // claim: if the order was in fact placed, that claim is the order's own.
+    // A different discount (or amount) since then gives the old one back.
+    let claimedDiscount = pendingPlacement.current?.claimed ?? null;
+    const wantDiscount = appliedDiscount?.id && discountAmount > 0
+      ? { id: appliedDiscount.id, amount: discountAmount }
+      : null;
+    if (claimedDiscount && (claimedDiscount.id !== wantDiscount?.id || claimedDiscount.amount !== wantDiscount?.amount)) {
+      await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+      claimedDiscount = null;
+      if (pendingPlacement.current) pendingPlacement.current.claimed = null;
+    }
+    if (wantDiscount && !claimedDiscount) {
       try {
-        await claimDiscountUse(appliedDiscount.id, discountAmount);
-        claimedDiscount = { id: appliedDiscount.id, amount: discountAmount };
+        await claimDiscountUse(wantDiscount.id, wantDiscount.amount);
+        claimedDiscount = wantDiscount;
+        if (pendingPlacement.current) pendingPlacement.current.claimed = claimedDiscount;
       } catch (e) {
         setResult({ success: false, message: e instanceof Error ? e.message : String(e) });
         return;
       }
     }
 
-    // Allocated HERE, before the ledger event, because `order_placed` reserves
-    // the stock and banks the deposit and must be traceable to its order.
-    // Every other event in an order's life carries `refId: orderNumber`;
-    // measured on QA-STORE, every client-written `order_placed` carried none —
-    // so a per-order ledger reconciliation was missing the one event that
-    // opens the order.
-    //
     // Drawn from Postgres, not from `Date.now()`: the counter is serialised by
     // a row lock, so two tills taking an order in the same millisecond get
-    // different numbers instead of one number twice. Migration 042 seeds the
-    // sequence and puts a unique index behind it.
+    // different numbers instead of one number twice (migration 042).
     //
-    // A number is spent even if the order below is refused, which leaves gaps.
-    // That is the same trade جملة and الشراء already make, and the right one:
-    // a gap is a question someone can answer, a duplicate is a document you
-    // cannot trust.
+    // Drawn ONCE per placement and kept until it is confirmed — see
+    // `pendingPlacement`. A refused placement keeps it too: nothing was
+    // written under it, so the retry may use it.
     let orderNumber: string;
-    try {
-      orderNumber = await nextDocumentNumber("ecommerce_order", "ECO-");
-    } catch (e) {
-      // Nothing has moved yet except the discount claim, which goes back.
-      if (claimedDiscount) {
-        await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+    if (pendingPlacement.current) {
+      orderNumber = pendingPlacement.current.orderNumber;
+    } else {
+      try {
+        orderNumber = await nextDocumentNumber("ecommerce_order", "ECO-");
+      } catch (e) {
+        // Nothing has moved yet except the discount claim, which goes back.
+        if (claimedDiscount) {
+          await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+        }
+        setResult({
+          success: false,
+          message: `لم يُسجَّل الطلب ولم يتغيّر المخزون. ${e instanceof Error ? e.message : String(e)}`,
+        });
+        return;
       }
-      setResult({
-        success: false,
-        message: `لم يُسجَّل الطلب ولم يتغيّر المخزون. ${e instanceof Error ? e.message : String(e)}`,
-      });
-      return;
+      pendingPlacement.current = { orderNumber, claimed: claimedDiscount };
     }
 
-    try {
-      await appendEvent({
+    // The order row and its `order_placed` — stock out, deposit in — in ONE
+    // database transaction (`place_order`, migration 045).
+    //
+    // This used to be two requests: the ledger event first, then the row. The
+    // deposit reached the ledger before any document said what was owed, so
+    // nothing could bound it, and a refused row left a reservation and money
+    // with no order — 21 of them in production — behind a compensating
+    // `order_cancelled` that could itself fail. Now the database refuses a
+    // deposit the order does not account for (046), and a failure anywhere
+    // leaves neither the row nor the event.
+    const placed = await placeOrder(
+      {
+        orderNumber,
+        customerId: customerId || undefined,
+        customerName: customer_name.trim(),
+        customerPhone: customer_phone.trim(),
+        address: [governorate, city, detailedAddress].filter(Boolean).join(" - "),
+        governorate,
+        // `orders.city` is a real column (migration 012) that NOTHING wrote: the
+        // city was only ever put inside `metadata`, which is not a column, so
+        // `toRemoteRow` dropped it.
+        city,
+        // TOP-LEVEL, not inside `metadata`: `orders.original_order_id` is the
+        // real column `movementFor` reads to know the original's return is a
+        // SWAP and not a refund.
+        ...(isExchange && originalOrderId ? { original_order_id: originalOrderId } : {}),
+        paymentMethod,
+        shippingFee: shipping_fee,
+        // Marks this order as the one recovering a previous wasted trip. Delivery
+        // reads it to know the debt is settled — see `clearsShippingDebt`.
+        shippingPenaltyApplied: shippingPenaltyApplied || undefined,
+        items,
+        stockItems,
+        cogsAmount,
+        totalAmount: total_price,
+        discountCodeId: appliedDiscount?.id,
+        discountAmount: appliedDiscount ? discountAmount : undefined,
+        depositAmount: depositVal,
+        depositWallet: depositVal > 0 ? depositWallet : undefined,
+        expectedCod: remaining_balance,
+        courierName,
+        // Without this the order named a company in `courierName` while every
+        // ledger line booked to the subject `"default"` — see `courierIdOf`.
+        courierId: courierId || undefined,
+        courierFee: courierFeeValue,
+        status: "pending",
+        isExchange,
+      },
+      {
         kind: "order_placed",
         actor: "أونلاين",
         refType: "ecommerce_order",
@@ -807,22 +879,40 @@ function EcommerceOrdersInner() {
           depositAmount: depositVal,
           wallet: depositVal > 0 ? depositWallet : undefined,
         }),
-      });
-    } catch (e) {
-      // The reservation failed, so the use claimed for it goes back.
-      if (claimedDiscount) {
-        await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+      },
+    );
+
+    if (!placed.success) {
+      if (placed.definite) {
+        // The database refused, so its transaction rolled back: no order, no
+        // reservation, no deposit. The discount use goes back; the number is
+        // kept, since nothing exists under it.
+        if (claimedDiscount) {
+          await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
+          if (pendingPlacement.current) pendingPlacement.current.claimed = null;
+        }
+        setResult({
+          success: false,
+          message: `لم يُسجَّل الطلب ولم يتغيّر المخزون ولا الخزنة. ${placed.reason}`,
+        });
+      } else {
+        // The answer never arrived. The order may exist; the retry below
+        // carries the same number and will say so rather than place it twice.
+        setResult({
+          success: false,
+          message: `مش متأكدين الطلب ${orderNumber} اتسجّل ولا لأ (الاتصال انقطع). دوس حفظ الطلب تاني — مش هيتسجّل مرتين. ${placed.reason}`,
+        });
       }
-      setResult({
-        success: false,
-        message: `لم يُسجَّل الطلب ولم يتغيّر المخزون. ${e instanceof Error ? e.message : String(e)}`,
-      });
       return;
     }
 
+    // Confirmed. The next order draws a new number.
+    pendingPlacement.current = null;
+
     // The goods leave the shelf when the order is taken — the same moment the
-    // `order_placed` event above reserves them. Cancel and return put them
-    // back (OrdersPage), so this is the half that makes those symmetric.
+    // `order_placed` event reserved them. Cancel and return put them back
+    // (OrdersPage), so this is the half that makes those symmetric. Applied on
+    // a replay too: the first attempt's answer never reached this mirror.
     useBusinessStore.getState().applyStockMoves(
       stockItems.map((line: any) => ({
         productId: line.productId,
@@ -830,148 +920,6 @@ function EcommerceOrdersInner() {
         variantName: line.variantName,
       })),
     );
-
-    // `addOrder` can REJECT, not just return `{success:false}` — a dropped
-    // connection or a refused write throws out of the Supabase client. Nothing
-    // caught that, so `runOnce` swallowed it into an unhandled rejection and
-    // the operator was shown NOTHING AT ALL: no success, no error, a form that
-    // simply sat there while stock had already moved.
-    let orderResult: Awaited<ReturnType<typeof addOrder>>;
-    try {
-      orderResult = await addOrder({
-      // The number the ledger event above already points at.
-      orderNumber,
-      customerId: customerId || undefined,
-      customerName: customer_name.trim(),
-      customerPhone: customer_phone.trim(),
-      address: [governorate, city, detailedAddress].filter(Boolean).join(" - "),
-      governorate,
-      // `orders.city` is a real column (migration 012) that NOTHING wrote: the
-      // city was only ever put inside `metadata`, which is not a column, so
-      // `toRemoteRow` dropped it. The delivery address survived — it is
-      // composed into `address` above — but the dedicated column stayed null
-      // on every order ever placed, so anything filtering by city found none.
-      city,
-      // TOP-LEVEL, not inside `metadata`. `orders.original_order_id` is a real
-      // column and IS whitelisted in `cloudSchema`, but the link was only ever
-      // written into `metadata`, which is not a column — so `toRemoteRow`
-      // dropped it exactly the way it used to drop `city`. The database proves
-      // it: of the exchange orders that exist, not one carries a link back.
-      //
-      // The link is not cosmetic. It is what `movementFor` reads to know the
-      // original's return is a SWAP and not a refund, which decides whether the
-      // courier's trip is the shop's cost or the customer's.
-      ...(isExchange && originalOrderId ? { original_order_id: originalOrderId } : {}),
-      paymentMethod,
-      shippingFee: shipping_fee,
-      // Marks this order as the one recovering a previous wasted trip. Delivery
-      // reads it to know the debt is settled — see `clearsShippingDebt`.
-      shippingPenaltyApplied: shippingPenaltyApplied || undefined,
-      items,
-      stockItems,
-      cogsAmount,
-      totalAmount: total_price,
-      discountCodeId: appliedDiscount?.id,
-      discountAmount: appliedDiscount ? discountAmount : undefined,
-      depositAmount: depositVal,
-      depositWallet: depositVal > 0 ? depositWallet : undefined,
-      expectedCod: remaining_balance,
-      courierName,
-      // Without this the order named a company in `courierName` while every
-      // ledger line booked to the subject `"default"` — see `courierIdOf`.
-      courierId: courierId || undefined,
-      courierFee: courierFeeValue,
-      status: "pending",
-      isExchange,
-      });
-      // A refused write and a thrown one leave the SAME wreckage, so they get
-      // the same handler rather than one `return` that skips the cleanup.
-      if (!orderResult.success) throw new Error(orderResult.reason);
-    } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
-      /**
-       * Put back everything the `order_placed` above took out.
-       *
-       * The ledger is append-only, so this is a COMPENSATING event, not a
-       * rollback — the same shape a cancellation writes, because that is what
-       * this is: an order that reserved goods and then never came to exist.
-       *
-       * Without it, a refused order document left the `order_placed` event and
-       * its reservation standing with nothing pointing at them. Proven on
-       * QA-STORE by blocking the POST to `/rest/v1/orders`: a unit of
-       * QA-EXCH-DEARER left the shelf, in the ledger AND in the mirror, for an
-       * order that does not exist and never will.
-       *
-       * Written inline rather than as a nested `async` helper on purpose: the
-       * gate check in `check_online_only` reads handler declarations, and a
-       * nested one looks exactly like an ungated handler to it. This code is
-       * already inside `runOnce`, and keeping it here keeps that obvious.
-       */
-      try {
-        await appendEvent({
-          kind: "order_cancelled",
-          actor: "أونلاين",
-          refType: "ecommerce_order",
-          // The same number the refused `order_placed` used, so the reservation
-          // and its release are one traceable pair rather than two orphans.
-          refId: orderNumber,
-          payload: {
-            customerName: customer_name.trim(),
-            reason: "order document refused — reservation released",
-          },
-          lines: buildOrderCancelledLines({
-            items: stockItems.map((line) => ({
-              productId: line.productId,
-              quantity: line.quantity,
-              unitPrice: line.unitPrice,
-              unitCost: line.unitCost ?? 0,
-            })),
-            // REFUNDED, not forfeited — and this is the one cancellation where
-            // that is right. The order document was REFUSED after
-            // `order_placed` had already banked the deposit, so no order ever
-            // existed. Forfeiting would book income against a document that is
-            // not there and strand the customer's money in the till.
-            //
-            // A customer calling off a real order is the other case entirely
-            // and forfeits — see `cancelOrder` in شاشة إدارة الطلبات.
-            refundedDeposit: depositVal,
-            wallet: depositVal > 0 ? depositWallet : undefined,
-          }),
-        });
-        useBusinessStore.getState().applyStockMoves(
-          stockItems.map((line: any) => ({
-            productId: line.productId,
-            delta: line.quantity,
-            variantName: line.variantName,
-          })),
-        );
-        // The order does not exist, so neither does the use it claimed.
-        if (claimedDiscount) {
-          await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
-        }
-        refreshStock();
-        setResult({
-          success: false,
-          message: `لم يُسجَّل الطلب، والمخزون رجع زي ما كان. ${why}`,
-        });
-      } catch (releaseError) {
-        // The compensation itself failed. Nothing can be rolled back, so the
-        // only correct move is to name exactly what is outstanding rather than
-        // let it read as an ordinary error.
-        if (claimedDiscount) {
-          await releaseDiscountUse(claimedDiscount.id, claimedDiscount.amount);
-        }
-        setResult({
-          success: false,
-          message:
-            `لم يُسجَّل الطلب، لكن المخزون المحجوز لسه متسجّل كخارج. ` +
-            `بلّغ المسؤول وراجع حركة المخزون. ${why} / ${
-              releaseError instanceof Error ? releaseError.message : String(releaseError)
-            }`,
-        });
-      }
-      return;
-    }
 
     if (customerId) {
       // Awaited: the success message below says the customer was updated, so
@@ -985,7 +933,9 @@ function EcommerceOrdersInner() {
 
     setResult({
       success: true,
-      message: "تم حفظ الطلب وتحديث المخزون والعميل وشركة الشحن تلقائياً!",
+      message: placed.replayed
+        ? `الطلب ${placed.order.orderNumber} كان اتسجّل بالفعل — متسجّلش مرة تانية.`
+        : "تم حفظ الطلب وتحديث المخزون والعميل وشركة الشحن تلقائياً!",
     });
     clearDrafts("eco-order:");
     setCustomerName("");
@@ -1036,7 +986,7 @@ function EcommerceOrdersInner() {
     total_price,
     depositVal,
     remaining_balance,
-    addOrder,
+    placeOrder,
     bundles,
     products,
     costOf,

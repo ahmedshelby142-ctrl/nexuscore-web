@@ -14,6 +14,10 @@ import type {
 } from "@/types";
 import { writeThrough } from "@/services/cloudData";
 import { nextDocumentNumber } from "@/services/documentNumber";
+import { getSupabaseClient } from "@/lib/supabase";
+import { getSyncIdentity } from "@/services/api/storeContext";
+import { fromRemoteRow, toRemoteRow } from "@/services/api/fieldMapping";
+import { prepareEvent, type NewEvent } from "@/lib/ledger";
 
 
 /**
@@ -66,9 +70,27 @@ interface OrderState {
   addOrder: (
     order: CreateEcommerceOrder,
   ) => Promise<{ success: true; order: EcommerceOrder } | { success: false; reason: string }>;
+  /**
+   * Write an online order AND its `order_placed` in one database transaction
+   * (`place_order`, migration 045). See the method for the retry contract.
+   */
+  placeOrder: (
+    order: CreateEcommerceOrder & { orderNumber: string },
+    placement: NewEvent,
+  ) => Promise<PlaceOrderResult>;
   updateOrderStatus: (id: string, status: EcommerceOrderStatus) => Promise<void>;
   updateOrder: (id: string, updates: Partial<EcommerceOrder>) => Promise<void>;
 }
+
+export type PlaceOrderResult =
+  | { success: true; order: EcommerceOrder; replayed: boolean }
+  /**
+   * `definite`: the database answered and refused, so its transaction rolled
+   * back and NOTHING exists. When false the answer never arrived — the order
+   * may or may not have been placed, and only a retry with the SAME number can
+   * tell (it returns the existing order instead of placing a second one).
+   */
+  | { success: false; reason: string; definite: boolean };
 
 /**
  * Expand an order's lines into the products that actually leave the shelf:
@@ -101,6 +123,40 @@ async function saveOrder(
     return { orders: next };
   });
   return saved;
+}
+
+/**
+ * The document both `addOrder` and `placeOrder` write: ids, timestamps, and
+ * the customer found or created for it. One builder, so the two paths cannot
+ * describe the same order differently.
+ */
+async function buildNewOrder(orderData: CreateEcommerceOrder, orderNumber: string): Promise<NewEcommerceOrder> {
+  const now = new Date();
+  const order: NewEcommerceOrder = {
+    ...orderData,
+    id: crypto.randomUUID(),
+    orderNumber,
+    status: orderData.status || "pending",
+    items: orderData.items.map((item) => ({
+      ...item,
+      id: crypto.randomUUID(),
+      sku: item.sku ?? "",
+    })),
+    createdAt: now,
+    updatedAt: now,
+    // Epoch-ms sync clock, distinct from `updatedAt` above. What the
+    // inbound pull filters and compares on.
+    updated_at: Date.now(),
+    revenueLogged: false,
+  };
+
+  // Find-or-create the person, and put THEIR ID on the order. The id
+  // is what `order_delivered` keys `customer_ltv` to, and what قاعدة
+  // العملاء filters this order's history by — so a second order from the
+  // same phone lands on the same record instead of opening a new one.
+  // Reference data: no ledger event, nothing here moves money.
+  order.customerId = await useCustomerStore.getState().upsertCustomerFromOrder(order);
+  return order;
 }
 
 export function expandStockItems(items: OrderItemInput[]) {
@@ -170,8 +226,6 @@ export const useOrderStore = create<OrderState>()(
       // comes in from the ledger's weighted average rather than being guessed
       // at 65% of retail, which is what the old `productCost()` fallback did.
       addOrder: async (orderData) => {
-        const now = new Date();
-        const orderId = crypto.randomUUID();
 
         // Allocated by Postgres when the caller has not already drawn one —
         // the same counter `FJ-`, `FM-` and `SP-` come from (migration 016),
@@ -199,30 +253,7 @@ export const useOrderStore = create<OrderState>()(
           };
         }
 
-        const order: NewEcommerceOrder = {
-          ...orderData,
-          id: orderId,
-          orderNumber,
-          status: orderData.status || "pending",
-          items: orderData.items.map((item) => ({
-            ...item,
-            id: crypto.randomUUID(),
-            sku: item.sku ?? "",
-          })),
-          createdAt: now,
-          updatedAt: now,
-          // Epoch-ms sync clock, distinct from `updatedAt` above. What the
-          // inbound pull filters and compares on.
-          updated_at: Date.now(),
-          revenueLogged: false,
-        };
-
-        // Find-or-create the person, and put THEIR ID on the order. The id
-        // is what `order_delivered` keys `customer_ltv` to, and what قاعدة
-        // العملاء filters this order's history by — so a second order from the
-        // same phone lands on the same record instead of opening a new one.
-        // Reference data: no ledger event, nothing here moves money.
-        order.customerId = await useCustomerStore.getState().upsertCustomerFromOrder(order);
+        const order = await buildNewOrder(orderData, orderNumber);
 
         // Nothing lands in `orders` until Supabase has the row. `saveOrder`
         // both writes and commits, so there is no window where the screen shows
@@ -235,6 +266,59 @@ export const useOrderStore = create<OrderState>()(
             success: false as const,
             reason: e instanceof Error ? e.message : String(e),
           };
+        }
+      },
+
+      /**
+       * An online order and its placement, as ONE database transaction.
+       *
+       * `order_placed` (stock out + the deposit in) used to be appended BEFORE
+       * this order row was written, in a separate request — so the deposit
+       * reached the ledger with no document to be measured against, and a
+       * refused row left money and a reservation behind with nothing pointing
+       * at them (21 such events in production). `place_order` inserts the row
+       * and appends the event together, and `ledger_validate_event` (046)
+       * refuses a deposit the row does not account for. Either both exist or
+       * neither does.
+       *
+       * The caller owns the number and must reuse it on retry: the RPC is
+       * idempotent on (store, orderNumber), so a retry after a lost answer
+       * returns the order that was already placed (`replayed`) instead of a
+       * second order and a second deposit.
+       */
+      placeOrder: async (orderData, placement) => {
+        const sb = getSupabaseClient();
+        const identity = await getSyncIdentity();
+        if (!sb || !identity) {
+          return { success: false as const, reason: "لا يوجد اتصال بالسحابة", definite: true };
+        }
+        try {
+          const order = await buildNewOrder(orderData, orderData.orderNumber);
+          const p_order = toRemoteRow("orders", order, {
+            storeId: identity.storeId,
+            deviceId: identity.deviceId,
+            stamp: Date.now(),
+          });
+          const p_event = await prepareEvent(placement);
+          const { data, error } = await sb.rpc("place_order", { p_order, p_event });
+          if (error) {
+            // A PostgREST/Postgres error carries a code: the server answered,
+            // and its transaction is gone. No code means the request itself
+            // failed and the outcome is unknown.
+            return { success: false as const, reason: error.message, definite: Boolean(error.code) };
+          }
+          const saved = fromRemoteRow("orders", (data as any).order) as EcommerceOrder;
+          set((state: any) => {
+            const at = state.orders.findIndex((o: EcommerceOrder) => o.id === saved.id);
+            if (at < 0) return { orders: [saved, ...state.orders] };
+            const next = state.orders.slice();
+            next[at] = { ...next[at], ...saved };
+            return { orders: next };
+          });
+          return { success: true as const, order: saved, replayed: (data as any).replayed === true };
+        } catch (e) {
+          // Thrown before or during the request — nothing confirms either way.
+          return { success: false as const, reason: e instanceof Error ? e.message : String(e), definite: false };
         }
       },
 

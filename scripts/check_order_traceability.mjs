@@ -72,13 +72,19 @@ test("order_placed names its order", () => {
   assert.match(block, /refId: orderNumber/, "the event that reserves the stock must be traceable");
 });
 
-test("the compensating cancel names the same order", () => {
-  // When the order DOCUMENT is refused, the reservation is released. The pair
-  // must be readable as a pair, not as two orphans.
-  const at = ECO.indexOf("order document refused");
-  assert.ok(at > 0);
-  const block = ECO.slice(Math.max(0, at - 400), at + 100);
-  assert.match(block, /refId: orderNumber/);
+test("the order and its placement name the same order, in one transaction", () => {
+  // This used to pin the compensating `order_cancelled` written when the order
+  // DOCUMENT was refused after `order_placed` had gone to the ledger — so the
+  // reservation and its release read as a pair, not two orphans. Since 045/046
+  // there is nothing to compensate: the row and the event are ONE `place_order`
+  // transaction, and a refusal leaves neither. The invariant that test
+  // protected is kept, tighter: both carry the SAME number, in the same call.
+  const call = ECO.indexOf("await placeOrder(");
+  assert.ok(call > 0, "the order is placed through placeOrder");
+  const block = ECO.slice(call, ECO.indexOf("if (!placed.success)", call));
+  assert.match(block, /\{\s*orderNumber,/, "the document carries the number");
+  assert.match(block, /kind: "order_placed"[\s\S]*?refId: orderNumber/, "and so does the event that reserves the stock");
+  assert.doesNotMatch(ECO, /order document refused/, "no ledger-first path left to compensate");
 });
 
 test("the store uses the number the caller already published to the ledger", () => {

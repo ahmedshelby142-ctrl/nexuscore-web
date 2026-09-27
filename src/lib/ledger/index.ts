@@ -20,7 +20,7 @@
  * functions this module exists to make impossible.
  */
 
-import { driver, toPiastres } from "./driver";
+import { driver, toPiastres, type WireEvent } from "./driver";
 import { assertFiniteLines } from "./money";
 import type {
   Balance,
@@ -58,6 +58,26 @@ export { fromPiastres, toPiastres } from "./driver";
  * duplicate id). A throw means nothing was written.
  */
 export async function appendEvent(event: NewEvent): Promise<string> {
+  const row = await prepareEvent(event);
+  await driver.append(row);
+
+  // No push step. `driver.append` IS the write to Supabase, and it is awaited
+  // above — by the time we get here the event is in the database or this
+  // function has already thrown. The fire-and-forget push that used to live
+  // here existed only to drain a local queue that no longer exists.
+  return row.id;
+}
+
+/**
+ * The exact row `ledger_append` receives, built but NOT sent.
+ *
+ * `appendEvent` is this plus the send. It exists for the one write that must
+ * land in the SAME transaction as a document — `place_order` (migration 045)
+ * inserts the order row and appends its `order_placed` together — so the
+ * event is shaped, checked and tenanted by the same code either way, and there
+ * is no second place a line's piastres or a store id could be computed.
+ */
+export async function prepareEvent(event: NewEvent): Promise<WireEvent> {
   if (event.lines.length === 0 && event.kind !== "order_returned_pending") {
     // A no-effect event is legitimate only where the brief calls for one:
     // a courier-side return that has not physically arrived yet (§3.9).
@@ -83,7 +103,7 @@ export async function appendEvent(event: NewEvent): Promise<string> {
   const now = new Date();
   const id = crypto.randomUUID();
 
-  await driver.append({
+  return {
     id,
     store_id: storeId,
     device_id: deviceId,
@@ -102,13 +122,7 @@ export async function appendEvent(event: NewEvent): Promise<string> {
       amount_delta: toPiastres(l.amount ?? 0),
       unit_cost: l.unitCost === undefined ? null : toPiastres(l.unitCost),
     })),
-  });
-
-  // No push step. `driver.append` IS the write to Supabase, and it is awaited
-  // above — by the time we get here the event is in the database or this
-  // function has already thrown. The fire-and-forget push that used to live
-  // here existed only to drain a local queue that no longer exists.
-  return id;
+  };
 }
 
 export async function balances(query: BalanceQuery): Promise<Balance[]> {

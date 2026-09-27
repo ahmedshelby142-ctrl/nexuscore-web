@@ -7,7 +7,8 @@
 --     rollback;
 --
 -- Legitimate events: one per kind and shape the builders in src/lib/ledger/
--- write, appended by the role that really writes them, at TOP LEVEL (043:
+-- write (an order_placed goes through place_order with its order row — 046),
+-- appended by the role that really writes them, at TOP LEVEL (043:
 -- never inside an EXCEPTION block). Attacks: each inside its own block, so a
 -- refusal is recorded and the run continues. Every `qa044-*` row disappears
 -- with the rollback. Generated; run 2026-09-27 against the live project.
@@ -21,6 +22,12 @@ create function pg_temp.e(p_id text, p_kind text, p_ref_type text, p_ref_id text
         'subject_id', case when x->>1 = 'P' then 'b8955a15-724f-4c8f-a963-d4f2ac6afeb9' else x->>1 end,
         'amount_delta',(x->>2)::int,'qty_delta',(x->>3)::real,'unit_cost',(x->>4)::int))) from jsonb_array_elements(p_lines) with ordinality t(x,o)),'[]'::jsonb))
 $f$;
+create function pg_temp.o(p_num text, p_dep numeric) returns jsonb language sql as $f$
+  select jsonb_build_object('id', gen_random_uuid()::text, 'store_id','db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f', 'orderNumber', p_num,
+    'customerName','QA044', 'customerPhone','01000000000', 'address','QA',
+    'items', jsonb_build_array(jsonb_build_object('id','i1','productId','b8955a15-724f-4c8f-a963-d4f2ac6afeb9','quantity',1,'unitPrice',300)),
+    'totalAmount',300, 'shippingFee',40, 'depositAmount',p_dep, 'expectedCod',340 - p_dep, 'status','pending')
+$f$;
 select set_config('request.jwt.claims','{"sub":"c6b25c1b-8ed9-4566-9e63-e890967270d2","role":"authenticated"}',true);
 create temp table base as select (select coalesce(sum(amount_delta),0) from ledger_lines where store_id='db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f' and account='wallet') wallet_all, (select count(*) from ledger_events where store_id='db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f') events, (select count(*) from ledger_lines where store_id='db31bbd8-dba1-42e1-9a2e-a9bbe5877c2f') lines;
 -- legitimate, POS_ECOMMERCE
@@ -29,7 +36,7 @@ insert into r(c,expected,outcome) select 'L sale (POS retail)','PASS','OK '||pub
 insert into r(c,expected,outcome) select 'L sale refund (POS return mode, signs flipped)','PASS','OK '||public.ledger_append(pg_temp.e('qa044-L02','sale','pos_sale','QA044R','[["stock","P",1000,1,null],["cogs","P",-1000,null,1000],["wallet","inStoreSafe",-3000,null,null],["revenue","pos",-3000,null,null],["customer_ltv","qa-cust",-3000,null,null]]'));
 insert into r(c,expected,outcome) select 'L sale wholesale on part-credit + delivery cost','PASS','OK '||public.ledger_append(pg_temp.e('qa044-L03','sale','wholesale_invoice','FJ-QA044','[["stock","P",-1000,-1,null],["cogs","P",1000,null,null],["wallet","vodafoneCash",1000,null,null],["receivable_client","qa-client",2000,null,null],["revenue","wholesale",3000,null,null],["expense","shipping",500,null,null]]'));
 insert into r(c,expected,outcome) select 'L sale exchange (in and out in one cart)','PASS','OK '||public.ledger_append(pg_temp.e('qa044-L04','sale','exchange','QA044X','[["stock","P",-1000,-1,null],["stock","P",1000,1,null],["cogs","P",1000,null,null],["cogs","P",-1000,null,null],["wallet","inStoreSafe",500,null,null],["revenue","pos",500,null,null]]'));
-insert into r(c,expected,outcome) select 'L order_placed with deposit','PASS','OK '||public.ledger_append(pg_temp.e('qa044-L05','order_placed','ecommerce_order','ECO-QA044','[["stock","P",-1000,-1,null],["wallet","vodafoneCash",5000,null,null]]'));
+insert into r(c,expected,outcome) select 'L order_placed with deposit (place_order, 046)','PASS','OK '||(public.place_order(pg_temp.o('ECO-QA044', 50), pg_temp.e('qa044-L05','order_placed','ecommerce_order','ECO-QA044','[["stock","P",-1000,-1,null],["wallet","vodafoneCash",5000,null,null]]'))->'order'->>'orderNumber');
 insert into r(c,expected,outcome) select 'L client_payment order top-up within what is owed','PASS','OK '||public.ledger_append(pg_temp.e('qa044-L06','client_payment','ecommerce_order','ECO-1789428055543','[["wallet","instaPay",10000,null,null]]'));
 insert into r(c,expected,outcome) select 'L order_delivered (COD = goods + fee - deposit)','PASS','OK '||public.ledger_append(pg_temp.e('qa044-L07','order_delivered','ecommerce_order','ECO-QA044','[["cogs","P",1000,null,1000],["receivable_courier","qa-courier",29000,null,null],["revenue","ecommerce",30000,null,null],["payable_courier","qa-courier",4000,null,null],["customer_ltv","qa-cust",30000,null,null]]'));
 insert into r(c,expected,outcome) select 'L courier_settlement within what the courier holds','PASS','OK '||public.ledger_append(pg_temp.e('qa044-L08','courier_settlement','courier_batch','QA044','[["wallet","inStoreSafe",25000,null,null],["receivable_courier","qa-courier",-29000,null,null],["payable_courier","qa-courier",-4000,null,null]]'));
@@ -158,7 +165,7 @@ do $$ begin
     insert into r(c,expected,outcome) values ('A pending moving money','REJECT 23514','ACCEPTED');
   exception when others then insert into r(c,expected,outcome) values ('A pending moving money','REJECT 23514','REJECTED '||sqlstate||' '||left(sqlerrm,70)); end;
 end $$;
-insert into r(c,expected,outcome) select 'L order_placed with deposit (for A21)','PASS','OK '||public.ledger_append(pg_temp.e('qa044-L30','order_placed','ecommerce_order','ECO-QA044D','[["stock","P",-1000,-1,null],["wallet","vodafoneCash",5000,null,null]]'));
+insert into r(c,expected,outcome) select 'L order_placed with deposit (for A21) (place_order, 046)','PASS','OK '||(public.place_order(pg_temp.o('ECO-QA044D', 50), pg_temp.e('qa044-L30','order_placed','ecommerce_order','ECO-QA044D','[["stock","P",-1000,-1,null],["wallet","vodafoneCash",5000,null,null]]'))->'order'->>'orderNumber');
 do $$ begin
   begin perform public.ledger_append(pg_temp.e('qa044-A21','order_delivered','ecommerce_order','ECO-QA044D','[["receivable_courier","qa-courier",34000,null,null],["revenue","ecommerce",30000,null,null],["payable_courier","qa-courier",4000,null,null]]'));
     insert into r(c,expected,outcome) values ('A delivery that ignores the deposit already taken','REJECT 23514','ACCEPTED');

@@ -1140,8 +1140,8 @@ bodies and the Supabase security advisor.
 | # | Gap | Severity |
 |---|---|---|
 | I-1 | ~~Desktop does not gate on session reconciliation~~ **CLOSED 2026-09-21** (§P0-4) | was HIGH |
-| I-2 | `insert_ledger_lines` allows all four writing roles with **no kind-based restriction**, while `insert_ledger_events` restricts `expense`/`payroll`/`owner_draw`/`wallet_transfer`/`purchase`/`supplier_payment`/`stock_adjustment` to ADMIN+ACCOUNTANT. A POS_ECOMMERCE session can therefore append lines to an **existing** ADMIN-created event. **PROVEN 2026-09-26: +1,000,000 EGP minted into a till** (rolled back) | **HIGH — REQUIRES SUPABASE ACTION** (see *Supabase notes* below) |
-| I-3 | `products` carries two overlapping policies: `write_products` (ALL, ADMIN+ACCOUNTANT) and `update_products` (UPDATE, all four roles, `with_check` NULL). Permissive policies OR, so POS/ECOM can UPDATE products; only the `products_guard_definition_columns` trigger narrows which columns. **PROVEN 2026-09-26:** prices and definition columns are refused (42501), stock-mirror moves are allowed (intended) — but **`id` is not guarded**: POS can re-key a product | **MEDIUM — REQUIRES SUPABASE ACTION** (see below) |
+| I-2 | `insert_ledger_lines` allows all four writing roles with **no kind-based restriction**, while `insert_ledger_events` restricts `expense`/`payroll`/`owner_draw`/`wallet_transfer`/`purchase`/`supplier_payment`/`stock_adjustment` to ADMIN+ACCOUNTANT. A POS_ECOMMERCE session can therefore append lines to an **existing** ADMIN-created event. **PROVEN 2026-09-26: +1,000,000 EGP minted into a till** (rolled back) | ✅ **FIXED 2026-09-27** — migration 043, in production; see *I-2 / I-3 — FIXED* below |
+| I-3 | `products` carries two overlapping policies: `write_products` (ALL, ADMIN+ACCOUNTANT) and `update_products` (UPDATE, all four roles, `with_check` NULL). Permissive policies OR, so POS/ECOM can UPDATE products; only the `products_guard_definition_columns` trigger narrows which columns. **PROVEN 2026-09-26:** prices and definition columns are refused (42501), stock-mirror moves are allowed (intended) — but **`id` is not guarded**: POS can re-key a product | ✅ **FIXED 2026-09-27** — migration 043, in production; see below |
 | I-4 | An access token keeps reading for its ~1 h lifetime after logout (stateless JWT). Carried from `KNOWN_LIMITATIONS.md` #11 | LOW, no code fix |
 | I-5 | Leaked-password protection is off at the project level; the client-side HIBP check guards the form, not the API, and fails open | LOW |
 | I-6 | Client-side privilege assumptions in `localStorage`: `isAuthenticated`, `userRole`, `isProPlan`, `feature-storage`. Only `isProPlan` and the feature flags change what is *offered*; role and auth are re-checked by Postgres | LOW |
@@ -1149,9 +1149,122 @@ bodies and the Supabase security advisor.
 
 ### SUPABASE NOTES FOR CLAUDE CODE
 
-Neither change below was applied. Both are **production migrations required:
-YES**. Both were proven against the live project with self-aborting
-transactions; nothing persisted.
+**Both changes below are now APPLIED** — see *I-2 / I-3 — FIXED* directly
+under this paragraph. The two original notes are kept as written for the
+evidence trail.
+
+#### I-2 / I-3 — FIXED 2026-09-27 (migration 043, in production)
+
+**Migration:** `docs/migrations/043_ledger_line_event_integrity_and_product_id.sql`,
+applied to `oczgqpxeixlrufvevitz` through the migration workflow as version
+`20260927070543`. It changes one policy and one trigger function. No table,
+column or row was changed; ledger history and products were only read.
+
+**Re-audit before writing it (live, not from these notes):**
+
+- PostgreSQL 17.6.
+- `insert_ledger_lines` still checked role + store only.
+- `ledger_append` is SECURITY INVOKER and inserts the event, then its lines,
+  with no `EXCEPTION` handler.
+- The only other database writer is `refund_order_deposit`. It `PERFORM`s
+  `ledger_append`, also with no handler.
+- The client's only ledger write is `rpc("ledger_append")` (`driver.ts`).
+- Control run, without the fix, as the real POS_ECOMMERCE member (rolled back):
+  - a `wallet +100,000,000` line on ADMIN purchase `767d9ac5…` was
+    **accepted**, and the till went 423,000 → 100,423,000;
+  - `UPDATE products SET id = …` re-keyed **1 row**.
+
+**I-2 — root cause and property.** The events policy decides which roles may
+post which kinds. The lines policy decided nothing about the event. So a line
+could be POSTed straight into any existing event, and that carried the money
+past the kind restriction. **Now a line is accepted only if its event was
+created in the same transaction** (`e.xmin = pg_current_xact_id()::xid`), in
+the line's store, by one of the four writing roles. `ledger_append`'s own
+lines therefore pass, and they inherit the kind authorization of the event
+created moments earlier. A line for any event that already existed is refused
+for **every** role, ADMIN included, which is what append-only requires.
+
+Safety of the predicate on 17.6:
+
+- **Top level:** xmin equals the top-level xid.
+- **Wraparound:** aliasing an old event would need ~4.29 billion
+  transactions; the database was at 7,215.
+- **Subtransactions:** an event inserted inside one is **refused**, not
+  admitted (fail-closed; demonstrated in QA). Nothing writes that way.
+  `check_ledger_product_security.mjs` fails if `ledger_append` or
+  `refund_order_deposit` ever gains an `EXCEPTION WHEN` block.
+
+**I-3 — root cause and property.** `update_products` admits all four writing
+roles so the stock mirror can move with a sale. The guard trigger narrowed
+which columns may change, but it skipped `id`. **Now an existing product's
+id cannot change for any session user**:
+
+- The check sits after the service-role return and before the
+  ADMIN/ACCOUNTANT bypass.
+- The 15 guarded definition columns are unchanged.
+- `quantity` and `metadata` (the stock mirror) stay writable.
+- Product cost is not a column (`costPrice` is local-only; cost is the
+  ledger's weighted average). A cost rewrite would have to be a line on an
+  old purchase event, which is exactly what I-2 now refuses.
+
+**QA** (`scripts/security/043_security_matrix.sql`). There is no QA project
+(F-18), so the migration was applied **inside a transaction on the live
+project**, the matrix was run as simulated users, and the transaction was
+**rolled back**. Result: **30 / 30 as expected.**
+
+| Case | Result |
+|---|---|
+| A — ADMIN purchase via `ledger_append` | PASS, 2 lines |
+| B — POS sale | PASS |
+| B — POS purchase | REJECTED 42501 (existing matrix) |
+| C — POS line on ADMIN's old event | REJECTED 42501 |
+| C — ADMIN line on an old event | REJECTED 42501 |
+| D — POS `+100,000,000` piastre wallet line on an old event | REJECTED 42501 |
+| D — POS cost-rewriting stock line on an old purchase | REJECTED 42501 |
+| E — foreign ADMIN: line tagged with the victim store | REJECTED |
+| E — foreign ADMIN: own-store line on a victim event created in the same transaction | REJECTED |
+| E — foreign ADMIN: `ledger_append` into the victim store | REJECTED |
+| F — ADMIN expense, supplier payment, and a nested `PERFORM ledger_append` (the refund RPC's shape) | PASS |
+| F — POS order placed, courier settlement | PASS |
+| G — a failing append leaves no orphan event | PASS |
+| Balances | till moved by exactly the legitimate +2,800; old event still 2 lines; 13 new lines, all legitimate |
+| I-3 A — POS stock-mirror update | 1 row |
+| I-3 B — POS id change | REJECTED 42501 «a product id cannot change» |
+| I-3 C — POS price change | REJECTED |
+| I-3 E — POS `store_id` change | REJECTED |
+| I-3 F — foreign ADMIN update / id change | 0 rows |
+| I-3 G — ADMIN normal update | 1 row |
+| I-3 G — ADMIN id change | REJECTED |
+
+**Mutation (live, rolled back):**
+
+- Removing the `xmin` clause lets the `+1M` line back in.
+- Moving the id check after the role bypass lets ADMIN re-key again.
+
+Both mutants are caught by the matrix and by the file's static mutation tests.
+The `e.store_id` clause is defence in depth: removing it is not observable,
+because the caller's own `select_ledger_events` RLS already hides foreign
+events from the `EXISTS`.
+
+**Desktop regression (live, rolled back).** Every one of the 15 event kinds in
+production was appended through `ledger_append` with its line: all 15 as
+ADMIN, and the 10 POS is allowed as POS. The 5 POS was already forbidden stay
+forbidden. That covers sale/POS, orders, purchasing/receiving,
+returns/exchanges (`return_confirmed`, `rto_confirmed`,
+`order_returned_pending`), client payment, courier and supplier settlement,
+expense/payroll and stock adjustment. Wallet transfer and the refund RPC path
+passed in the matrix.
+
+**Production status: APPLIED and verified.**
+
+- Read-only after deploy: the new policy text, the id check placed before the
+  bypass, the guard still SECURITY DEFINER, the trigger enabled, and the same
+  11 policies on the three tables.
+- Data unchanged: 328 events / 689 lines / 141 products, till 423,000.
+- Smallest controlled checks as POS, rolled back: a legitimate sale append
+  passed, a line on an old event was REJECTED, a stock update touched 1 row,
+  and an id change was REJECTED. No exploit row was ever committed.
+- The security advisors show only the pre-existing items classified above.
 
 #### I-2 — `ledger_lines` accepts lines for events it did not create
 
@@ -1708,7 +1821,7 @@ Each step is independently shippable and leaves the suite green.
 | ~~8~~ | ~~**P1-4 / J** subscribe the 11 unsubscribed tables (or unpublish the ones nobody wants)~~ | ✅ **DONE** 2026-09-22 — 8 subscribed, 3 excluded with reasons, listeners now driven by the handler map |
 | 9 | **O-2** get the 4 live tests running in CI | ◐ **PARTIAL** 2026-09-26 — CI now verifies the committed tree (tsc, suite, build); the live tests need a QA project (F-18) |
 | ~~10~~ | ~~**P1-5 / H-2** assert Desktop `fetchPnl` == SQL `owner_financial_summary` on one real period~~ | ✅ **DONE** 2026-09-26 (P1-E) — 65 live comparisons, 0 mismatches; one client profit definition; cockpit on the RPC. The CI-run of the live test (step 9) is still open |
-| 11 | **I-2 / I-3** — the exact changes are in *SUPABASE NOTES FOR CLAUDE CODE* (§I) | **NEXT, and the only open P1.** I-2 is a proven money-minting path. Apply through the migration workflow with the listed regressions |
+| ~~11~~ | ~~**I-2 / I-3** — the exact changes are in *SUPABASE NOTES FOR CLAUDE CODE* (§I)~~ | ✅ **DONE** 2026-09-27 — migration 043 in production; QA 30/30 in a rolled-back transaction; no Desktop regression across all 15 live event kinds |
 | ~~12~~ | ~~**P1-3 / H-1** decide whether the mirror stays; if it does, add a reconciliation check~~ | ✅ **DONE** 2026-09-22 — the mirror STAYS (it is what makes a 200-row list cheap); the three commit paths now refuse to decide on it |
 | 13 | **F-1 / F-2** logos → SVG/WebP, `manualChunks`, parallel hydrate | Pure performance, no behaviour change |
 | 14 | **F-4 – F-8** delete the dead router stack, dead modules, URL-only duplicates, `*.server.ts` | Safe once nothing above depends on reading them |

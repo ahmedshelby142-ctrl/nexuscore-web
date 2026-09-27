@@ -332,7 +332,9 @@ test("P0-4 · realtime consumes the verdict, it does not issue one", () => {
   // opened before the session is restored joins as anon and silently delivers
   // nothing for the rest of its life.
   assert.match(realtime, /const authenticated = sessionState === "authenticated"/);
-  assert.match(realtime, /if \(isCloudSyncMode\(\) && authenticated\) \{/, "the channel waits");
+  // …and, since the Moderator audit, for a role that has Desktop business
+  // rows to receive at all.
+  assert.match(realtime, /if \(isCloudSyncMode\(\) && authenticated && receivesBusinessRows\) \{/, "the channel waits");
   assert.match(
     realtime,
     /if \(!isCloudSyncMode\(\)\) return;\s*if \(!authenticated\) return;/,

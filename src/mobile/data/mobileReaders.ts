@@ -2,6 +2,8 @@ import { getSupabaseClient } from "@/lib/supabase";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
 import { balanceOf, events as ledgerEvents } from "@/lib/ledger";
 import { buildableFromRecipe, variantStockFrom } from "@/lib/product";
+import { canViewCost } from "@/lib/roles";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export const MOBILE_PAGE_SIZE = 25;
 
@@ -36,6 +38,7 @@ async function readPage<T>(
   query: MobileListQuery,
   configure: (builder: any) => any,
   map: (row: any) => T,
+  columns = "*",
 ): Promise<MobilePage<T>> {
   const client = clientOrThrow();
   const pageSize = Math.min(Math.max(query.pageSize ?? MOBILE_PAGE_SIZE, 1), 100);
@@ -45,7 +48,7 @@ async function readPage<T>(
   // Soft-deleted rows are not rows. `mobile_shortages` and every desktop
   // reader exclude them; this did not, so a deleted order stayed on the phone
   // — and stayed in the phone's `count` — after the desktop removed it.
-  let builder = client.from(table).select("*", { count: "exact" }).is("deleted_at", null);
+  let builder = client.from(table).select(columns, { count: "exact" }).is("deleted_at", null);
   builder = configure(builder).range(from, to);
   const { data, count, error } = await builder;
   if (error) throw new Error(`[${table}] ${error.message}`);
@@ -56,6 +59,49 @@ async function readPage<T>(
   const total = count ?? null;
   const hasMore = total === null ? rows.length === pageSize : from + rows.length < total;
   return { rows, total, hasMore };
+}
+
+// ── What a mobile order read may carry ─────────────────────────────────────
+//
+// `select("*")` sent every order's `cogsAmount` — what the goods COST — to
+// every role, the Moderator included, although no mobile screen shows it.
+// The order columns are listed instead. `courierFee` (the store's delivery
+// cost, «عمولة المندوب») rides along only for roles that may see cost, and
+// line `unitCost` is dropped from `items`/`stockItems` for the rest.
+//
+// This minimises what the APP holds. It is not the boundary: the Moderator's
+// token can still `select` these columns directly, and PostgREST cannot drop a
+// key inside a JSON column — SUPABASE FOLLOW-UP S-1/S-2.
+const ORDER_COLUMNS = [
+  "id", "orderNumber", "customerName", "customerPhone", "address", "governorate", "city",
+  "items", "stockItems", "totalAmount", "shippingFee", "paymentMethod", "depositAmount",
+  "depositWallet", "expectedCod", "discountAmount", "discountCodeId", "status", "courierId",
+  "courierName", "createdAt", "updatedAt", "updated_at", "revenueLogged", "customerId",
+  "codSettledAt", "returnConfirmedAt", "returnType", "return_cause", "isExchange",
+  "original_order_id", "wholesaleClientId", "shippingPenaltyApplied", "store_id", "deleted_at",
+].join(",");
+
+function viewerSeesCost(): boolean {
+  return canViewCost(useAuthStore.getState().userRole);
+}
+
+function orderColumns(): string {
+  return viewerSeesCost() ? `${ORDER_COLUMNS},courierFee` : ORDER_COLUMNS;
+}
+
+function withoutLineCost(lines: unknown): unknown {
+  if (!Array.isArray(lines)) return lines;
+  return lines.map((line) => {
+    if (!line || typeof line !== "object") return line;
+    const { unitCost: _unitCost, ...rest } = line as Record<string, unknown>;
+    return rest;
+  });
+}
+
+/** An order row as this viewer may hold it. */
+export function toViewerOrder(row: any): any {
+  if (!row || viewerSeesCost()) return row;
+  return { ...row, items: withoutLineCost(row.items), stockItems: withoutLineCost(row.stockItems) };
 }
 
 export function readMobileOrders(query: MobileListQuery = {}) {
@@ -72,7 +118,7 @@ export function readMobileOrders(query: MobileListQuery = {}) {
     }
     if (search) next = next.or(`orderNumber.ilike.%${search}%,customerName.ilike.%${search}%,customerPhone.ilike.%${search}%`);
     return next;
-  }, (row) => row);
+  }, toViewerOrder, orderColumns());
 }
 
 export async function readMobileCustomers(query: MobileListQuery = {}) {
@@ -152,7 +198,7 @@ export function readMobileShipments(query: MobileListQuery = {}) {
     if (query.status === "delivered") next = next.eq("status", "delivered");
     if (search) next = next.or(`orderNumber.ilike.%${search}%,customerName.ilike.%${search}%,courierName.ilike.%${search}%`);
     return next;
-  }, (row) => row);
+  }, toViewerOrder, orderColumns());
 }
 
 /**
@@ -219,7 +265,8 @@ export async function readMobileProducts(query: MobileListQuery = {}) {
         // "المتاح: ؜-٢" is not a thing an operator may ever be shown. What is
         // genuinely owed lives in تقرير النواقص, which is signed on purpose.
         mobileStock: Math.max(0, stockBalance.qty),
-        mobileCost: stockBalance.amount,
+        // The shelf's COST. Held only for roles that may see it.
+        mobileCost: viewerSeesCost() ? stockBalance.amount : undefined,
         mobileIsBundle: false,
       };
     }
@@ -578,7 +625,7 @@ export async function readMobileCustomerOrderHistory(customerId: string, page = 
     let next = builder.order("createdAt", { ascending: false }).order("id", { ascending: false });
     if (customerId) next = next.eq("customerId", customerId);
     return next;
-  }, (row) => row);
+  }, toViewerOrder, orderColumns());
 }
 
 /**
@@ -597,7 +644,7 @@ export async function readMobileProductsForRestock(query: MobileListQuery = {}):
   // Attach current stock from ledger for each product
   const rows = await Promise.all(page.rows.map(async (product: any) => {
     const stockBalance = await balanceOf("stock", String(product.id));
-    return { ...product, mobileStock: Math.max(0, stockBalance.qty), mobileCost: stockBalance.amount };
+    return { ...product, mobileStock: Math.max(0, stockBalance.qty), mobileCost: viewerSeesCost() ? stockBalance.amount : undefined };
   }));
   return { ...page, rows };
 }

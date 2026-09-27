@@ -174,7 +174,9 @@ test("S3: the variant clamp has one definition, used by both surfaces", () => {
 test("S4: every paged reader excludes soft-deleted rows", () => {
   assert.match(
     readers,
-    /\.select\("\*", \{ count: "exact" \}\)\.is\("deleted_at", null\)/,
+    // `columns`, not "*": orders are projected so COGS never rides along
+    // (check_moderator_visibility). The tombstone filter is unchanged.
+    /\.select\(columns, \{ count: "exact" \}\)\.is\("deleted_at", null\)/,
     "the one paging choke point must filter tombstones",
   );
 });

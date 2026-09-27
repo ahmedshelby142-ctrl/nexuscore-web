@@ -20,6 +20,8 @@
 
 import { clearStockSnapshot } from "@/lib/ledger/stockSnapshot";
 import { useSyncStatus } from "@/store/useSyncStatus";
+import { useAuthStore } from "@/store/useAuthStore";
+import { readsDesktopBusinessData } from "@/lib/roles";
 import { cloudList } from "./cloudData";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
@@ -82,6 +84,7 @@ export async function hydrateAll(): Promise<HydrationResult> {
 
   // Discard whatever survived rehydration before asking the server.
   clearCloudOwnedState();
+  if (!mayReadBusinessData()) return { loaded, failed };
 
   // Store settings live in `public.stores`, not in a synced table, so they are
   // not one of the SINKS above — but they are just as cloud-owned.
@@ -118,6 +121,22 @@ export async function hydrateAll(): Promise<HydrationResult> {
   return { loaded, failed };
 }
 
+/**
+ * May this browser read business tables right now?
+ *
+ * Not without a resolved membership, and never for a role whose Desktop
+ * surface holds no business data (MODERATOR — `/preferences` only; it used to
+ * receive expenses, partner transactions, purchase invoices and order COGS).
+ * Every hydrate passes here: boot, login, «تحديث من السحابة», realtime
+ * catch-up, screen retries. `isAuthenticated` is set together with the
+ * membership role, so a login holding a Supabase session but not yet its role
+ * reads nothing; the post-login hydrate runs after the role is recorded.
+ */
+function mayReadBusinessData(): boolean {
+  const auth = useAuthStore.getState();
+  return auth.isAuthenticated && readsDesktopBusinessData(auth.userRole);
+}
+
 /** Tables with a read in flight. A second ask for the same one is a no-op. */
 const hydrating = new Set<string>();
 
@@ -138,6 +157,8 @@ export async function hydrateTable(table: string): Promise<number> {
   const sink = SINKS[table];
   if (!sink) throw new Error(`[Hydrate] no sink for ${table}`);
   if (hydrating.has(table)) return -1;
+
+  if (!mayReadBusinessData()) return 0;
 
   hydrating.add(table);
   const status = useSyncStatus.getState();

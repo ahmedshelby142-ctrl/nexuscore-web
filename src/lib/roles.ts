@@ -220,3 +220,33 @@ export function canSellWholesale(role: string | null | undefined): boolean {
 export function canReturnWholesale(role: string | null | undefined): boolean {
   return toAppRole(role) === "ADMIN";
 }
+
+/**
+ * May this role see what the shop PAID — unit cost, stock value, margin,
+ * courier commission, COGS?
+ *
+ * MODERATOR is the operations supervisor: it follows orders, stock, shipments
+ * and customers, and it keeps every SELLING figure (price, total, COD,
+ * shipping fee). Cost is the owner's and finance's. Every other role keeps
+ * exactly what it saw before this rule existed.
+ *
+ * This decides what the app READS and SHOWS. It is not the security boundary:
+ * every financial SELECT policy is still `is_store_member`, so a Moderator's
+ * token can read `ledger_lines` directly — see SUPABASE NOTES S-1..S-3 in
+ * `docs/ROLE_PERMISSIONS_AUDIT.md`.
+ */
+export function canViewCost(role: string | null | undefined): boolean {
+  return toAppRole(role) !== "MODERATOR";
+}
+
+/**
+ * Does this role's DESKTOP surface read business tables at all?
+ *
+ * MODERATOR's Desktop is `/preferences` and nothing else, yet `hydrateAll`
+ * loaded every table — expenses, partner transactions, purchase invoices,
+ * supplier payables, order COGS — into its browser, and realtime kept pushing
+ * rows to it. It now loads and subscribes to nothing.
+ */
+export function readsDesktopBusinessData(role: string | null | undefined): boolean {
+  return toAppRole(role) !== "MODERATOR";
+}

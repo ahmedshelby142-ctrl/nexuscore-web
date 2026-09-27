@@ -83,8 +83,10 @@ test("A · realtime is gated on the reconciled session, not mounted bare", () =>
   // looking perfectly healthy.
   assert.match(app, /useMobileRealtime\(sessionState === "authenticated"\)/);
   assert.match(realtime, /export function useMobileRealtime\(authenticated: boolean\)/);
-  assert.match(realtime, /if \(!isCloudSyncMode\(\) \|\| !authenticated\) return;/);
-  assert.match(realtime, /\}, \[authenticated\]\);/,
+  // …and on the membership ROLE, which decides the table set (a Moderator is
+  // not subscribed to supplier invoices — check_moderator_visibility).
+  assert.match(realtime, /if \(!isCloudSyncMode\(\) \|\| !authenticated \|\| !role\) return;/);
+  assert.match(realtime, /\}, \[authenticated, role\]\);/,
     "the effect must re-run when the session appears, or the gate never opens");
 });
 
@@ -105,7 +107,7 @@ test("A · mobile does not mount the DESKTOP realtime hook", () => {
 test("B · one module-level channel, reference counted", () => {
   assert.match(realtime, /let channel: RealtimeChannel \| null = null;/);
   assert.match(realtime, /let listeners = 0;/);
-  assert.match(realtime, /if \(channel\) return;/, "a second open must be a no-op");
+  assert.match(realtime, /if \(channel && channelTables === key\) return;/, "a second open for the same tables must be a no-op");
   assert.match(realtime, /listeners \+= 1;/);
   assert.match(realtime, /listeners -= 1;/);
 });

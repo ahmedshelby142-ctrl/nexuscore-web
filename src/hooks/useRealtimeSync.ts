@@ -8,6 +8,8 @@ import { useFinancialStore } from '../store/useFinancialStore';
 import { useCustomerStore } from '../store/useCustomerStore';
 import { useShippingRatesStore } from '../store/useShippingRatesStore';
 import { getSupabaseClient, isCloudSyncMode } from '../lib/supabase';
+import { useAuthStore } from "@/store/useAuthStore";
+import { readsDesktopBusinessData } from "@/lib/roles";
 import { getDeviceId } from '../services/api/storeContext';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
@@ -229,6 +231,11 @@ export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
   // The gate is a route element; realtime is a consumer, not an authority.
   const sessionState = useSessionReconciliation();
   const authenticated = sessionState === "authenticated";
+  // Realtime pushes whole rows. A role with no Desktop business surface
+  // (MODERATOR) is never subscribed, so no row reaches its browser this way.
+  const receivesBusinessRows = useAuthStore(
+    (s) => s.isAuthenticated && readsDesktopBusinessData(s.userRole),
+  );
 
   // ── 0. Boot hydration ─────────────────────────────────────────────────────
   // The stores start empty and are filled from Supabase, so what a screen shows
@@ -293,7 +300,7 @@ export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
     // told.
     let channelCleanup: (() => void) | undefined;
 
-    if (isCloudSyncMode() && authenticated) {
+    if (isCloudSyncMode() && authenticated && receivesBusinessRows) {
       const supabase = getSupabaseClient();
       if (supabase) {
 
@@ -339,7 +346,7 @@ export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
       window.removeEventListener('online', handleOnline);
       channelCleanup?.();
     };
-  }, [authenticated]);
+  }, [authenticated, receivesBusinessRows]);
 
   // Handed to `ProtectedRoute` by `App`. One fact, one gate.
   return sessionState;

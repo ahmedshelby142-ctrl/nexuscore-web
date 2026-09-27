@@ -261,7 +261,7 @@ test("the subscription is driven by the handler map, not a second list", () => {
 test("realtime still waits for the reconciled session (1cb38ce)", () => {
   assert.match(
     realtime,
-    /if \(isCloudSyncMode\(\) && authenticated\) \{/,
+    /if \(isCloudSyncMode\(\) && authenticated && receivesBusinessRows\) \{/,
     "the channel is being opened before the session is restored — it would join as anon and deliver nothing, silently, for the rest of its life",
   );
   assert.match(

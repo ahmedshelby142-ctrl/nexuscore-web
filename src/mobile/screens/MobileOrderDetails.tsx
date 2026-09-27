@@ -10,10 +10,15 @@ import { formatArabicCount, formatArabicCurrency, formatArabicDate, formatArabic
 import { readMobileOrder, readMobileOrderTimeline, readMobileCouriers } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
+import { canViewCost } from "@/lib/roles";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export function MobileOrderDetails() {
   const navigate = useNavigate();
   const { orderId } = useParams();
+  // «عمولة المندوب» is what delivery COSTS the store. The Moderator's reader
+  // does not select it; this keeps the line off the screen regardless.
+  const showCost = canViewCost(useAuthStore((s) => s.userRole));
   const loadOrder = useCallback(() => readMobileOrder(orderId ?? ""), [orderId]);
   const { data: order, loading, error, reload } = useMobileEntity(loadOrder);
   const offline = useIsOffline();
@@ -186,7 +191,7 @@ export function MobileOrderDetails() {
           <span>مطابقة الحساب</span>
           <strong>{financialsMatch ? "✓ متطابق" : "✗ اختلاف"}</strong>
         </div>
-        {courierFee > 0 && <div className="mobile-detail-line"><span>عمولة المندوب</span><strong>{formatArabicCurrency(courierFee)}</strong></div>}
+        {showCost && courierFee > 0 && <div className="mobile-detail-line"><span>عمولة المندوب</span><strong>{formatArabicCurrency(courierFee)}</strong></div>}
       </MobileSection>
 
       <MobileSection titleAr="الشحن والمندوب">

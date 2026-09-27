@@ -43,6 +43,9 @@
 import { useEffect, useRef } from "react";
 import { getSupabaseClient, isCloudSyncMode } from "@/lib/supabase";
 import type { RealtimeChannel, RealtimePostgresChangesPayload } from "@supabase/supabase-js";
+import { toAppRole } from "@/lib/roles";
+import { getMobileCapabilities } from "@/mobile/navigation/mobileCapabilities";
+import { useAuthStore } from "@/store/useAuthStore";
 
 /** The window event every mobile reader listens on. */
 export const MOBILE_REALTIME_EVENT = "mobile-realtime";
@@ -81,6 +84,22 @@ export interface MobileRealtimeDetail {
 // ── The single shared channel ───────────────────────────────────────────────
 
 let channel: RealtimeChannel | null = null;
+/** The table set `channel` was opened with, so a role change can rebuild it. */
+let channelTables = "";
+
+/**
+ * The tables this ROLE subscribes to.
+ *
+ * `postgres_changes` delivers the whole row, not just "something changed", so
+ * a subscription is a read. `purchase_invoices` rows are supplier amounts, and
+ * only a role with المشتريات has a screen that re-reads on them — the
+ * Moderator is not subscribed. (`ledger_events` still is: it is what keeps a
+ * Moderator's stock and shortages live. Its payload is SUPABASE FOLLOW-UP S-1.)
+ */
+export function realtimeTablesFor(role: string | null | undefined): MobileRealtimeTable[] {
+  const capabilities = getMobileCapabilities(toAppRole(role));
+  return MOBILE_REALTIME_TABLES.filter((table) => table !== "purchase_invoices" || capabilities.has("purchasing"));
+}
 let listeners = 0;
 let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -88,8 +107,12 @@ function announce(detail: MobileRealtimeDetail): void {
   window.dispatchEvent(new CustomEvent<MobileRealtimeDetail>(MOBILE_REALTIME_EVENT, { detail }));
 }
 
-function openChannel(): void {
-  if (channel) return;
+function openChannel(tables: readonly MobileRealtimeTable[]): void {
+  const key = tables.join(",");
+  if (channel && channelTables === key) return;
+  // Same tables, same socket. A different set — the verified role replaced a
+  // stale persisted one — is rebuilt, never kept.
+  if (channel) closeChannel();
   const client = getSupabaseClient();
   if (!client) return;
 
@@ -108,7 +131,7 @@ function openChannel(): void {
   // ever dispatched. A unique topic cannot collide with a subscription that is
   // on its way out, so a fresh open always gets fresh binding ids.
   let next = client.channel(`mobile-sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
-  for (const table of MOBILE_REALTIME_TABLES) {
+  for (const table of tables) {
     next = next.on(
       "postgres_changes",
       { event: "*", schema: "public", table },
@@ -119,6 +142,7 @@ function openChannel(): void {
     );
   }
   channel = next.subscribe();
+  channelTables = key;
 }
 
 function closeChannel(): void {
@@ -126,6 +150,7 @@ function closeChannel(): void {
   const client = getSupabaseClient();
   void client?.removeChannel(channel);
   channel = null;
+  channelTables = "";
 }
 
 /**
@@ -155,8 +180,10 @@ function closeChannel(): void {
  * mount → unmount → mount does not leave the app with a closed channel.
  */
 export function useMobileRealtime(authenticated: boolean): void {
+  // The membership role, once resolved. Until then nothing is subscribed.
+  const role = useAuthStore((s) => (s.isAuthenticated ? s.userRole : null));
   useEffect(() => {
-    if (!isCloudSyncMode() || !authenticated) return;
+    if (!isCloudSyncMode() || !authenticated || !role) return;
 
     // A pending close means StrictMode (or a fast remount) is mid-cycle. Cancel
     // it and keep the socket that is already joined rather than churning it.
@@ -165,7 +192,7 @@ export function useMobileRealtime(authenticated: boolean): void {
       closeTimer = null;
     }
     listeners += 1;
-    openChannel();
+    openChannel(realtimeTablesFor(role));
 
     // Realtime delivers nothing while the socket is down, so whatever changed
     // during the outage has to be asked for. Every mobile screen answers a
@@ -193,7 +220,7 @@ export function useMobileRealtime(authenticated: boolean): void {
         }, 1000);
       }
     };
-  }, [authenticated]);
+  }, [authenticated, role]);
 }
 
 /**

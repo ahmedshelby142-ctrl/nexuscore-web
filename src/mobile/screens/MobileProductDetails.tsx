@@ -9,6 +9,8 @@ import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/co
 import { deriveStockStatusKey } from "@/mobile/viewmodels/stockViewModel";
 import { resolveOrderStatus, resolveStockStatus } from "@/mobile/viewmodels/statusTaxonomies";
 import { averageCost } from "@/lib/ledger/purchases";
+import { canViewCost } from "@/lib/roles";
+import { useAuthStore } from "@/store/useAuthStore";
 import { formatArabicCurrency, formatArabicDate, formatArabicQuantity } from "@/mobile/viewmodels/formatters";
 import { readMobileProduct, readMobileProductWaitingOrders } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
@@ -17,6 +19,7 @@ import { useIsOffline } from "@/mobile/data/useIsOffline";
 export function MobileProductDetails() {
   const navigate = useNavigate();
   const { productId } = useParams();
+  const showCost = canViewCost(useAuthStore((s) => s.userRole));
   const loadProduct = useCallback(() => readMobileProduct(productId ?? ""), [productId]);
   const { data: product, loading, error, reload } = useMobileEntity(loadProduct);
   const offline = useIsOffline();
@@ -80,6 +83,9 @@ export function MobileProductDetails() {
   // stock value below was quantity × total and every margin was negative.
   // Same formula the purchasing ledger uses.
   const avgCost = averageCost({ qty: quantity, amount: Number((product as any).mobileCost ?? 0) });
+  // Cost, stock value and margin are the owner's and finance's. A Moderator's
+  // reader never receives `mobileCost`, and these tiles are absent rather than
+  // «٠ ج.م.» — a zero would claim the goods cost nothing.
   const sku = product.sku ?? "—";
   const barcode = product.barcode ?? "—";
   const category = product.category ?? "—";
@@ -122,14 +128,18 @@ export function MobileProductDetails() {
             <span>حد إعادة الطلب</span>
             <strong>{formatArabicQuantity(minLevel)}</strong>
           </div>
-          <div>
-            <span>متوسط التكلفة (المرجح)</span>
-            <strong>{formatArabicCurrency(avgCost)}</strong>
-          </div>
-          <div>
-            <span>قيمة المخزون الحالية</span>
-            <strong>{formatArabicCurrency(quantity * avgCost)}</strong>
-          </div>
+          {showCost && (
+            <>
+              <div>
+                <span>متوسط التكلفة (المرجح)</span>
+                <strong>{formatArabicCurrency(avgCost)}</strong>
+              </div>
+              <div>
+                <span>قيمة المخزون الحالية</span>
+                <strong>{formatArabicCurrency(quantity * avgCost)}</strong>
+              </div>
+            </>
+          )}
         </div>
         <div className="mobile-detail-line" style={{ marginBlockStart: "0.5rem" }}>
           <span>الحالة</span>
@@ -147,7 +157,7 @@ export function MobileProductDetails() {
             <span>سعر الجملة</span>
             <strong>{formatArabicCurrency(wholesalePrice)}</strong>
           </div>
-          {avgCost > 0 && retailPrice > 0 && (
+          {showCost && avgCost > 0 && retailPrice > 0 && (
             <div>
               <span>هامش البيع</span>
               <strong style={{ color: "var(--success)" }}>
@@ -155,7 +165,7 @@ export function MobileProductDetails() {
               </strong>
             </div>
           )}
-          {avgCost > 0 && wholesalePrice > 0 && wholesalePrice !== retailPrice && (
+          {showCost && avgCost > 0 && wholesalePrice > 0 && wholesalePrice !== retailPrice && (
             <div>
               <span>هامش الجملة</span>
               <strong style={{ color: "var(--success)" }}>

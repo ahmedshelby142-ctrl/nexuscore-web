@@ -17,6 +17,12 @@ not in chat memory. Skim the top few entries at session start to recover where t
 Legend for status: ✅ done · 🔧 in progress · ⏳ flagged, not yet done.
 
 ---
+## Roles — MODERATOR data visibility (2026-09-27)
+- Problem: MODERATOR (operations supervisor) saw unit cost, stock value and margins on Mobile Product Details and «عمولة المندوب» on Order Details; every Mobile order read was `select *` (order `cogsAmount` to every role, line `unitCost` in state); Desktop `hydrateAll` loaded expenses, partner transactions, purchase invoices and supplier data into a Moderator browser whose only Desktop screen is `/preferences`, and both realtime layers pushed rows it has no screen for. Root: every SELECT policy is `is_store_member` (no role predicate) — documented, not changed.
+- Fix: `canViewCost` / `readsDesktopBusinessData` in `lib/roles.ts` (only MODERATOR is false). Mobile orders use an explicit column list (no `cogsAmount`; `courierFee` and line `unitCost` only for cost roles); product cost held only for cost roles; cost tiles/commission hidden. One Desktop hydration gate (also refuses reads before the membership role resolves); Desktop realtime not subscribed for MODERATOR; Mobile realtime tables per role (no `purchase_invoices` for MODERATOR). Other roles unchanged. Database follow-ups S-1/S-2/S-3/S-5 with exact SQL in `docs/ROLE_PERMISSIONS_AUDIT.md` — not applied.
+- Verified: `check_moderator_visibility.mjs` +15 (mutation-checked); stubbed-backend runtime ADMIN vs MODERATOR on 11 routes; tsc 0; suite green; both builds pass.
+
+---
 ## Mobile PWA — ADMIN + MODERATOR role verification (2026-09-27)
 - Problem: role pass at 320/360/390/414 found one RTL leak — the order timeline wrapped «٢٧ سبتمبر · منذ ٥ ساعات» in `dir="ltr"`, left-aligned with its halves in reverse reading order (both roles).
 - Fix: dropped `dir="ltr"` on that span. Nothing else changed; capability matrix untouched.

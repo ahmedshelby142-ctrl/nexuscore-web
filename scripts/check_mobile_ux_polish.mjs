@@ -123,6 +123,17 @@ test("owner amounts are bidi-isolated, not forced LTR", () => {
   assert.match(read("src/mobile/mobile.css"), /\.mobile-owner-row-value \{ unicode-bidi: isolate; \}/);
 });
 
+test("Arabic-formatted text is never forced left-to-right", () => {
+  // The order timeline wrapped «٢٧ سبتمبر · منذ ٥ ساعات» in dir="ltr": it sat
+  // left-aligned with its two halves in reverse reading order. Latin ids
+  // (order numbers, SKUs, phones) keep dir="ltr"; formatArabic* output never.
+  const { readdirSync } = process.getBuiltinModule("node:fs");
+  const dir = new URL("src/mobile/screens/", root);
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".tsx"))) {
+    assert.doesNotMatch(read(`src/mobile/screens/${file}`), /dir="ltr"[^>]*>\{formatArabic/, file);
+  }
+});
+
 test("a pending order's shipment reads as ready, not unknown", async () => {
   const { resolveShipmentStatus } = await import(new URL("src/mobile/viewmodels/statusTaxonomies.ts", root).href);
   assert.equal(resolveShipmentStatus("pending").labelAr, "جاهز للشحن");

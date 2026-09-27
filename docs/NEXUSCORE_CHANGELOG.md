@@ -17,6 +17,12 @@ not in chat memory. Skim the top few entries at session start to recover where t
 Legend for status: ✅ done · 🔧 in progress · ⏳ flagged, not yet done.
 
 ---
+## Mobile PWA — ADMIN + MODERATOR role verification (2026-09-27)
+- Problem: role pass at 320/360/390/414 found one RTL leak — the order timeline wrapped «٢٧ سبتمبر · منذ ٥ ساعات» in `dir="ltr"`, left-aligned with its halves in reverse reading order (both roles).
+- Fix: dropped `dir="ltr"` on that span. Nothing else changed; capability matrix untouched.
+- Verified: ADMIN and MODERATOR × 4 widths × 13 routes — no horizontal scroll, no target < 44px; MODERATOR is redirected from /owner /purchasing /restock and sees no restock control anywhere; error → retry recovers on both roles. `check_mobile_ux_polish.mjs` +1 (mutation-checked); tsc 0; suite green; both builds pass.
+
+---
 ## Mobile PWA — UX/UI polish (2026-09-27)
 - Problem: rendered against a stubbed backend at 320–414px, light/dark: status pills were bare text and warning colours absent (`--warning`/`--info` defined nowhere); inline empty/error states were a full screen tall (inherited 100dvh); Home said «٩ منتجات» for 3 short products, re-announced shortages as «مخزون منخفض», printed raw `250`; Product detail showed the shelf's total cost as the unit cost (negative margins); Quick restock stacked its qty/cost inputs; Owner amounts misplaced «.» under forced LTR; pending orders' shipment read «غير معروف».
 - Fix: mobile-only tokens + pill tones; content-sized inline states with ARIA roles; Home alert/metric inputs named for what they read; `averageCost()` for unit cost; scoped restock grid; bidi isolation; `pending` shipment label; styled the classes components used but CSS never defined (metric tiles, app-bar slots, section actions, timeline, skeleton text); pressed/focus states, reduced-motion, tabular numerals, landscape bar. No desktop, Supabase or business-rule change.

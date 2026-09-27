@@ -224,7 +224,7 @@ export function MobileOrderDetails() {
                   <span className="mobile-timeline-event-label">{event.labelAr}</span>
                 </div>
                 <div className="mobile-timeline-event-meta">
-                  <span dir="ltr">{formatArabicDate(event.timestamp)} · {formatArabicRelativeTime(event.timestamp)}</span>
+                  <span>{formatArabicDate(event.timestamp)} · {formatArabicRelativeTime(event.timestamp)}</span>
                 </div>
               </div>
             </div>

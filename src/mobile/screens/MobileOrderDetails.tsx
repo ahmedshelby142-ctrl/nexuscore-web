@@ -6,7 +6,7 @@ import { MobileSection } from "@/mobile/components/MobileSection";
 import { StatusPill } from "@/mobile/components/StatusPill";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { resolveOrderStatus, resolveShipmentStatus } from "@/mobile/viewmodels/statusTaxonomies";
-import { formatArabicCurrency, formatArabicDate, formatArabicRelativeTime, formatArabicQuantity } from "@/mobile/viewmodels/formatters";
+import { formatArabicCount, formatArabicCurrency, formatArabicDate, formatArabicRelativeTime } from "@/mobile/viewmodels/formatters";
 import { readMobileOrder, readMobileOrderTimeline, readMobileCouriers } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
@@ -118,7 +118,7 @@ export function MobileOrderDetails() {
       <MobileSection titleAr="العميل">
         <div className="mobile-detail-line">
           <span>{customerName}</span>
-          <a href={`tel:${customerPhone}`} dir="ltr" style={{ textDecoration: "none", color: "inherit" }}>{customerPhone}</a>
+          <a className="mobile-tel-link" href={`tel:${customerPhone}`} dir="ltr">{customerPhone}</a>
         </div>
         <p className="mobile-muted">{address}</p>
         <div className="mobile-detail-line">
@@ -143,11 +143,9 @@ export function MobileOrderDetails() {
                 <div>
                   <strong>{productName}</strong>
                   {variantName && <span className="mobile-muted" style={{ marginInlineStart: "0.5rem" }}>{variantName}</span>}
-                  {productId && <span className="mobile-muted" style={{ display: "block", fontSize: "0.7rem" }}>ID: {productId}</span>}
                 </div>
                 <div style={{ textAlign: "left" }}>
-                  <span>{formatArabicQuantity(qty)}</span>
-                  <span style={{ marginInlineStart: "0.5rem", color: "var(--muted-foreground)" }}>{formatArabicCurrency(price)} × {qty}</span>
+                  <span style={{ color: "var(--muted-foreground)" }}>{formatArabicCurrency(price)} × {formatArabicCount(qty)}</span>
                   <span style={{ display: "block", marginBlockStart: "0.25rem", fontWeight: "700" }}>{formatArabicCurrency(lineTotal)}</span>
                 </div>
               </div>

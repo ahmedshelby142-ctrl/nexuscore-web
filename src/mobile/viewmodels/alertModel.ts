@@ -17,6 +17,7 @@
 import type { MobileAlert, AlertLevel } from "./types";
 import type { MobileCapability } from "@/mobile/navigation/mobileCapabilities";
 import { ALERT_LEVEL_TAXONOMY } from "./statusTaxonomies";
+import { formatArabicCount } from "./formatters";
 
 // ── Alert input shapes ────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ export interface AlertModelInput {
   /** Whether the current store license is in a risk/unverified state. */
   licenseAtRisk: boolean;
   /** Products at or below min stock level (not necessarily zero). */
-  lowStockProducts: number;
+  lowStockProducts?: number;
 }
 
 // ── Thresholds (operationally meaningful, not invented) ───────────────────────
@@ -89,9 +90,9 @@ const ALERT_DEFINITIONS: readonly AlertDefinition[] = [
     capability: "stock",
     titleAr: "طلبات معلقة بسبب نفاد المخزون",
     messageAr: (count) =>
-      `${count} ${count === 1 ? "منتج" : "منتجات"} نفد مخزونها وعليها طلبات مفتوحة.`,
+      `${formatArabicCount(count)} ${count === 1 ? "منتج" : "منتجات"} مخزونها لا يكفي الطلبات المفتوحة عليها.`,
     clearConditionAr: "تسوية الطلبات أو إعادة التوريد",
-    href: "/inventory",
+    href: "/inventory/shortages",
     getCount: (input) => input.stockoutWithWaitingOrders,
   },
   {
@@ -100,7 +101,7 @@ const ALERT_DEFINITIONS: readonly AlertDefinition[] = [
     capability: "orders",
     titleAr: "الطلبات المتأخرة",
     messageAr: (count) =>
-      `${count} ${count === 1 ? "طلب" : "طلبات"} قيد الانتظار أكثر من ${AGING_ORDER_THRESHOLD_HOURS} ساعة.`,
+      `${formatArabicCount(count)} ${count === 1 ? "طلب" : "طلبات"} قيد الانتظار أكثر من ${AGING_ORDER_THRESHOLD_HOURS} ساعة.`,
     clearConditionAr: "شحن أو إلغاء الطلبات المعلقة",
     href: "/orders",
     getCount: (input) => input.agingPendingOrders,
@@ -111,7 +112,7 @@ const ALERT_DEFINITIONS: readonly AlertDefinition[] = [
     capability: "orders",
     titleAr: "بدل تسليم غير محصّل",
     messageAr: (count) =>
-      `${count} ${count === 1 ? "طلب" : "طلبات"} تم تسليمها والبدل لم يُحصَّل بعد.`,
+      `${formatArabicCount(count)} ${count === 1 ? "طلب" : "طلبات"} تم تسليمها والبدل لم يُحصَّل بعد.`,
     clearConditionAr: "تسوية البدل مع المندوب",
     href: "/orders",
     getCount: (input) => input.unsettledCodOrders,
@@ -122,7 +123,7 @@ const ALERT_DEFINITIONS: readonly AlertDefinition[] = [
     capability: "orders",
     titleAr: "الطلبات التي بها نقص في المخزون",
     messageAr: (count) =>
-      `${count} ${count === 1 ? "طلب" : "طلبات"} بها منتجات ناقصة من المخزون.`,
+      `${formatArabicCount(count)} ${count === 1 ? "طلب" : "طلبات"} بها منتجات ناقصة من المخزون.`,
     clearConditionAr: "توريد البضاعة الناقصة أو تعديل الطلبات",
     href: "/orders",
     getCount: (input) => input.ordersWithStockout,
@@ -144,7 +145,7 @@ const ALERT_DEFINITIONS: readonly AlertDefinition[] = [
     capability: "stock",
     titleAr: "مخزون منخفض",
     messageAr: (count) =>
-      `${count} ${count === 1 ? "منتج" : "منتجات"} وصلت حد الطلب الأدنى.`,
+      `${formatArabicCount(count)} ${count === 1 ? "منتج" : "منتجات"} وصلت حد الطلب الأدنى.`,
     clearConditionAr: "توريد المنتجات المنخفضة",
     href: "/inventory",
     getCount: (input) => input.lowStockProducts,

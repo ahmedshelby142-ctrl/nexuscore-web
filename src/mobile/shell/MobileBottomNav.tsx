@@ -4,6 +4,7 @@ import { toAppRole } from "@/lib/roles";
 import { getMobileCapabilities } from "@/mobile/navigation/mobileCapabilities";
 import { getBottomNavForRole } from "@/mobile/navigation/mobileNavigation";
 import { useAlertBadges } from "./useAlertBadges";
+import { formatArabicCount } from "@/mobile/viewmodels/formatters";
 
 export function MobileBottomNav({ onOpenMore }: { onOpenMore: () => void }) {
   const userRole = useAuthStore((state) => state.userRole);
@@ -30,7 +31,7 @@ export function MobileBottomNav({ onOpenMore }: { onOpenMore: () => void }) {
             <button key={item.id} type="button" className="mobile-nav-item" onClick={onOpenMore}>
               <div className="mobile-nav-icon-wrapper">
                 <Icon aria-hidden="true" />
-                {badgeCount > 0 && <span className="mobile-nav-badge">{badgeCount}</span>}
+                {badgeCount > 0 && <span className="mobile-nav-badge" aria-label={`${badgeCount} تنبيهات`}>{formatArabicCount(badgeCount)}</span>}
               </div>
               <span>{item.label}</span>
             </button>
@@ -49,7 +50,7 @@ export function MobileBottomNav({ onOpenMore }: { onOpenMore: () => void }) {
           >
             <div className="mobile-nav-icon-wrapper">
               <Icon aria-hidden="true" />
-              {badgeCount > 0 && <span className="mobile-nav-badge" aria-label={`${badgeCount} تنبيهات`}>{badgeCount}</span>}
+              {badgeCount > 0 && <span className="mobile-nav-badge" aria-label={`${badgeCount} تنبيهات`}>{formatArabicCount(badgeCount)}</span>}
             </div>
             <span>{item.label}</span>
           </NavLink>

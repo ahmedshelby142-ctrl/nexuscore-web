@@ -120,6 +120,22 @@ export const MOBILE_METRIC_DEFINITIONS: readonly MetricDefinition[] = [
     href: "/inventory",
     priority: 5,
   },
+  {
+    // What Home can actually say from `mobile_shortages`: products that open
+    // orders need more of than the ledger holds. It used to be shown under
+    // `low_stock_products` — «بمخزون منخفض», a min-level claim this read
+    // never makes.
+    id: "shortage_products",
+    labelAr: "أصناف ناقصة للطلبات",
+    source: "mobile_shortages RPC (open-order demand > ledger stock)",
+    authority: "mobile_shortages (ledger stock vs open orders)",
+    capability: "stock",
+    emptyValueAr: "لا نواقص",
+    errorValueAr: "—",
+    unitAr: "صنف",
+    href: "/inventory/shortages",
+    priority: 4,
+  },
 
   // ── Store Owner (ADMIN) financials ────────────────────────────────────────
   // Every one of these is a field `owner_financial_summary` returns already

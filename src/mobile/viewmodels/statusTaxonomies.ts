@@ -76,6 +76,13 @@ export function resolveOrderStatus(status: string | null | undefined): TaxonomyE
  * These map to a subset of order statuses relevant to the shipment queue.
  */
 export const SHIPMENT_STATUS_TAXONOMY: Record<string, TaxonomyEntry> = {
+  // Same words شاشة الشحنات already uses for a pending order. Without it an
+  // order detail read «غير معروف» for every order not yet handed over.
+  pending: {
+    labelAr: "جاهز للشحن",
+    tone: "warning",
+    priority: 0,
+  },
   shipped: {
     labelAr: "في الطريق",
     tone: "info",

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { MobileAlert } from "@/mobile/viewmodels/types";
+import { formatArabicCount } from "@/mobile/viewmodels/formatters";
 import { AlertCircle, AlertTriangle, Info, BellRing, ChevronLeft } from "lucide-react";
 
 export interface AlertCardProps {
@@ -25,7 +26,7 @@ export function AlertCard({ alert }: AlertCardProps) {
       <div className="mobile-alert-content">
         <div className="mobile-alert-header">
           <h3 className="mobile-alert-title">{alert.titleAr}</h3>
-          {alert.count > 1 && <span className="mobile-alert-badge">{alert.count}</span>}
+          {alert.count > 1 && <span className="mobile-alert-badge" aria-hidden="true">{formatArabicCount(alert.count)}</span>}
         </div>
         <p className="mobile-alert-message">{alert.messageAr}</p>
         <p className="mobile-alert-resolution">{alert.clearConditionAr}</p>

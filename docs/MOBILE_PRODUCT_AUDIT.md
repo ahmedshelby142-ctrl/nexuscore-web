@@ -10,6 +10,56 @@ created, and no business behaviour was changed.
 
 ---
 
+## Current status — Mobile UX/UI polish (2026-09-27)
+
+Every mobile screen was rendered against a **stubbed backend** (a fake Supabase
+client with fixtures — no login, no network) at 320 / 360 / 375 / 390 / 414px,
+light and dark, portrait and landscape, and changed only where the render was
+wrong. No desktop change, no Supabase change, no business rule changed. Every
+functional-closure fix below is kept.
+
+**Defects found by looking, and fixed:**
+
+| # | Screen | What was on screen | Fix |
+|---|---|---|---|
+| U-1 | all | `--warning` / `--info` / `--critical` were read by pills, alerts and callouts but **defined nowhere** — every status pill was bare text, an ACTION alert had a black border | tokens defined in `mobile.css` only (light + dark); `.mobile-status-pill--*` styled |
+| U-2 | all lists, detail sections, restock | inline Empty / Error / Offline shared `.mobile-state` with the full-page gates and inherited **100dvh** — one empty section was a screen tall | 100dvh scoped to `main.mobile-state`; inline states are content-sized cards with `role="status"` / `role="alert"` |
+| U-3 | Home | stockout alert was handed the **order** count: «٩ منتجات» for 3 products | counts products with waiting orders; opens `/inventory/shortages` |
+| U-4 | Home | the shortage set was re-announced as «مخزون منخفض» (min-level) and as a «بمخزون منخفض» tile — Home never reads min-level stock | low-stock alert input omitted (not an all-clear); tile renamed `shortage_products` «أصناف ناقصة للطلبات» |
+| U-5 | Home | action queue printed raw `totalAmount` («250»); shortage queue a bare number | formatted currency; «عجز ٣ قطعة» |
+| U-6 | Product detail | the ledger stock **amount** (cost of the whole shelf) was shown as the unit cost → value = qty × total, margins negative | `averageCost()` — the same WAC the purchasing ledger uses |
+| U-7 | Product detail | waiting orders carried a «نفد المخزون» pill; SKU / barcode / category ran together | order-status pill; separated meta row |
+| U-8 | Order detail | shipment status «غير معروف» for every pending order; a raw product UUID per line; qty printed twice in two digit systems | `pending` → «جاهز للشحن» (the Shipments wording); UUID dropped; `price × qty` once |
+| U-9 | Quick restock | `.mobile-stock-card-main > div {display:flex}` beat the line's `grid-cols-2`: quantity and cost were stacked half-width inputs | scoped grid rule; side by side, full width |
+| U-10 | Owner | amounts forced `dir="ltr"` moved the «.» of «ج.م.» between number and currency | bidi-isolated instead |
+| U-11 | Home, nav, alerts | Western digits beside Arabic-Indic ones | counts via `formatArabicCount` |
+| U-12 | Home | metric tiles, app-bar slots, section actions, timeline, skeleton text — **classes used but never styled** | styled; count chips; distinct quick-action icons; «توريد سريع» for purchasing roles |
+
+**Also:** duplicate `.mobile-nav-badge` rules merged (logical insets); sticky app
+bar; pressed states (no hover on a phone); visible focus ring;
+`prefers-reduced-motion` stops skeleton/spinner motion; tabular numerals for
+money; a compact landscape bar (the restock action bar still clears it); a
+4-item quick-action grid is 2×2, not 3+1.
+
+**Measured:** at 320px, 13 routes, `scrollWidth` = 320 on every one (no
+horizontal scroll) and no button / link / input under 44px.
+
+**Tests:** `scripts/check_mobile_ux_polish.mjs` (+9) — U-3/U-4/U-5 against the
+real composer, U-6, U-1, U-2, U-9, U-10, U-8. Mutation-checked: restoring the
+order count as the product count fails the first test.
+
+**Remaining mobile UX debt (not done here):**
+
+- `orders_with_stockout` sums `order_count` per product, so an order short on
+  two products counts twice. An exact figure needs distinct order ids from
+  `mobile_shortages` — **SUPABASE FOLLOW-UP**, not a UI change.
+- Margin percentages on Product detail still print Western digits.
+- The customer's order history repeats the customer's name as each row's
+  subtitle.
+- Restock's «إزالة» sits alone under each line; an icon button in the line
+  header would be tighter.
+- The More sheet and filter sheets have no enter/exit animation.
+
 ## Current status — Mobile functional closure (2026-09-26)
 
 Re-audited from the code at `79dbfcf`, not from the findings below. §A–§O are

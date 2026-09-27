@@ -202,8 +202,6 @@ select {
   block-size: 1.25rem;
 }
 
-.mobile-nav-badge { position: absolute; inset-inline-start: -0.45rem; inset-block-start: -0.35rem; min-inline-size: 1.05rem; padding: 0.1rem 0.25rem; border-radius: 999px; background: var(--destructive); color: white; font-size: 0.625rem; line-height: 1.1; text-align: center; }
-
 .mobile-nav-item-active {
   color: var(--primary);
 }
@@ -246,7 +244,7 @@ select {
 }
 
 .mobile-auth-page,
-.mobile-state {
+main.mobile-state {
   min-block-size: 100dvh;
 }
 
@@ -472,7 +470,7 @@ select {
 }
 
 .mobile-nav-icon-wrapper { position: relative; display: inline-flex; }
-.mobile-nav-badge { position: absolute; top: -4px; right: -8px; background: var(--destructive); color: white; border-radius: 999px; padding: 2px 6px; font-size: 0.625rem; font-weight: 800; min-width: 18px; text-align: center; }
+.mobile-nav-badge { position: absolute; inset-block-start: -4px; inset-inline-start: -8px; background: var(--destructive); color: white; border-radius: 999px; padding: 2px 6px; font-size: 0.625rem; font-weight: 800; min-width: 18px; text-align: center; }
 .mobile-nav-item-disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Phase B UX Primitives */
@@ -901,8 +899,9 @@ select {
 
 
 /* ── المالية — the Store Owner cockpit ─────────────────────────────────────
-   One card per question, one row per figure. Values are forced LTR because a
-   currency amount reads left-to-right even inside an RTL sentence, and the
+   One card per question, one row per figure. Values are bidi-ISOLATED, not
+   forced LTR: `dir="ltr"` on an Arabic amount put the trailing «.» of «ج.م.»
+   between the number and the currency. The
    hint under each row names the ledger account it came from — the persona
    architecture's "fact, then why", never a number alone. */
 .mobile-owner-card {
@@ -956,4 +955,195 @@ select {
   margin: 0.25rem 0 0;
   font-size: 0.8125rem;
   color: var(--muted-foreground);
+}
+
+/* ── Mobile UX/UI polish ────────────────────────────────────────────────────
+   Semantic tones. `--warning`, `--info` and `--critical` were read by the
+   alert cards, callouts and status pills but never defined by any theme, so
+   every one of them resolved to nothing: status pills rendered as bare text
+   and an ACTION alert got a black border. They live here, in the mobile-only
+   stylesheet, so the desktop palette is untouched. */
+:root {
+  --warning: oklch(0.6 0.15 60);
+  --info: oklch(0.55 0.14 245);
+  --critical: var(--destructive);
+}
+.dark {
+  --warning: oklch(0.8 0.14 75);
+  --info: oklch(0.74 0.12 240);
+}
+
+/* Money and counts line up column to column. */
+.mobile-shell :is(strong, .mobile-queue-row-primary, .mobile-metric-value, .mobile-owner-row-value) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Status pills — the tone is a colour AND the label, never colour alone. */
+.mobile-status-pill {
+  --tone: var(--muted-foreground);
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-block-size: 1.5rem;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--tone) 14%, transparent);
+  color: color-mix(in oklab, var(--tone) 78%, var(--foreground));
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.mobile-status-pill--info { --tone: var(--info); }
+.mobile-status-pill--success { --tone: var(--success); }
+.mobile-status-pill--warning { --tone: var(--warning); }
+.mobile-status-pill--critical { --tone: var(--destructive); }
+.mobile-status-pill--muted { color: var(--muted-foreground); }
+
+/* Inline empty / error / offline. `.mobile-state` is shared with the
+   full-page session and licence screens, and inherited their 100dvh — so an
+   empty list, or one failed section inside a detail screen, was a whole
+   screen tall. Inline states are a card sized to their content. */
+.mobile-empty-state,
+.mobile-error-state,
+.mobile-offline-state {
+  gap: 0.6rem;
+  padding: 1.75rem 1.25rem;
+  border: 1px dashed var(--border);
+  border-radius: 1rem;
+  background: var(--card);
+}
+.mobile-error-state { border-style: solid; border-color: color-mix(in oklab, var(--destructive) 35%, var(--border)); }
+.mobile-state :is(h3, p) { margin: 0; }
+.mobile-state h3 { font-size: 0.95rem; font-weight: 800; }
+.mobile-state p { font-size: 0.85rem; line-height: 1.7; }
+.mobile-state-icon { inline-size: 1.75rem; block-size: 1.75rem; color: var(--muted-foreground); }
+.mobile-error-state .mobile-state-icon { color: var(--destructive); }
+.mobile-state .mobile-primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding-inline: 1.25rem; }
+
+/* Skeletons keep the shape of what is coming, and stop moving on request. */
+.mobile-skeleton-text { display: inline-block; inline-size: 2.5rem; block-size: 1.1em; border-radius: 0.35rem; background: var(--muted); animation: pulse 1.5s infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .mobile-skeleton-row, .mobile-skeleton-text, .mobile-spinner, .mobile-spin { animation: none; }
+}
+
+/* App bar slots. The bar stays in reach while a long detail scrolls. */
+.mobile-app-bar { position: sticky; inset-block-start: 0; z-index: 15; backdrop-filter: blur(8px); }
+.mobile-app-bar-leading,
+.mobile-app-bar-trailing { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; }
+.mobile-app-bar-title h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-app-bar .mobile-eyebrow { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0; }
+.mobile-header-mark { inline-size: 1.6rem; block-size: 1.6rem; }
+
+/* Sections. */
+.mobile-section { margin-block-end: 0.5rem; }
+.mobile-section-header { gap: 0.75rem; margin-block-end: 0.6rem; }
+.mobile-section-title { font-size: 1rem; }
+.mobile-section-action { flex: 0 0 auto; }
+.mobile-section-action .mobile-text-button,
+.mobile-detail-line .mobile-text-button { min-block-size: 44px; padding-inline: 0.25rem; }
+.mobile-section-body { display: grid; gap: 0.25rem; }
+.mobile-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.mobile-section-heading h2 { margin: 0; font-size: 1rem; font-weight: 800; }
+.mobile-count-chip { display: inline-flex; align-items: center; justify-content: center; min-inline-size: 1.5rem; block-size: 1.5rem; padding-inline: 0.4rem; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); font-size: 0.72rem; font-weight: 800; }
+
+/* Home: the metric strip is a row of tappable tiles. */
+.mobile-metric-tile-link { display: block; color: inherit; text-decoration: none; border-radius: 0.9rem; }
+.mobile-metric-tile { display: flex; flex-wrap: wrap; align-items: baseline; align-content: start; gap: 0.1rem 0.25rem; block-size: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 0.9rem; background: var(--card); }
+.mobile-metric-value { font-size: 1.4rem; font-weight: 800; line-height: 1.2; }
+.mobile-metric-unit { margin: 0; color: var(--muted-foreground); font-size: 0.72rem; font-weight: 700; }
+.mobile-metric-label { flex-basis: 100%; color: var(--muted-foreground); font-size: 0.72rem; font-weight: 700; line-height: 1.4; }
+.mobile-metric-error { color: var(--muted-foreground); }
+.mobile-metric-tile-link:active .mobile-metric-tile { background: var(--muted); }
+
+.mobile-queue-heading { justify-content: space-between; }
+.mobile-queue-heading h3 { display: flex; align-items: center; gap: 0.4rem; }
+.mobile-home .mobile-queue-heading a[href] { display: inline-flex; align-items: center; padding-inline: 0.4rem; }
+.mobile-attention-stack { display: grid; gap: 0.6rem; }
+.mobile-attention-stack .mobile-alert-card { margin: 0; }
+
+/* Cards and rows respond to a press — there is no hover on a phone. */
+.mobile-queue-row,
+.mobile-alert-card,
+.mobile-stock-card,
+.mobile-customer-card,
+.mobile-quick-actions a,
+.mobile-more-row,
+.mobile-waiting-order-row { -webkit-tap-highlight-color: transparent; transition: background-color 120ms ease-out; }
+.mobile-queue-row:active,
+.mobile-stock-card:active,
+.mobile-customer-card:active,
+.mobile-quick-actions a:active,
+.mobile-more-row:active,
+.mobile-waiting-order-row:active { background: var(--muted); }
+.mobile-alert-card:active { filter: brightness(0.97); }
+.mobile-shell :is(a, button, input, select, textarea):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* Alerts. */
+.mobile-alert-card { gap: 0.75rem; padding: 0.9rem 1rem; }
+.mobile-alert-warning { border-color: color-mix(in oklab, var(--warning) 40%, var(--border)); background: color-mix(in oklab, var(--warning) 8%, var(--card)); }
+.mobile-alert-warning .mobile-alert-icon { color: var(--warning); }
+.mobile-alert-info .mobile-alert-icon { color: var(--info); }
+.mobile-alert-icon svg { inline-size: 1.5rem; block-size: 1.5rem; }
+.mobile-alert-content { min-inline-size: 0; }
+.mobile-alert-title { font-size: 0.95rem; }
+.mobile-alert-message { font-size: 0.82rem; line-height: 1.6; }
+
+/* Queue rows: one card, title and status on one line, money on the other. */
+.mobile-queue-list > .mobile-queue-row,
+.mobile-queue-section > .mobile-queue-row { margin-block-end: 0; }
+.mobile-queue-section { gap: 0.5rem; }
+.mobile-queue-row { gap: 0.5rem; padding: 0.8rem 0.9rem; border-radius: 0.9rem; }
+.mobile-queue-row-main { min-inline-size: 0; }
+.mobile-queue-row-title { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.95rem; }
+.mobile-queue-row-subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.82rem; }
+.mobile-queue-row-footer { gap: 0.5rem; margin-block-start: 0.25rem; }
+.mobile-queue-row-primary { font-size: 0.95rem; }
+.mobile-queue-row-chevron { margin-inline-start: 0; }
+
+.mobile-quick-actions:has(> :nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mobile-quick-actions a { align-content: center; color: var(--foreground); font-size: 0.75rem; font-weight: 700; text-align: center; text-decoration: none; border-radius: 0.9rem; background: var(--card); }
+
+/* Detail screens. */
+.mobile-detail-hero { align-items: flex-start; }
+.mobile-detail-hero > div { display: grid; flex: 1; gap: 0.2rem; min-inline-size: 0; }
+.mobile-detail-hero h2 { overflow-wrap: anywhere; line-height: 1.5; }
+.mobile-detail-hero-meta { display: flex; flex-wrap: wrap; gap: 0.15rem 0.6rem; }
+.mobile-detail-hero a { display: inline-flex; align-items: center; gap: 0.35rem; min-block-size: 44px; color: var(--primary); font-weight: 700; text-decoration: none; }
+.mobile-detail-hero a svg { inline-size: 1.1rem; block-size: 1.1rem; }
+.mobile-detail-grid strong { font-size: 0.95rem; }
+.mobile-timeline-event-main { display: grid; gap: 0.15rem; }
+.mobile-timeline-event { position: relative; }
+.mobile-timeline-event::before { content: ""; position: absolute; inset-block-start: 1.05rem; inset-inline-start: -0.4rem; inline-size: 0.7rem; block-size: 0.7rem; border-radius: 999px; background: var(--primary); box-shadow: 0 0 0 3px var(--background); }
+.mobile-timeline-event-meta { color: var(--muted-foreground); }
+.mobile-warning-callout { display: flex; align-items: flex-start; gap: 0.5rem; }
+.mobile-warning-callout svg { flex: 0 0 auto; inline-size: 1.1rem; block-size: 1.1rem; margin-block-start: 0.15rem; }
+.mobile-waiting-order-row > div:last-child { display: grid; justify-items: end; gap: 0.25rem; }
+
+/* Quick restock line. `.mobile-stock-card-main > div` is a flex row for the
+   list cards, and it was beating the line's `grid-cols-2`: quantity and unit
+   cost rendered as two stacked half-width inputs. They are read together, so
+   they sit side by side, full width. */
+.mobile-restock-line { align-items: stretch; }
+.mobile-stock-card-main > .mobile-restock-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
+.mobile-stock-card-main > .mobile-restock-block { display: grid; gap: 0.25rem; }
+
+/* Amounts inside an RTL row: isolated, so "ج.م." stays after the number. */
+.mobile-tel-link { display: inline-flex; align-items: center; gap: 0.35rem; min-block-size: 44px; color: var(--primary); font-weight: 700; text-decoration: none; unicode-bidi: isolate; }
+.mobile-owner-row-value { unicode-bidi: isolate; }
+
+@media (max-width: 359px) {
+  .mobile-screen-body { padding-inline: 0.875rem; }
+  .mobile-metric-tile { padding: 0.6rem; }
+  .mobile-metric-value { font-size: 1.2rem; }
+  .mobile-detail-grid { gap: 0.4rem; }
+}
+
+/* Landscape phones: the bottom nav stays, but tighter, so content keeps room. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .mobile-bottom-nav { min-block-size: calc(52px + env(safe-area-inset-bottom)); }
+  .mobile-nav-item { min-block-size: 48px; flex-direction: row; gap: 0.4rem; }
+  .mobile-shell { padding-block-end: calc(60px + env(safe-area-inset-bottom)); }
+  .mobile-sticky-actions { inset-block-end: calc(52px + env(safe-area-inset-bottom)); }
+  .mobile-app-bar { min-block-size: 56px; }
 }

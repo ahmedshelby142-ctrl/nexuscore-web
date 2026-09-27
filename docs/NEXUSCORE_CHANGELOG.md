@@ -17,6 +17,12 @@ not in chat memory. Skim the top few entries at session start to recover where t
 Legend for status: ✅ done · 🔧 in progress · ⏳ flagged, not yet done.
 
 ---
+## Mobile PWA — UX/UI polish (2026-09-27)
+- Problem: rendered against a stubbed backend at 320–414px, light/dark: status pills were bare text and warning colours absent (`--warning`/`--info` defined nowhere); inline empty/error states were a full screen tall (inherited 100dvh); Home said «٩ منتجات» for 3 short products, re-announced shortages as «مخزون منخفض», printed raw `250`; Product detail showed the shelf's total cost as the unit cost (negative margins); Quick restock stacked its qty/cost inputs; Owner amounts misplaced «.» under forced LTR; pending orders' shipment read «غير معروف».
+- Fix: mobile-only tokens + pill tones; content-sized inline states with ARIA roles; Home alert/metric inputs named for what they read; `averageCost()` for unit cost; scoped restock grid; bidi isolation; `pending` shipment label; styled the classes components used but CSS never defined (metric tiles, app-bar slots, section actions, timeline, skeleton text); pressed/focus states, reduced-motion, tabular numerals, landscape bar. No desktop, Supabase or business-rule change.
+- Verified: `check_mobile_ux_polish.mjs` +9 (mutation-checked); 320px: 13 routes, no horizontal scroll, no target < 44px; tsc 0; suite green; `build` + `build:mobile` pass.
+
+---
 ## Order deposit boundary — I-9, a deposit cannot exceed what its order owes (2026-09-27)
 - Problem: `/ecommerce-orders` appended `order_placed` (stock out + deposit in) BEFORE writing the order row, so the database had nothing to bound the deposit against. Reproduced on production (rolled back): POS banked a 1,000,000 EGP deposit on one unit. The same ordering left 21 orphan placements and 2 double placements, behind a compensating cancel that could fail.
 - Fix: migration 045 `place_order` writes the row and calls `ledger_append` in ONE transaction, idempotent on (store, orderNumber). Migration 046 re-creates `ledger_validate_event` as 044 plus one block: an `order_placed` needs its order row in this store, one placement per order, the order's figures must add up (goods − discount = total; deposit + COD = total + shipping; nothing negative), and the banked deposit must equal the row's. So deposit ≤ total + shipping. The client places through `placeOrder`, keeps the number until confirmed (a retry replays and never duplicates), and distinguishes refused from unknown outcomes. The compensation path is gone.

@@ -7,7 +7,8 @@ import { MobileSection } from "@/mobile/components/MobileSection";
 import { StatusPill } from "@/mobile/components/StatusPill";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { deriveStockStatusKey } from "@/mobile/viewmodels/stockViewModel";
-import { resolveStockStatus } from "@/mobile/viewmodels/statusTaxonomies";
+import { resolveOrderStatus, resolveStockStatus } from "@/mobile/viewmodels/statusTaxonomies";
+import { averageCost } from "@/lib/ledger/purchases";
 import { formatArabicCurrency, formatArabicDate, formatArabicQuantity } from "@/mobile/viewmodels/formatters";
 import { readMobileProduct, readMobileProductWaitingOrders } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
@@ -74,7 +75,11 @@ export function MobileProductDetails() {
   const status = resolveStockStatus(statusKey);
   const retailPrice = productPrice(product);
   const wholesalePrice = productWholesalePrice(product);
-  const avgCost = Number((product as any).mobileCost ?? 0);
+  // `mobileCost` is the ledger stock balance's AMOUNT — the cost of everything
+  // on the shelf, not of one unit. It was shown as the unit cost, so the
+  // stock value below was quantity × total and every margin was negative.
+  // Same formula the purchasing ledger uses.
+  const avgCost = averageCost({ qty: quantity, amount: Number((product as any).mobileCost ?? 0) });
   const sku = product.sku ?? "—";
   const barcode = product.barcode ?? "—";
   const category = product.category ?? "—";
@@ -98,9 +103,11 @@ export function MobileProductDetails() {
         <Package aria-hidden="true" />
         <div>
           <h2>{product.name}</h2>
-          <span dir="ltr">{sku}</span>
-          {barcode !== "—" && <span className="mobile-muted" dir="ltr">باركود: {barcode}</span>}
-          <span className="mobile-muted">الصنف: {category}</span>
+          <div className="mobile-detail-hero-meta">
+            <span dir="ltr">{sku}</span>
+            {barcode !== "—" && <span>باركود: <bdi>{barcode}</bdi></span>}
+            <span>الصنف: {category}</span>
+          </div>
         </div>
         <StatusPill labelAr={status.labelAr} tone={status.tone} />
       </div>
@@ -192,10 +199,7 @@ export function MobileProductDetails() {
               </div>
               <div style={{ textAlign: "left" }}>
                 <span className="mobile-quantity-badge">{formatArabicQuantity(wo.quantity)}</span>
-                <StatusPill
-                  labelAr={resolveStockStatus(deriveStockStatusKey(0, 0)).labelAr}
-                  tone={wo.status === "pending" ? "warning" : "info"}
-                />
+                <StatusPill labelAr={resolveOrderStatus(wo.status).labelAr} tone={resolveOrderStatus(wo.status).tone} />
               </div>
             </button>
           ))}

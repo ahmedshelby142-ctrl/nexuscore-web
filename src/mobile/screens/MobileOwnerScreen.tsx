@@ -84,7 +84,7 @@ function AmountRow({
     <div className="mobile-owner-row">
       <div className="mobile-owner-row-main">
         <span className="mobile-owner-row-label">{label}</span>
-        <span className={`mobile-owner-row-value${tone ? ` is-${tone}` : ""}`} dir="ltr">
+        <span className={`mobile-owner-row-value${tone ? ` is-${tone}` : ""}`}>
           {formatArabicCurrency(amount)}
         </span>
       </div>

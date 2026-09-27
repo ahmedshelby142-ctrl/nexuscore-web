@@ -318,13 +318,13 @@ export function MobileQuickRestock() {
           <>
             <div className="mobile-entity-list">
               {draftRows.map((row) => (
-                <div key={row.id} className="mobile-stock-card">
+                <div key={row.id} className="mobile-stock-card mobile-restock-line">
                   <div className="mobile-stock-card-main flex-1 min-w-0">
                     <strong className="truncate block">{String(row.product.name ?? "—")}</strong>
                     <span className="text-xs text-muted-foreground" dir="ltr">{String(row.product.sku ?? "")}</span>
 
                     {row.variants.length > 0 && (
-                      <div className="space-y-1 mt-2">
+                      <div className="space-y-1 mt-2 mobile-restock-block">
                         <Label htmlFor={`restock-variant-${row.id}`} className="text-xs">الدرجة</Label>
                         <Select
                           value={row.draft.variantName ?? ""}
@@ -344,7 +344,7 @@ export function MobileQuickRestock() {
                       </div>
                     )}
 
-                    <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div className="grid grid-cols-2 gap-2 mt-2 mobile-restock-fields">
                       <div className="space-y-1">
                         <Label htmlFor={`restock-qty-${row.id}`} className="text-xs">الكمية</Label>
                         <Input

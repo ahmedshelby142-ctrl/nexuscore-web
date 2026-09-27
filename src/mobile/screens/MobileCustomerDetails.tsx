@@ -125,7 +125,7 @@ export function MobileCustomerDetails() {
         </div>
         <div>
           <h2>{customer.name}</h2>
-          <a href={`tel:${customer.phone ?? ""}`} dir="ltr" style={{ textDecoration: "none", color: "inherit" }}>
+          <a className="mobile-tel-link" href={`tel:${customer.phone ?? ""}`} dir="ltr">
             <Phone aria-hidden="true" /> {customer.phone ?? "—"}
           </a>
         </div>

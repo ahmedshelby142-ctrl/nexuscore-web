@@ -1,4 +1,4 @@
-import { RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { ClipboardList, PackagePlus, PackageSearch, RefreshCw, ShieldCheck, UserSearch } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { toAppRole } from "@/lib/roles";
@@ -12,6 +12,7 @@ import { MetricTile } from "@/mobile/components/MetricTile";
 import { QueueRow } from "@/mobile/components/QueueRow";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
+import { formatArabicCount } from "@/mobile/viewmodels/formatters";
 
 export function MobileHomeScreen() {
   const userRole = useAuthStore((state) => state.userRole);
@@ -45,7 +46,7 @@ export function MobileHomeScreen() {
           <ErrorState messageAr="تعذّر تحميل بيانات مركز العمليات." onRetry={homeData.reload} />
         ) : home && home.alerts.length > 0 ? (
           <section className="mobile-home-section" aria-labelledby="attention-title">
-            <div className="mobile-section-heading"><h2 id="attention-title">يحتاج انتباهك</h2><span>{home.alerts.length}</span></div>
+            <div className="mobile-section-heading"><h2 id="attention-title">يحتاج انتباهك</h2><span className="mobile-count-chip">{formatArabicCount(home.alerts.length)}</span></div>
             <div className="mobile-attention-stack">{home.alerts.map((alert) => <AlertCard key={alert.id} alert={alert} />)}</div>
           </section>
         ) : (
@@ -65,7 +66,7 @@ export function MobileHomeScreen() {
             <div className="mobile-queue-sections">
               {home.queues.map((queue) => (
                 <section key={queue.id} className="mobile-queue-section" aria-labelledby={`${queue.id}-queue-title`}>
-                  <div className="mobile-queue-heading"><h3 id={`${queue.id}-queue-title`}>{queue.titleAr}</h3><Link to={queue.href}>عرض الكل</Link><strong>{queue.count}</strong></div>
+                  <div className="mobile-queue-heading"><h3 id={`${queue.id}-queue-title`}>{queue.titleAr}<span className="mobile-count-chip">{formatArabicCount(queue.count)}</span></h3><Link to={queue.href} aria-label={`عرض كل ${queue.titleAr}`}>عرض الكل</Link></div>
                   {queue.rows.map((row) => <QueueRow key={row.id} item={row} />)}
                 </section>
               ))}
@@ -76,9 +77,10 @@ export function MobileHomeScreen() {
         <section className="mobile-home-section" aria-labelledby="quick-title">
           <div className="mobile-section-heading"><h2 id="quick-title">وصول سريع</h2></div>
           <div className="mobile-quick-actions">
-            {capabilities.has("orders") && <Link to="/orders"><Search aria-hidden="true" /> بحث في الطلبات</Link>}
-            {capabilities.has("stock") && <Link to="/inventory"><Search aria-hidden="true" /> بحث عن منتج</Link>}
-            {capabilities.has("customers") && <Link to="/customers"><Search aria-hidden="true" /> بحث عن عميل</Link>}
+            {capabilities.has("orders") && <Link to="/orders"><ClipboardList aria-hidden="true" /> بحث في الطلبات</Link>}
+            {capabilities.has("stock") && <Link to="/inventory"><PackageSearch aria-hidden="true" /> بحث عن منتج</Link>}
+            {capabilities.has("customers") && <Link to="/customers"><UserSearch aria-hidden="true" /> بحث عن عميل</Link>}
+            {capabilities.has("purchasing") && <Link to="/restock"><PackagePlus aria-hidden="true" /> توريد سريع</Link>}
           </div>
         </section>
       </div>

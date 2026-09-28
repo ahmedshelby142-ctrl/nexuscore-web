@@ -38,7 +38,6 @@ import { useShippingRatesStore } from "@/store/useShippingRatesStore";
 import {
   rateFor,
   clearsShippingDebt,
-  countsAsWastedTrip,
   depositDispositionOn,
   depositRefundEligible,
   shippingBorneBy,
@@ -47,6 +46,8 @@ import {
   causeLabelsFor,
   causeHintsFor,
   blockingCauseReason,
+  exchangeReturnFee,
+  lockedExchangeCause,
   type ReturnCause,
 } from "@/lib/shippingRates";
 import { storeIdentity } from "@/lib/pdfGenerator";
@@ -62,7 +63,7 @@ import {
 } from "@/services/courierClaims";
 import { useEffect } from "react";
 import { toast } from "sonner";
-import { appendEvent } from "@/lib/ledger";
+import { appendEvent, type NewEvent } from "@/lib/ledger";
 import {
   buildOrderDeliveredLines,
   buildReturnPendingLines,
@@ -436,7 +437,10 @@ export function OrdersPage() {
     : "return";
   // Why تأكيد is unavailable, or null. Rendered under the picker AND used to
   // disable the button, so the reason is visible rather than a dead control.
-  const causeBlock = blockingCauseReason(confirmCause, confirmMovement);
+  // A swap's cause was fixed when its replacement was priced — shown, not asked.
+  const confirmLocked = lockedExchangeCause(confirmMovement, returningOrder?.return_cause);
+  const effectiveConfirmCause = confirmLocked ?? confirmCause;
+  const causeBlock = blockingCauseReason(effectiveConfirmCause, confirmMovement);
   const returnClientId: string | undefined = (returningOrder as any)?.wholesaleClientId || undefined;
   const returnClientDebt = returnClientId ? debtOf(returnClientId) : 0;
 
@@ -690,7 +694,14 @@ export function OrdersPage() {
     setIsWorking(true);
     setActionError(null);
     try {
-      await appendEvent({
+      // Status, cause and the `order_cancelled` event in ONE transaction
+      // (`cancel_order`, 051). It was three requests — cause, event, status —
+      // and a failure between them left stock and money moved behind an order
+      // still showing «pending», which a second press then cancelled again.
+      // The cause is persisted on the ORDER too (the resolution path reads it
+      // back days later), and the server trigger still refuses a courier/shop
+      // cause from a role that may not assert one — before anything moves.
+      const event: NewEvent = {
         kind: "order_cancelled",
         actor: "أونلاين",
         refType: "ecommerce_order",
@@ -755,8 +766,13 @@ export function OrdersPage() {
           wallet: canonicalWallet(order.depositWallet ?? ""),
           customerId: order.customerId || undefined,
         }),
+      };
+      await useOrderStore.getState().cancelOrder({
+        orderId,
+        cause: cause as "customer" | "courier" | "shop",
+        event,
       });
-      
+
       // Called off before it ever shipped — everything goes back on the shelf.
       applyStockMoves(
         (order.stockItems ?? []).map((line: any) => ({
@@ -765,12 +781,6 @@ export function OrdersPage() {
           variantName: line.variantName,
         })),
       );
-      
-      // Persisted on the ORDER, not just in the event, because the
-      // resolution path reads it back days later — and the server trigger
-      // refuses a courier/shop cause from a role that may not assert one.
-      await updateOrder(orderId, { return_cause: cause } as never);
-      await updateOrderStatus(orderId, "cancelled");
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e);
       // The trigger speaks in codes so the wording lives here, in Arabic,
@@ -780,7 +790,9 @@ export function OrdersPage() {
           ? "تسجيل السبب ده محتاج صلاحية مدير أو محاسب — الطلب متلغاش."
           : raw.includes("NEXUS_CAUSE_FROZEN_AFTER_RESOLUTION")
             ? "العربون اتسوّى على الطلب ده خلاص — مش ممكن تغيّر السبب بعد كده."
-            : `لم يُلغَ الطلب ولم يرجع المخزون. ${raw}`,
+            : raw.includes("اتلغى قبل كده") || raw.includes("خرج من المحل")
+              ? raw
+              : `لم يُلغَ الطلب ولم يرجع المخزون. ${raw}`,
       );
     } finally {
       releaseOrder(order.id);
@@ -916,7 +928,7 @@ export function OrdersPage() {
       // One decision, made once and used by every branch below: the ledger fee,
       // the wasted-trip debt and the stored document all read these.
       const movement = movementFor(order, orders);
-      const cause = confirmCause;
+      const cause = lockedExchangeCause(movement, order.return_cause) ?? confirmCause;
       // Re-checked HERE, not only on the button. The dialog can sit open while
       // state changes underneath it, and a disabled button is a courtesy — this
       // is the point past which a ledger event becomes permanent, so an
@@ -936,9 +948,13 @@ export function OrdersPage() {
       // Capped at the order total, exactly as the refund branch caps it: a
       // deposit larger than the goods must not turn a refusal into a payout.
       const deposit = Math.min(order.depositAmount ?? 0, order.totalAmount ?? 0);
+      // Collected, not sent: they go to the database together with the order's
+      // confirmation stamp and the wasted trip, in ONE transaction — see
+      // `confirmOrderReturn`.
+      const events: NewEvent[] = [];
 
       if (returnType === "rto") {
-        await appendEvent({
+        events.push({
           kind: "rto_confirmed",
           actor: "أونلاين",
           refType: "ecommerce_order",
@@ -980,7 +996,7 @@ export function OrdersPage() {
         // If the order was never marked delivered, we can't refund a non-existent revenue.
         // We will automatically append the delivery event first to fix the ledger state!
         if (!order.revenueLogged) {
-          await appendEvent({
+          events.push({
             kind: "order_delivered",
             actor: "أونلاين",
             refType: "ecommerce_order",
@@ -1032,6 +1048,9 @@ export function OrdersPage() {
             return;
           }
           const resolved = resolvedOrderReturn.ok;
+          // A trader's return keeps its own path; the auto-delivery queued
+          // above is written first, exactly as before.
+          for (const queued of events) await appendEvent(queued);
           // Ceiling first, money second, ceiling undone if the money is
           // refused — see `commitWholesaleReturn`.
           await commitWholesaleReturn(
@@ -1099,7 +1118,7 @@ export function OrdersPage() {
           return;
         }
 
-        await appendEvent({
+        events.push({
           kind: "return_confirmed",
           actor: "أونلاين",
           refType: "ecommerce_order",
@@ -1170,7 +1189,15 @@ export function OrdersPage() {
             // branch in `buildReturnConfirmedLines` had never once been
             // reached: every swap booked the courier's trip as an expense the
             // shop never bore, understating profit on all of them.
-            returnFee: rateFor(shippingRates, order.governorate, movement),
+            // …and on an exchange, only if the replacement did not already
+            // charge the trip — one trip, one charge (`exchangeReturnFee`).
+            returnFee:
+              movement === "exchange"
+                ? exchangeReturnFee(
+                    rateFor(shippingRates, order.governorate, "exchange"),
+                    orders.find((o) => o.original_order_id === order.id)?.shippingFee ?? 0,
+                  )
+                : rateFor(shippingRates, order.governorate, movement),
             movement,
             // Responsibility, not movement, decides who pays — see
             // `shippingBorneBy`. "unknown" reproduces the old movement-keyed
@@ -1183,24 +1210,21 @@ export function OrdersPage() {
         });
       }
       
-      // A wasted trip is owed, so the next order is quoted at double shipping —
-      // see `shippingFeeFor`. An EXCHANGE is not a wasted trip: the courier
-      // carried the replacement out and this back in one journey, the customer
-      // kept goods, and they already paid the exchange fee as a pass-through.
-      // This used to fire on every confirmation, so a swap billed them twice.
-      //
-      // AWAITED: `recordReturn` is a cloud write. Called bare it was an
-      // unhandled rejection, so a refused increment lost the wasted trip
-      // silently while the screen said the return was confirmed. It only
-      // escaped the bare-call check because it sat on the same line as its
-      // `if`. The `.catch` is deliberate and is why this is not in the main
-      // try: the return itself is already in the ledger and the goods are
-      // already back, so a failed debt increment must not undo it or report
-      // the return as failed. The cost of losing one is one under-recovered
-      // trip, which is the right way round to fail.
-      if (customerId && countsAsWastedTrip(cause, movement)) {
-        await useCustomerStore.getState().recordReturn(customerId).catch(() => {});
-      }
+      // ONE transaction: the events above, the order's `returnConfirmedAt` +
+      // `return_cause`, and — when the customer caused a plain return — +1 owed
+      // trip (`countsAsWastedTrip`; an exchange is not a wasted trip). It used
+      // to be three requests, and a refused cause left the ledger moved behind
+      // an order that still looked unconfirmed, so a second press booked the
+      // return twice. Now a refusal writes nothing, and a repeat is refused.
+      // `returnConfirmedAt` on the document is what keeps the button from
+      // coming back after a reload (ECO-1786978185609's three events).
+      await useOrderStore.getState().confirmOrderReturn({
+        orderId: order.id,
+        cause: cause as "customer" | "courier" | "shop",
+        movement,
+        events,
+        customerId,
+      });
 
       // The courier brought it back. Same movement as a cancellation.
       applyStockMoves(
@@ -1211,12 +1235,6 @@ export function OrdersPage() {
         })),
       );
 
-      // The status union has no state after `returned`, so the confirmation is
-      // stamped on the document instead. Without it the button comes back on
-      // the next reload and the goods go back on the shelf a second time —
-      // which is what the three `return_confirmed` events on ECO-1786978185609
-      // are. `claimOrder` only covers the same session; this survives a restart.
-      await updateOrder(order.id, { returnConfirmedAt: new Date(), return_cause: cause });
       setConfirmDialog({ orderId: "", open: false });
       setConfirmName("");
       setConfirmCause("unknown");
@@ -2577,8 +2595,9 @@ export function OrdersPage() {
             <div className="space-y-2">
               <Label>{confirmMovement === "exchange" ? "سبب الاستبدال" : "سبب المرتجع"}</Label>
               <Select
-                value={confirmCause}
+                value={effectiveConfirmCause}
                 onValueChange={(v) => setConfirmCause(v as ReturnCause)}
+                disabled={confirmLocked !== null}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -2592,17 +2611,19 @@ export function OrdersPage() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                {causeHintsFor(confirmMovement)[confirmCause]}
+                {confirmLocked
+                  ? "السبب اتحدد وقت تسجيل طلب الاستبدال، وعليه اتحسب الشحن."
+                  : causeHintsFor(confirmMovement)[confirmCause]}
               </p>
               {/* The financial consequence, said out loud before تأكيد. The
                   operator is choosing who pays; they should be able to read it
                   rather than infer it from a ledger line afterwards. */}
-              {confirmCause !== "unknown" && (
+              {effectiveConfirmCause !== "unknown" && (
                 <p className="text-xs font-medium">
                   المسؤول المالي:{" "}
-                  {shippingBorneBy(confirmCause, confirmMovement) === "shop"
+                  {shippingBorneBy(effectiveConfirmCause, confirmMovement) === "shop"
                     ? "على المحل"
-                    : shippingBorneBy(confirmCause, confirmMovement) === "courier"
+                    : shippingBorneBy(effectiveConfirmCause, confirmMovement) === "courier"
                       ? "تعويض من شركة الشحن"
                       : "على العميلة"}
                 </p>

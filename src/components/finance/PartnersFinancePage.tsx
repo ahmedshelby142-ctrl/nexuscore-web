@@ -1,5 +1,6 @@
-import { useSubmitGate } from "@/hooks/useSubmitGate";
-import { useState, useMemo } from "react";
+import { toast } from "sonner";
+import { useSubmitGate, useRunOnce } from "@/hooks/useSubmitGate";
+import { useState, useMemo, useRef } from "react";
 import {
   DollarSign,
   TrendingUp,
@@ -29,8 +30,9 @@ import {
   Landmark,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
-import { useBusinessStore } from "@/store/useBusinessStore";
-import { useFinancialStore } from "@/store/useFinancialStore";
+import { useBusinessStore, LEGACY_PARTNERS_KEY } from "@/store/useBusinessStore";
+import { useFinancialStore, LEGACY_FINANCE_KEY } from "@/store/useFinancialStore";
+import { writeThrough } from "@/services/cloudData";
 import { getPartnerEarnings } from "@/services/financeService";
 import { add, subtract, multiply, divide, round, formatMoney, formatBalance } from "@/lib/math";
 import type { BusinessPersona, ExpenseCategory } from "@/types";
@@ -48,7 +50,6 @@ import { OwnerEquityCard } from "@/components/finance/OwnerEquityCard";
 import { useEquityStatement } from "@/lib/ledger/useEquityStatement";
 import { FinancialReportsPage } from "@/components/finance/FinancialReportsPage";
 import { SHIPPING_SUBJECTS } from "@/lib/ledger/reports";
-import { appendEvent } from "@/lib/ledger";
 import { buildExpenseLines } from "@/lib/ledger/expenses";
 import type { WalletType } from "@/types";
 import { WALLET_LABELS, PARTNER_KIND_LABELS, PARTNER_KIND_HINTS } from "@/types";
@@ -463,11 +464,11 @@ export function PartnersFinancePage() {
     payroll,
     assets,
     budgetCaps,
-    addExpense,
+    recordExpense,
     removeExpense,
-    addPayroll,
+    recordPayroll,
     removePayroll,
-    addAsset,
+    recordAsset,
     removeAsset,
     toggleAsset,
     setBudgetCap,
@@ -695,6 +696,13 @@ export function PartnersFinancePage() {
   const expenseGate = useSubmitGate();
   const payrollGate = useSubmitGate();
   const assetGate = useSubmitGate();
+  const partnerGate = useSubmitGate();
+  // The id a payroll / asset submit is using, kept across a failed attempt
+  // whose answer never arrived: the retry sends the SAME id and the database
+  // returns the row it already has instead of paying a second time (051).
+  const pendingPayrollId = useRef<string | null>(null);
+  const pendingAssetId = useRef<string | null>(null);
+  const pendingExpenseId = useRef<string | null>(null);
 
   const handleAddExpense = async () => {
     const amount = parseFloat(expenseForm.amount);
@@ -723,14 +731,28 @@ export function PartnersFinancePage() {
       return;
     }
 
-    // ONE event first: the cost and the cash that paid it, together. Recording
-    // the document without this is what let the till keep the rent money.
+    // The cost, the cash that paid it and the expense document — ONE
+    // transaction (`record_expense`, 052). It was the ledger event first and
+    // the document after, so a failed document write left the money out of
+    // the till with no expense listed and nothing counted against the cap.
+    // The id survives a failure whose answer never arrived: the retry sends
+    // the SAME id and the database returns the expense it already has.
     setSpendError(null);
-    try {
-      await appendEvent({
+    const id = pendingExpenseId.current ?? crypto.randomUUID();
+    pendingExpenseId.current = id;
+    const result = await recordExpense(
+      {
+        id,
+        category: expenseForm.category as ExpenseCategory,
+        amount,
+        description: expenseForm.description || undefined,
+        date: new Date(expenseForm.date),
+      },
+      {
         kind: "expense",
         actor: "مصروف",
         refType: "expense",
+        refId: id,
         payload: {
           category: expenseForm.category,
           description: expenseForm.description || undefined,
@@ -742,36 +764,24 @@ export function PartnersFinancePage() {
           amount,
           wallet: expenseWallet,
         }),
-      });
-    } catch (e) {
-      // Nothing was written, so no document is recorded either — a listed
-      // expense with no money behind it is the drift being deleted everywhere.
+      },
+    );
+    if (!result.success) {
+      if (result.definite) pendingExpenseId.current = null;
       setSpendError(
-        `المصروف متسجّلش، ومفيش فلوس اتحركت. ${e instanceof Error ? e.message : String(e)}`,
+        result.reason.includes("NEXUS_OVER_BUDGET")
+          ? "المصروف ده هيعدّي سقف الميزانية للبند ده (اتسجّل مصروف تاني من جهاز تاني) — مفيش حاجة اتسجلت ولا فلوس اتحركت."
+          : result.definite
+            ? `المصروف متسجّلش، ومفيش فلوس اتحركت. ${result.reason}`
+            : `الاتصال انقطع قبل ما نعرف النتيجة. اضغط تسجيل تاني — لو كان اتسجّل مش هيتدفع مرتين. ${result.reason}`,
       );
       expenseGate.exit();
       return;
     }
+    pendingExpenseId.current = null;
+    if (result.replayed) toast.info("المصروف ده كان اتسجّل قبل كده — ما اتدفعش تاني.");
     refreshWallets();
     refreshExpenses();
-
-    // The document follows the money. If its write fails the expense IS on
-    // the ledger and out of the wallet — say that, rather than an unhandled
-    // rejection that left this form's gate held until a reload.
-    try {
-      await addExpense({
-        category: expenseForm.category as ExpenseCategory,
-        amount,
-        description: expenseForm.description || undefined,
-        date: new Date(expenseForm.date),
-      });
-    } catch (e) {
-      setSpendError(
-        `المصروف اتسجّل في الدفتر وخرج من الخزنة، لكن مستنده ما اتحفظش — ماتسجّلوش تاني. ${e instanceof Error ? e.message : String(e)}`,
-      );
-      expenseGate.exit();
-      return;
-    }
     setExpenseForm({
       category: "",
       amount: "",
@@ -788,13 +798,27 @@ export function PartnersFinancePage() {
     if (!payrollGate.enter()) return;
 
     // A salary is an operating expense with a name on it: same two lines,
-    // different event kind.
+    // different event kind. The document and the money go together now
+    // (`record_payroll`, 051) — the document used to be written afterwards,
+    // into this browser only.
     setSpendError(null);
-    try {
-      await appendEvent({
+    const id = pendingPayrollId.current ?? crypto.randomUUID();
+    pendingPayrollId.current = id;
+    const result = await recordPayroll(
+      {
+        id,
+        employeeName: payrollForm.employeeName,
+        type: payrollForm.type,
+        amount,
+        description: payrollForm.description || undefined,
+        date: new Date(payrollForm.date),
+        wallet: expenseWallet,
+      },
+      {
         kind: "payroll",
         actor: "مرتبات",
         refType: "payroll",
+        refId: id,
         payload: {
           employeeName: payrollForm.employeeName,
           type: payrollForm.type,
@@ -802,24 +826,22 @@ export function PartnersFinancePage() {
         },
         occurredAt: new Date(payrollForm.date),
         lines: buildExpenseLines({ category: "salaries", amount, wallet: expenseWallet }),
-      });
-    } catch (e) {
+      },
+    );
+    if (!result.success) {
+      if (result.definite) pendingPayrollId.current = null;
       setSpendError(
-        `المرتب متسجّلش، ومفيش فلوس اتحركت. ${e instanceof Error ? e.message : String(e)}`,
+        result.definite
+          ? `المرتب متسجّلش، ومفيش فلوس اتحركت. ${result.reason}`
+          : `الاتصال انقطع قبل ما نعرف النتيجة. اضغط تسجيل تاني — لو كان اتسجّل مش هيتدفع مرتين. ${result.reason}`,
       );
       payrollGate.exit();
       return;
     }
+    pendingPayrollId.current = null;
+    if (result.replayed) toast.info("المرتب ده كان اتسجّل قبل كده — ما اتدفعش تاني.");
     refreshWallets();
     refreshExpenses();
-
-    addPayroll({
-      employeeName: payrollForm.employeeName,
-      type: payrollForm.type,
-      amount,
-      description: payrollForm.description || undefined,
-      date: new Date(payrollForm.date),
-    });
     setPayrollForm({
       employeeName: "",
       type: "salary",
@@ -831,7 +853,7 @@ export function PartnersFinancePage() {
     payrollGate.exit();
   };
 
-  const handleAddPartner = () => {
+  const handleAddPartner = async () => {
     const equity = parseFloat(partnerForm.equityPercentage);
     if (!partnerForm.name || isNaN(equity) || equity < 0 || equity > 100) return;
     // A shop has ONE hundred per cent. The two separate lists each checked
@@ -843,15 +865,25 @@ export function PartnersFinancePage() {
       return;
     }
     setOwnershipError(null);
-    addPartner({
-      name: partnerForm.name,
-      kind: partnerForm.kind,
-      equityPercentage: equity,
-      // Capital is recorded on the ledger from «حقوق الملكية», with the wallet
-      // it arrived in — not typed onto the partner row.
-      joinedDate: new Date(),
-      status: "active",
-    } as any);
+    // A cloud write now: two clicks in one tick would add the partner twice.
+    if (!partnerGate.enter()) return;
+    try {
+      await addPartner({
+        name: partnerForm.name,
+        kind: partnerForm.kind,
+        equityPercentage: equity,
+        // Capital is recorded on the ledger from «حقوق الملكية», with the wallet
+        // it arrived in — not typed onto the partner row.
+        joinedDate: new Date(),
+        status: "active",
+      } as any);
+    } catch (e) {
+      // Nothing was added anywhere; the form stays filled for a retry.
+      setOwnershipError(`الشريك ما اتسجّلش. ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    } finally {
+      partnerGate.exit();
+    }
     setPartnerForm({ name: "", kind: "working", equityPercentage: "" });
     setIsPartnerOpen(false);
   };
@@ -863,45 +895,61 @@ export function PartnersFinancePage() {
     const pDate = new Date(assetForm.purchaseDate);
     if (!assetForm.name || !pv || pv <= 0 || !life || life <= 0 || isNaN(pDate.getTime())) return;
     if (!assetGate.enter()) return;
-    
-    if (assetForm.paymentSource !== "prepaid") {
-      setSpendError(null);
-      try {
-        await appendEvent({
-          kind: "expense",
-          actor: "أصول",
-          refType: "fixed_asset",
-          payload: {
-            category: "assets",
-            description: `شراء أصل ثابت: ${assetForm.name}`,
-            wallet: assetForm.paymentSource,
-          },
-          occurredAt: pDate,
-          lines: buildExpenseLines({
-            category: "assets",
-            amount: pv,
-            wallet: assetForm.paymentSource,
-          }),
-        });
-      } catch (e) {
-        setSpendError(
-          `فشلت عملية شراء الأصل، لم يتم خصم المبلغ من الخزينة. ${e instanceof Error ? e.message : String(e)}`,
-        );
-        assetGate.exit();
-        return;
-      }
+
+    // The asset and — when it is paid from a wallet now — its `expense` event,
+    // in one transaction (`record_fixed_asset`, 051). A «مدفوع مسبقاً» asset
+    // moves no money, exactly as before.
+    setSpendError(null);
+    const id = pendingAssetId.current ?? crypto.randomUUID();
+    pendingAssetId.current = id;
+    const paid = assetForm.paymentSource !== "prepaid";
+    const result = await recordAsset(
+      {
+        id,
+        name: assetForm.name,
+        purchaseValue: pv,
+        salvageValue: salvage,
+        usefulLifeYears: life,
+        purchaseDate: pDate,
+        isActive: true,
+        paymentSource: assetForm.paymentSource,
+      },
+      paid
+        ? {
+            kind: "expense",
+            actor: "أصول",
+            refType: "fixed_asset",
+            refId: id,
+            payload: {
+              category: "assets",
+              description: `شراء أصل ثابت: ${assetForm.name}`,
+              wallet: assetForm.paymentSource,
+            },
+            occurredAt: pDate,
+            lines: buildExpenseLines({
+              category: "assets",
+              amount: pv,
+              wallet: assetForm.paymentSource,
+            }),
+          }
+        : null,
+    );
+    if (!result.success) {
+      if (result.definite) pendingAssetId.current = null;
+      setSpendError(
+        result.definite
+          ? `الأصل ما اتسجّلش، ولم يتم خصم أي مبلغ من الخزينة. ${result.reason}`
+          : `الاتصال انقطع قبل ما نعرف النتيجة. اضغط حفظ تاني — لو كان اتسجّل مش هيتخصم مرتين. ${result.reason}`,
+      );
+      assetGate.exit();
+      return;
+    }
+    pendingAssetId.current = null;
+    if (result.replayed) toast.info("الأصل ده كان اتسجّل قبل كده — ما اتخصمش تاني.");
+    if (paid) {
       refreshWallets();
       refreshExpenses();
     }
-
-    addAsset({
-      name: assetForm.name,
-      purchaseValue: pv,
-      salvageValue: salvage,
-      usefulLifeYears: life,
-      purchaseDate: pDate,
-      isActive: true,
-    });
     setAssetForm({ 
       name: "", 
       purchaseValue: "", 
@@ -914,10 +962,20 @@ export function PartnersFinancePage() {
     assetGate.exit();
   };
 
-  const handleSetBudget = () => {
+  const budgetGate = useSubmitGate();
+  const handleSetBudget = async () => {
     const cap = parseFloat(budgetForm.capAmount);
     if (!budgetForm.category || !cap || cap <= 0) return;
-    setBudgetCap(budgetForm.category, cap);
+    if (!budgetGate.enter()) return;
+    // A store rule now (051), shared by every device — saved before it shows.
+    try {
+      await setBudgetCap(budgetForm.category, cap);
+    } catch {
+      // `writeThrough` already said so; the dialog stays open for a retry.
+      budgetGate.exit();
+      return;
+    }
+    budgetGate.exit();
     setBudgetForm({ category: "", capAmount: "" });
     setIsBudgetOpen(false);
   };
@@ -1017,6 +1075,7 @@ export function PartnersFinancePage() {
 
         {/* ════════════════════ TAB 1: GENERAL FINANCE ════════════════════ */}
         <TabsContent value="finance" className="space-y-6">
+          <LegacyFinanceBanner />
           {/* First thing a real shop does: tell the app what is actually in the
               wallets today. Until that happens every figure on this screen is
               measured from zero, so the prompt sits above the numbers rather
@@ -1234,10 +1293,10 @@ export function PartnersFinancePage() {
                               size="icon"
                               className="size-7 text-muted-foreground hover:text-destructive"
                               onClick={() => {
-                                // `removeExpense` deletes from Supabase first,
-                                // so it is async. `removePayroll` is local-only
-                                // (payroll has no cloud table yet).
-                                if (isPayroll) removePayroll(entry.id);
+                                // Both delete from Supabase first (payroll since
+                                // 051) and only the DOCUMENT — money already
+                                // paid stays on the ledger, as before.
+                                if (isPayroll) void removePayroll(entry.id).catch(() => {});
                                 else void removeExpense(entry.id).catch(() => {});
                               }}
                             >
@@ -1329,7 +1388,7 @@ export function PartnersFinancePage() {
                             variant="ghost"
                             size="icon"
                             className="size-7"
-                            onClick={() => toggleAsset(a.id)}
+                            onClick={() => void toggleAsset(a.id).catch(() => {})}
                           >
                             <BadgePercent className="size-3" />
                           </Button>
@@ -1337,7 +1396,7 @@ export function PartnersFinancePage() {
                             variant="ghost"
                             size="icon"
                             className="size-7 text-destructive"
-                            onClick={() => removeAsset(a.id)}
+                            onClick={() => void removeAsset(a.id).catch(() => {})}
                           >
                             <Trash2 className="size-3" />
                           </Button>
@@ -1382,6 +1441,7 @@ export function PartnersFinancePage() {
 
         {/* ════════════════════ TAB 2: PARTNERS & CAPITAL ════════════════════ */}
         <TabsContent value="partners" className="space-y-6">
+          <LegacyPartnersBanner />
           {/* Equity belongs to the business: shown with or without partners. */}
           <OwnerEquityCard equity={equity} />
 
@@ -1569,7 +1629,11 @@ export function PartnersFinancePage() {
                               <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() => restorePartner(partner.id)}
+                                onClick={() =>
+                                  restorePartner(partner.id).catch((e) =>
+                                    toast.error(`لم يُسترجع الشريك. ${e instanceof Error ? e.message : String(e)}`),
+                                  )
+                                }
                               >
                                 استرجاع
                               </Button>
@@ -2060,6 +2124,191 @@ export function PartnersFinancePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * Partners this browser held before they became shared (migration 050).
+ *
+ * Handed over by the store's persist `migrate`, never pushed on its own: the
+ * blob is per BROWSER, not per store, so only a person looking at it can say it
+ * belongs to the store they are signed into. Upload keeps each partner's id, so
+ * the draws already on the ledger still point at them.
+ */
+function LegacyPartnersBanner() {
+  const partners = useBusinessStore((s) => s.partners);
+  const addPartner = useBusinessStore((s) => s.addPartner);
+  const [legacy, setLegacy] = useState<any[]>(() => {
+    try {
+      const raw = localStorage.getItem(LEGACY_PARTNERS_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const runOnce = useRunOnce();
+
+  const cloudIds = new Set(partners.map((p) => p.id));
+  const pending = legacy.filter((p) => p?.id && !cloudIds.has(p.id));
+  if (pending.length === 0) return null;
+
+  const forget = () => {
+    try {
+      localStorage.removeItem(LEGACY_PARTNERS_KEY);
+    } catch {
+      /* nothing to forget */
+    }
+    setLegacy([]);
+  };
+
+  const upload = () => runOnce(async () => {
+    // The shop still has ONE hundred per cent, counted with what is shared.
+    let committed = partners;
+    const incoming = pending.filter((p) => !isPartnerArchived(p));
+    for (const p of incoming) {
+      if (!ownershipFits(committed, Number(p.equityPercentage) || 0)) {
+        setError(`نسبة «${p.name}» (${p.equityPercentage}%) تتخطى الـ100% مع الشركاء المسجّلين — عدّل النسب الأول.`);
+        return;
+      }
+      committed = [...committed, p];
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      for (const p of pending) await addPartner(p);
+      forget();
+      toast.success("اترفع الشركاء القدام — بقوا ظاهرين على كل الأجهزة.");
+    } catch (e) {
+      setError(`اترفع جزء بس. ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  return (
+    <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 space-y-2 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
+      <p className="text-sm font-semibold">
+        فيه {pending.length} شريك متسجلين على الجهاز ده بس: {pending.map((p) => p.name).join("، ")}
+      </p>
+      <p className="text-xs">
+        الشركاء بقوا بيتحفظوا على السحابة ويظهروا على كل الأجهزة. لو دول شركاء المتجر ده ارفعهم، ولو لأ تجاهلهم.
+      </p>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <div className="flex gap-2">
+        <Button size="sm" onClick={upload} disabled={busy}>
+          رفع للمتجر ده
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            if (window.confirm("هيتمسحوا من الجهاز ده نهائي ومش هيترفعوا. متأكد؟")) forget();
+          }}
+        >
+          تجاهل
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Fixed assets, payroll documents and budget caps this browser held before
+ * they became shared (migration 051) — handed over by the financial store's
+ * persist `migrate`, never pushed on their own. Documents only: the money
+ * behind them was booked on the ledger when they were first recorded, so the
+ * upload moves nothing.
+ */
+function LegacyFinanceBanner() {
+  const { assets, payroll, budgetCaps, setBudgetCap } = useFinancialStore();
+  const [legacy, setLegacy] = useState<{ assets: any[]; payroll: any[]; budgetCaps: any[] }>(() => {
+    try {
+      const raw = localStorage.getItem(LEGACY_FINANCE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return {
+        assets: parsed?.assets ?? [],
+        payroll: parsed?.payroll ?? [],
+        budgetCaps: parsed?.budgetCaps ?? [],
+      };
+    } catch {
+      return { assets: [], payroll: [], budgetCaps: [] };
+    }
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const runOnce = useRunOnce();
+
+  const cloudAssets = new Set(assets.map((a) => a.id));
+  const cloudPayroll = new Set(payroll.map((p) => p.id));
+  const cloudCaps = new Set(budgetCaps.map((b) => b.category));
+  const pendingAssets = legacy.assets.filter((a) => a?.id && !cloudAssets.has(a.id));
+  const pendingPayroll = legacy.payroll.filter((p) => p?.id && !cloudPayroll.has(p.id));
+  const pendingCaps = legacy.budgetCaps.filter((b) => b?.category && !cloudCaps.has(b.category));
+  const count = pendingAssets.length + pendingPayroll.length + pendingCaps.length;
+  if (count === 0) return null;
+
+  const forget = () => {
+    try {
+      localStorage.removeItem(LEGACY_FINANCE_KEY);
+    } catch {
+      /* nothing to forget */
+    }
+    setLegacy({ assets: [], payroll: [], budgetCaps: [] });
+  };
+
+  const upload = () =>
+    runOnce(async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        for (const a of pendingAssets) {
+          const saved = await writeThrough("fixed_assets", a);
+          useFinancialStore.setState((s) => ({ assets: [...s.assets, saved] }));
+        }
+        for (const p of pendingPayroll) {
+          const saved = await writeThrough("payroll", p);
+          useFinancialStore.setState((s) => ({ payroll: [...s.payroll, saved] }));
+        }
+        for (const b of pendingCaps) await setBudgetCap(b.category, Number(b.capAmount));
+        forget();
+        toast.success("اترفعت البيانات القديمة — بقت ظاهرة على كل الأجهزة.");
+      } catch (e) {
+        setError(`اترفع جزء بس. ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setBusy(false);
+      }
+    });
+
+  return (
+    <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 space-y-2 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
+      <p className="text-sm font-semibold">
+        فيه بيانات متسجلة على الجهاز ده بس: {pendingAssets.length} أصل، {pendingPayroll.length} مرتب،{" "}
+        {pendingCaps.length} سقف ميزانية
+      </p>
+      <p className="text-xs">
+        الأصول والمرتبات وسقوف الميزانية بقت بتتحفظ على السحابة وتظهر على كل الأجهزة. الرفع بيحفظ
+        المستندات بس — الفلوس اتسجلت في الدفتر وقت تسجيلها أول مرة.
+      </p>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <div className="flex gap-2">
+        <Button size="sm" onClick={upload} disabled={busy}>
+          رفع للمتجر ده
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            if (window.confirm("هيتمسحوا من الجهاز ده نهائي ومش هيترفعوا. متأكد؟")) forget();
+          }}
+        >
+          تجاهل
+        </Button>
+      </div>
     </div>
   );
 }

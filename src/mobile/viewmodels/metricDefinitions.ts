@@ -127,8 +127,8 @@ export const MOBILE_METRIC_DEFINITIONS: readonly MetricDefinition[] = [
     // never makes.
     id: "shortage_products",
     labelAr: "أصناف ناقصة للطلبات",
-    source: "mobile_shortages RPC (open-order demand > ledger stock)",
-    authority: "mobile_shortages (ledger stock vs open orders)",
+    source: "mobile_shortages RPC (open-order shortfall > ledger stock, migration 050)",
+    authority: "mobile_shortages = Desktop computeShortages",
     capability: "stock",
     emptyValueAr: "لا نواقص",
     errorValueAr: "—",

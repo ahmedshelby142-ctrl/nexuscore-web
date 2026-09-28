@@ -51,6 +51,12 @@ export interface TableSchema {
    * Distinct from "unknown": these are known and withheld on purpose.
    */
   localOnly?: readonly string[];
+  /**
+   * Archived rows are still rows: the loader must not apply the `deleted_at`
+   * tombstone filter. For a table whose soft-delete is an ARCHIVE the screens
+   * still show (partners — past reports resolve their names).
+   */
+  keepsArchived?: boolean;
 }
 
 export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
@@ -83,6 +89,20 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
       "id", "companyName", "contactPerson", "phone", "email", "address",
       "taxId", "notes", "createdAt", "updatedAt", ...COMMON,
     ],
+  },
+
+  // Ownership is business data, not a browser setting — migration 050. The
+  // archive marker is `deleted_at` on the local record (`isPartnerArchived`)
+  // and `archived_at` in the table, so an archived partner is still LISTED on
+  // every device instead of being filtered out as a tombstone.
+  partners: {
+    columns: [
+      "id", "name", "kind", "equityPercentage", "status", "joinedDate", "userId",
+      "capitalContribution", "archived_at", "createdAt", "updatedAt",
+      "store_id", "updated_at", "device_id", "sync_status",
+    ],
+    rename: { deleted_at: "archived_at" },
+    keepsArchived: true,
   },
 
   // A courier is a counterparty directory, exactly like `suppliers` — and its
@@ -135,7 +155,29 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
   // return), no store_id is attached, and the store-scoped RLS added in
   // migration 013 would refuse every write.
   expenses: {
-    columns: ["id", "category", "amount", "description", "date", ...COMMON],
+    // `ledger_event_id` (052): the `expense` event this document was booked
+    // with, in the same transaction — see `record_expense`.
+    columns: ["id", "category", "amount", "description", "date", "ledger_event_id", ...COMMON],
+  },
+
+  // Migration 051. Three الشركاء والمالية registers that lived only in the
+  // browser that typed them. The money behind each was already on the ledger;
+  // these are the documents, now shared like `expenses`.
+  fixed_assets: {
+    columns: [
+      "id", "name", "purchaseValue", "salvageValue", "usefulLifeYears", "purchaseDate",
+      "monthlyDepreciation", "isActive", "paymentSource", "ledger_event_id", "createdAt",
+      ...COMMON,
+    ],
+  },
+  budget_caps: {
+    columns: ["id", "category", "capAmount", ...COMMON],
+  },
+  payroll: {
+    columns: [
+      "id", "employeeName", "type", "amount", "description", "date", "wallet",
+      "ledger_event_id", "createdAt", ...COMMON,
+    ],
   },
 
   transactions: {

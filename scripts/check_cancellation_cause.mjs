@@ -88,8 +88,13 @@ test("B · the cancel path records a cause at all — it recorded none", () => {
     /const cancelOrder = async \(orderId: string, cause: ReturnCause\)/,
     "the handler must take a cause",
   );
-  // On the order, because the resolution reads it back days later…
-  assert.match(ORDERS, /updateOrder\(orderId, \{ return_cause: cause \}/);
+  // On the order, because the resolution reads it back days later — since
+  // 051 set by `cancel_order` in the same transaction as the status and event.
+  assert.match(ORDERS, /cancelOrder\(\{\s*orderId,\s*cause: cause as "customer" \| "courier" \| "shop",/);
+  assert.match(
+    read("../docs/migrations/051_finance_records_and_atomic_cancel.sql"),
+    /SET status = 'cancelled', return_cause = p_cause/,
+  );
   // …and on the append-only event, so it cannot be rewritten afterwards.
   assert.match(ORDERS, /payload: \{ customerName: order\.customerName, return_cause: cause \}/);
 });

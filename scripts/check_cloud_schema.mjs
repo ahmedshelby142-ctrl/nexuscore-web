@@ -54,7 +54,12 @@ test("every declared column really exists in the deployed schema", () => {
     for (const col of schema.columns) {
       if (patched.has(col)) continue;
       // Quoted camelCase columns appear as "unitPrice" in the DDL.
-      const present = body.includes(`\n  ${col} `) || body.includes(`"${col}"`);
+      // …or added later by an additive migration (e.g. 052's
+      // `ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS ledger_event_id`).
+      const added = new RegExp(
+        `ALTER TABLE public\\.${table} ADD COLUMN IF NOT EXISTS (?:"${col}"|${col})\\b`,
+      ).test(sql);
+      const present = body.includes(`\n  ${col} `) || body.includes(`"${col}"`) || added;
       assert.ok(present, `${table}.${col} is declared here but not in the SQL`);
     }
   }

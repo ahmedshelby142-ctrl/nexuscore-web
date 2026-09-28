@@ -1,101 +1,105 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { writeThrough, deleteThrough } from "@/services/cloudData";
 import type { CourierAccount } from "@/types";
 
 interface CourierState {
   accounts: CourierAccount[];
-  addCourier: (
-    courier: Omit<
-      CourierAccount,
-      | "id"
-      | "totalExpectedCod"
-      | "cashReceived"
-      | "commissionFees"
-      | "remainingBalance"
-      | "orderIds"
-      | "settlements"
-      | "updatedAt"
-    >,
-  ) => void;
-  updateCourier: (id: string, updates: Partial<CourierAccount>) => void;
-  removeCourier: (id: string) => void;
+  addCourier: (courier: { name: string; phone?: string; notes?: string }) => Promise<CourierAccount>;
+  updateCourier: (id: string, updates: Partial<CourierAccount>) => Promise<void>;
+  removeCourier: (id: string) => Promise<void>;
   settleBalance: (id: string, amount: number, note?: string) => void;
 }
 
 /**
- * No `recalc` any more, and no `recordOrderCod`.
+ * WHO the couriers are. Not what they owe — that is the ledger's.
  *
- * It kept `remainingBalance` in step with three other stored numbers. All four
- * are gone: what a courier owes us is SUM(receivable_courier) and what we owe
- * them is SUM(payable_courier), both read straight from the ledger. This store
- * now holds only WHO the couriers are.
+ * ## What changed, and why it had to
  *
- * `recordOrderCod` was deleted 2026-08-19: it filled `orderIds` and was the only
- * thing that ever created a courier row — and **nothing called it**, so حسابات
- * الشحن listed no couriers at all while the ledger held real balances for them.
- * The screen derives its couriers from the orders themselves now.
+ * This store used to be `persist`ed to **localStorage** under `courier-storage`,
+ * with no table behind it and no entry in `CLOUD_SCHEMA`. So a courier
+ * registered on the shop's laptop did not exist on the phone, and the order form
+ * had no list worth offering — which is exactly why «اسم شركة الشحن» was a
+ * free-text box, and why «أرامكس» typed twice became two couriers whose money
+ * could never be reconciled into one account.
+ *
+ * Migration 030 gives couriers a real store-scoped table, so the writes now go
+ * through `writeThrough` — the same await-the-database-then-commit path every
+ * other reference record uses. A failed write leaves the screen unchanged and
+ * raises, rather than showing a courier that quietly disappears on reload.
+ *
+ * ## No `recalc`, still
+ *
+ * What a courier owes us is `SUM(receivable_courier)` and what we owe them is
+ * `SUM(payable_courier)`, both read straight from the ledger. The four stored
+ * totals this store once maintained are gone and are not coming back.
  */
+export const useCourierStore = create<CourierState>()((set) => ({
+  accounts: [],
 
-export const useCourierStore = create<CourierState>()(
-  persist(
-    (set) => ({
-      accounts: [],
+  addCourier: async (courier) => {
+    const now = new Date();
+    const row: CourierAccount = {
+      id: crypto.randomUUID(),
+      name: courier.name.trim(),
+      phone: courier.phone?.trim(),
+      notes: courier.notes?.trim(),
+      orderIds: [],
+      settlements: [],
+      createdAt: now,
+      updatedAt: now,
+    } as CourierAccount;
 
-      addCourier: (courier) => {
-        set((state) => ({
-          accounts: [
-            ...state.accounts,
+    // `couriers_name_per_store` is UNIQUE on (store_id, lower(name)) among live
+    // rows, so a duplicate is refused by the DATABASE rather than by a check
+    // this store could race with. The error reaches the form.
+    const saved = (await writeThrough("couriers", row)) as CourierAccount;
+    set((state) => ({ accounts: [...state.accounts, saved] }));
+    return saved;
+  },
+
+  updateCourier: async (id, updates) => {
+    const current = (useCourierStore.getState().accounts ?? []).find((a) => a.id === id);
+    if (!current) return;
+    const saved = (await writeThrough("couriers", {
+      ...current,
+      ...updates,
+      id,
+      updatedAt: new Date(),
+    })) as CourierAccount;
+    set((state) => ({
+      accounts: state.accounts.map((a) => (a.id === id ? { ...a, ...saved } : a)),
+    }));
+  },
+
+  removeCourier: async (id) => {
+    // Soft delete, like every other directory: past orders keep pointing at
+    // this courier and their money must still resolve to a name.
+    await deleteThrough("couriers", id);
+    set((state) => ({ accounts: state.accounts.filter((account) => account.id !== id) }));
+  },
+
+  settleBalance: (id, amount, note) => {
+    if (amount <= 0) return;
+    set((state) => ({
+      accounts: state.accounts.map((account) => {
+        if (account.id !== id) return account;
+        // Records the settlement DOCUMENT only. The cash and the debts move
+        // on the `courier_settlement` event the caller appends.
+        return {
+          ...account,
+          settlements: [
+            ...account.settlements,
             {
               id: crypto.randomUUID(),
-              name: courier.name,
-              phone: courier.phone,
-              orderIds: [],
-              settlements: [],
-              updatedAt: new Date(),
+              courierId: account.id,
+              amount,
+              note,
+              createdAt: new Date(),
             },
           ],
-        }));
-      },
-
-      updateCourier: (id, updates) => {
-        set((state) => ({
-          accounts: state.accounts.map((account) =>
-            account.id === id ? { ...account, ...updates, updatedAt: new Date() } : account,
-          ),
-        }));
-      },
-
-      removeCourier: (id) => {
-        set((state) => ({
-          accounts: state.accounts.filter((account) => account.id !== id),
-        }));
-      },
-
-      settleBalance: (id, amount, note) => {
-        if (amount <= 0) return;
-        set((state) => ({
-          accounts: state.accounts.map((account) => {
-            if (account.id !== id) return account;
-            // Records the settlement DOCUMENT only. The cash and the debts move
-            // on the `courier_settlement` event the caller appends.
-            return {
-              ...account,
-              settlements: [
-                ...account.settlements,
-                {
-                  id: crypto.randomUUID(),
-                  courierId: account.id,
-                  amount,
-                  note,
-                  createdAt: new Date(),
-                },
-              ],
-              updatedAt: new Date(),
-            };
-          }),
-        }));
-      },
-    }),
-    { name: "courier-storage" },
-  ),
-);
+          updatedAt: new Date(),
+        };
+      }),
+    }));
+  },
+}));

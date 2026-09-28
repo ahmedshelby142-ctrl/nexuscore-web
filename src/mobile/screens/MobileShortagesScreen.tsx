@@ -26,15 +26,15 @@ import { useRealtimeTables } from "@/mobile/data/useMobileRealtime";
  * ## The authority
  *
  * Everything here comes from the `mobile_shortages` RPC and nothing is
- * recomputed on the client. That function defines the deficit as
+ * recomputed on the client. Since migration 050 that function returns what
+ * Desktop's `computeShortages` returns (same number Quick Restock and the
+ * WhatsApp `need=` carry):
  *
- *     deficit = required − COALESCE(SUM(ledger_lines.qty_delta), 0)
+ *     deficit = Σ shortfall on open (`pending`) order lines − max(0, ledger stock)
  *
- * over open (`pending`) order lines, and returns only rows where
- * it is positive. It reads the LEDGER for on-hand, never `products.quantity`,
- * and it consults no `shortfall` or `backorder` flag on the order line — a
- * plain order for 3 against a shelf holding 1 is a shortage of 2, whether or
- * not anybody remembered to tick something.
+ * and only rows where it is positive. `order_placed` already took every unit
+ * off the ledger, so the old `required − ledger stock` counted each pending
+ * unit twice (27 on hand + an order for 30 read "short 33", not 3).
  *
  * `required`, `stock`, `deficit`, `order_count` and `waiting_orders` are shown
  * exactly as the database returned them. If they are ever wrong, they are
@@ -150,8 +150,10 @@ export function MobileShortagesScreen() {
                     </div>
                   </header>
 
-                  {/* required − stock = deficit, shown side by side so the number
-                      is checkable on the spot rather than taken on trust. */}
+                  {/* The same three figures Desktop's تقرير النواقص shows. The
+                      deficit is what the open orders could not cover when
+                      taken, less what is on the shelf now — not required −
+                      stock, since the orders already took their units. */}
                   <dl className="mobile-shortage-figures">
                     <div>
                       <dt>مطلوب للطلبات</dt>

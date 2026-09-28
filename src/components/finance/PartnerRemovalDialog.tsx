@@ -18,6 +18,7 @@
  * Nothing here touches the ledger: archiving is a tombstone on reference data.
  */
 
+import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import {
   AlertDialog,
@@ -77,11 +78,17 @@ export function PartnerRemovalDialog({ partner, onClose, onRemoved }: PartnerRem
     };
   }, [partner, partnerLedger]);
 
-  function confirm() {
+  async function confirm() {
     if (!partner) return;
-    if (mode === "archive") archivePartner(partner.id);
-    else if (mode === "delete") removePartner(partner.id);
-    else return;
+    try {
+      if (mode === "archive") await archivePartner(partner.id);
+      else if (mode === "delete") await removePartner(partner.id);
+      else return;
+    } catch (e) {
+      // Cloud-first: a refused write changed nothing, on screen or anywhere.
+      toast.error(`لم يتغيّر شيء. ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     onRemoved?.();
     onClose();
   }

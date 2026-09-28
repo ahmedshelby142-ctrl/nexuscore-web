@@ -196,6 +196,38 @@ export function causeRequiredFor(_movement: "return" | "exchange"): boolean {
   return true;
 }
 
+/**
+ * The cause an exchange's return confirmation must use: the one recorded when
+ * the replacement was raised (`return_cause` on the original), or `null` when
+ * none was — legacy swaps, and plain returns, are still picked at confirmation.
+ *
+ * Locked because the replacement was already PRICED on it. Choosing a different
+ * cause at confirmation would charge the trip on one reading and book it on
+ * another.
+ */
+export function lockedExchangeCause(
+  movement: "return" | "exchange",
+  recorded: string | null | undefined,
+): ReturnCause | null {
+  const cause = toReturnCause(recorded);
+  return movement === "exchange" && cause !== "unknown" ? cause : null;
+}
+
+/**
+ * The fee an exchange's RETURN confirmation books for the courier's trip.
+ *
+ * One trip, one charge. The courier carries the replacement out and the
+ * original back on the same journey. When the replacement charged its shipping
+ * (the customer caused the swap), that delivery already pays the courier for
+ * the trip, so nothing more is booked here. When it charged nothing (shop or
+ * courier cause), the trip is booked here, once, to whoever caused it
+ * (`shippingBorneBy`). Booking the full rate here as well is how one swap
+ * charged the customer 75, expensed 75 to the shop and owed the courier 150.
+ */
+export function exchangeReturnFee(rate: number, replacementShippingFee: number): number {
+  return replacementShippingFee > 0 ? 0 : rate;
+}
+
 /** Why this movement cannot be confirmed yet, or `null` if it can. */
 export function blockingCauseReason(
   cause: ReturnCause,

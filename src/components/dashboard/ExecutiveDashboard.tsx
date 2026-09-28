@@ -29,8 +29,6 @@ import {
   ShoppingCart,
   Receipt,
   Undo2,
-  Crown,
-  Lock,
   Package,
   Landmark,
 } from "lucide-react";
@@ -60,7 +58,6 @@ import { LoadError } from "@/components/ui/load-error";
 import { useCollectionStatus } from "@/components/ui/collection-gate";
 import { matchesStockFilter } from "@/components/inventory/StockSummaryCards";
 import { useBusinessStore } from "@/store/useBusinessStore";
-import { useSubscriptionStore } from "@/store/useSubscriptionStore";
 import { activeProducts } from "@/lib/product";
 import { formatMoney, formatQty } from "@/lib/math";
 import { Button } from "@/components/ui/button";
@@ -240,7 +237,6 @@ export function ExecutiveDashboard() {
         payableSupplier: owner.data.supplierPayable.reduce((sum, s) => sum + s.amount, 0),
       })
     : null;
-  const { isProPlan } = useSubscriptionStore();
 
   // Same predicate the stock cards count with, so this number always equals
   // what المخازن shows when you click through.
@@ -492,35 +488,9 @@ export function ExecutiveDashboard() {
         </div>
       )}
 
-      {/* Subscription state is real (it is a setting, not a measurement). The
-          panel that used to sit here listed three integrations as "متصل ومفعل"
-          without asking anything — deleted rather than replaced: a connected
-          store is §3.15's job to prove, not this screen's to claim. */}
-      {!isProPlan && (
-        <div className="rounded-2xl border border-purple-200 dark:border-purple-900 bg-purple-50 dark:bg-purple-950/20 p-6">
-          <div className="flex flex-col md:flex-row items-start md:items-center gap-6">
-            <div className="size-12 rounded-xl flex items-center justify-center bg-purple-100 dark:bg-purple-900/40 shrink-0">
-              <Lock className="size-6 text-purple-600 dark:text-purple-300" />
-            </div>
-            <div className="flex-1">
-              <h3 className="font-semibold text-purple-900 dark:text-purple-200 text-lg mb-2">
-                فتح التكامل متعدد القنوات
-              </h3>
-              <p className="text-sm text-purple-700 dark:text-purple-300 mb-4">
-                الترقية للخطة الاحترافية بتفتح الربط مع المتاجر الإلكترونية ومزامنة الطلبات
-                والمخزون من مكان واحد.
-              </p>
-              <Button
-                onClick={() => navigate("/settings")}
-                className="bg-purple-600 hover:bg-purple-700"
-              >
-                <Crown className="size-4 ml-2" />
-                ترقية إلى Pro
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* The Pro-upgrade panel promised that upgrading opens store
+          integrations and order/stock sync. No such sync exists in this
+          release, so the promise was removed rather than reworded. */}
     </div>
   );
 }

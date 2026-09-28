@@ -12,7 +12,6 @@ import { UserManagementPanel } from "@/components/auth/UserManagementPanel";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { ShoppingBag, Store } from "lucide-react";
 
 function SettingsCard({
   title,
@@ -48,11 +47,14 @@ function SettingRow({
   description,
   checked,
   onCheckedChange,
+  disabled,
 }: {
   label: string;
   description: string;
   checked: boolean;
   onCheckedChange: (v: boolean) => void;
+  /** Not in this release: shown switched off, and cannot be switched on. */
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between py-4 first:pt-0 last:pb-0">
@@ -60,7 +62,12 @@ function SettingRow({
         <h3 className="font-medium">{label}</h3>
         <p className="text-sm text-muted-foreground mt-1">{description}</p>
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
+      <Switch
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label={label}
+        disabled={disabled}
+      />
     </div>
   );
 }
@@ -97,33 +104,14 @@ function KeepAliveTab({
   );
 }
 
-const channels = [
-  {
-    name: "Shopify",
-    icon: ShoppingBag,
-    status: "🟢 مزامنة تلقائية نشطة (بدون موظف داتا إنتري)",
-    color: "text-green-600 dark:text-green-400",
-  },
-  {
-    name: "متجر مخصص (Custom Webstore)",
-    icon: Store,
-    status: "🟢 مزامنة تلقائية نشطة (بدون موظف داتا إنتري)",
-    color: "text-green-600 dark:text-green-400",
-  },
-];
-
 export function Settings() {
   const userRole = useAuthStore((s) => s.userRole);
   const { partnershipEnabled, togglePartnership } = useBusinessStore();
   const {
     returnsEnabled,
-    shippingTrackingEnabled,
-    salesCommissionsEnabled,
     ecommerceSyncEnabled,
     depositMandatory,
     toggleReturns,
-    toggleShippingTracking,
-    toggleSalesCommissions,
     toggleEcommerceSync,
     toggleDepositMandatory,
   } = useFeatureStore();
@@ -191,7 +179,7 @@ export function Settings() {
           <SettingsCard
             title="تكوين موديول التجزئة والأونلاين"
             badge="Retail & E‑commerce"
-            description="تشغيل أو إيقاف ميزات التجزئة المتقدمة والربط الإلكتروني وإدارة الشحن والعمولات."
+            description="تشغيل أو إيقاف شاشات المرتجعات وربط المتجر الإلكتروني. تتبع الشحن الآلي والعمولات والمزامنة التلقائية غير متاحة حاليًا."
           >
             <div className="divide-y divide-border">
               <SettingRow
@@ -200,51 +188,32 @@ export function Settings() {
                 checked={returnsEnabled}
                 onCheckedChange={toggleReturns}
               />
+              {/* Neither switch was wired to anything: no tracking feed and
+                  no commission engine exist in this release. Shown off and
+                  locked rather than as working options. The shipping itself
+                  (rates, couriers, settlement) is always on and needs no switch. */}
               <SettingRow
-                label="إدارة شحن المحافظات وتتبع المناديب"
-                description="جدولة الشحن للمحافظات، تعيين مناديب، وتتبع حالة التوصيل في الوقت الفعلي"
-                checked={shippingTrackingEnabled}
-                onCheckedChange={toggleShippingTracking}
+                label="تتبع المناديب الآلي"
+                description="غير متاح حاليًا — حالات الشحن بتتسجل يدويًا من شاشة الطلبات، وحسابات المناديب من «حسابات الشحن»."
+                checked={false}
+                onCheckedChange={() => {}}
+                disabled
               />
               <SettingRow
                 label="حساب عمولات موظفي المبيعات والمناديب"
-                description="احتساب العمولات تلقائياً لكل عملية بيع بناءً على نسب مئوية مخصصة لكل موظف"
-                checked={salesCommissionsEnabled}
-                onCheckedChange={toggleSalesCommissions}
+                description="غير متاح حاليًا."
+                checked={false}
+                onCheckedChange={() => {}}
+                disabled
               />
               <SettingRow
-                label="الربط الإلكتروني والمزامنة الذكية للمتاجر الأونلاين"
-                description="ربط المتجر الإلكتروني (Shopify، متجر مخصص) ومزامنة الطلبات والمخزون تلقائياً"
+                label="شاشة ربط المتجر الإلكتروني"
+                description="إظهار شاشة «ربط المتجر الإلكتروني» في القائمة. الطلبات والمخزون بيتسجلوا يدويًا — المزامنة التلقائية مع Shopify أو متجر مخصص غير متاحة حاليًا."
                 checked={ecommerceSyncEnabled}
                 onCheckedChange={toggleEcommerceSync}
               />
             </div>
           </SettingsCard>
-
-          {ecommerceSyncEnabled && (
-            <SettingsCard
-              title="قنوات الربط النشطة"
-              badge="Connected Channels"
-              description="القنوات الإلكترونية المتصلة حاليًا — يتم تحديث الطلبات والمخزون تلقائياً دون تدخل موظف."
-            >
-              <div className="space-y-3">
-                {channels.map((ch) => (
-                  <div
-                    key={ch.name}
-                    className="flex items-center gap-4 rounded-xl border border-border bg-muted/40 p-4"
-                  >
-                    <div className="size-10 rounded-lg flex items-center justify-center bg-background border border-border">
-                      <ch.icon className="size-5 text-primary" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium">{ch.name}</p>
-                      <p className={cn("text-sm mt-0.5", ch.color)}>{ch.status}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </SettingsCard>
-          )}
 
           <SettingsCard
             title="الهوية البصرية ونوع النشاط"

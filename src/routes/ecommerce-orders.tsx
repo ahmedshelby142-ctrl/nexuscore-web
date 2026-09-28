@@ -27,7 +27,15 @@ import { useBusinessStore } from "@/store/useBusinessStore";
 import { useFeatureStore } from "@/store/useFeatureStore";
 import { useOrderStore, expandStockItems } from "@/store/useOrderStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
-import { rateFor, shippingFeeFor } from "@/lib/shippingRates";
+import {
+  rateFor,
+  shippingFeeFor,
+  shippingBorneBy,
+  blockingCauseReason,
+  EXCHANGE_CAUSE_LABELS,
+  EXCHANGE_CAUSE_HINTS,
+  type ReturnCause,
+} from "@/lib/shippingRates";
 import { useSearchParams } from "react-router-dom";
 import { buildOrderPlacedLines } from "@/lib/ledger/orders";
 import {
@@ -164,6 +172,7 @@ function EcommerceOrdersInner() {
   // The Settings matrix is the only source of a shipping price.
   const shippingRates = useShippingRatesStore((s) => s.rows);
   const placeOrder = useOrderStore((s) => s.placeOrder);
+  const updateOrder = useOrderStore((s) => s.updateOrder);
   /**
    * The number (and discount use) of the order this form is trying to place,
    * kept until the database CONFIRMS the placement.
@@ -207,6 +216,10 @@ function EcommerceOrdersInner() {
   const [detailedAddress, setDetailedAddress] = useDraftState("eco-order:detailedAddress", "");
   const [isExchange, setIsExchange] = useDraftState("eco-order:isExchange", false);
   const [originalOrderId, setOriginalOrderId] = useDraftState("eco-order:originalOrderId", "");
+  // WHY the swap happens — decided here, at the one moment the trip is priced.
+  // Stored on the ORIGINAL order's `return_cause` and read back, locked, when
+  // that order's return is confirmed, so the trip is charged exactly once.
+  const [exchangeCause, setExchangeCause] = useDraftState<ReturnCause>("eco-order:exchangeCause", "unknown");
   /**
    * The lines of the ORIGINAL order the customer is sending back.
    *
@@ -299,10 +312,11 @@ function EcommerceOrdersInner() {
     if (origin.governorate) setGovernorate(origin.governorate);
     if (origin.city) setCity(origin.city);
     setReturningLines([]);
+    setExchangeCause("unknown");
     setSearchParams({}, { replace: true });
   }, [exchangeOf, allOrders, setSearchParams, setIsExchange, setOriginalOrderId,
       setCustomerId, setCustomerName, setCustomerPhone, setGovernorate, setCity,
-      setReturningLines]);
+      setReturningLines, setExchangeCause]);
 
   const deliveredOrdersForCustomer = useMemo(() => {
     if (!customerId) return [];
@@ -402,9 +416,16 @@ function EcommerceOrdersInner() {
    * their deliveries actually risk costing. Goods are never marked up — only
    * the shipping.
    */
+  // An exchange trip is charged to the customer ONLY when they caused it
+  // (changed their mind). A shop or courier mistake is not theirs to pay: the
+  // replacement carries no shipping, and the original's return confirmation
+  // books the one trip to whoever caused it — see `exchangeReturnFee`. Charging
+  // both here and there billed one trip twice (customer 75 + shop 75, courier
+  // owed 150).
+  const exchangeChargesCustomer = !isExchange || shippingBorneBy(exchangeCause, "exchange") === "customer";
   const shipping_fee = useMemo(
-    () => shippingFeeFor(baseShippingFee, matchedCustomer),
-    [baseShippingFee, matchedCustomer],
+    () => (exchangeChargesCustomer ? shippingFeeFor(baseShippingFee, matchedCustomer) : 0),
+    [baseShippingFee, matchedCustomer, exchangeChargesCustomer],
   );
 
   const shippingPenaltyApplied = shipping_fee > baseShippingFee;
@@ -580,8 +601,11 @@ function EcommerceOrdersInner() {
     // is forfeited when the customer walks away — is a fixed business rule and
     // is deliberately not configurable anywhere.
     if (depositMandatory && depositVal <= 0) return false;
+    if (isExchange && blockingCauseReason(exchangeCause, "exchange")) return false;
     return true;
   }, [
+    isExchange,
+    exchangeCause,
     depositMandatory,
     customer_name,
     customer_phone,
@@ -659,6 +683,11 @@ function EcommerceOrdersInner() {
       // "return 3" can outlive a return of 2 recorded on another screen. The
       // box clamps as you type; this is the clamp that matters, because it is
       // the last one before the write.
+      const unclassified = blockingCauseReason(exchangeCause, "exchange");
+      if (unclassified) {
+        setResult({ success: false, message: unclassified });
+        return;
+      }
       const left = remainingQuantities(origin, returnRecords);
       for (const line of returningLines) {
         const available = left.get(line.product_id) ?? 0;
@@ -673,6 +702,23 @@ function EcommerceOrdersInner() {
           setResult({
             success: false,
             message: `"${line.product_name}" مع العميل منه ${available} بس — مش ${line.quantity}`,
+          });
+          return;
+        }
+      }
+      // The cause goes on the ORIGINAL before anything is placed, so the server
+      // trigger's refusal (a courier/shop cause needs ADMIN or ACCOUNTANT)
+      // lands before any stock or money moves.
+      if ((origin as { return_cause?: string }).return_cause !== exchangeCause) {
+        try {
+          await updateOrder(origin.id, { return_cause: exchangeCause } as never);
+        } catch (e) {
+          const raw = e instanceof Error ? e.message : String(e);
+          setResult({
+            success: false,
+            message: raw.includes("NEXUS_CAUSE_NOT_AUTHORISED")
+              ? "تسجيل سبب الاستبدال على المندوب أو المحل للمدير أو المحاسب فقط — الطلب ما اتسجّلش."
+              : `لم يُسجَّل الطلب. ${raw}`,
           });
           return;
         }
@@ -974,6 +1020,8 @@ function EcommerceOrdersInner() {
     detailedAddress,
     isExchange,
     originalOrderId,
+    exchangeCause,
+    updateOrder,
     // Read in the body by the eligibility re-check. Stale values here would
     // let a swap through against an order that has since been returned.
     returningLines,
@@ -1190,6 +1238,22 @@ function EcommerceOrdersInner() {
             {deliveredOrdersForCustomer.length === 0 && !customerId && (
               <p className="text-xs text-muted-foreground">قم بتحديد العميل أولاً لعرض طلباته السابقة.</p>
             )}
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">سبب الاستبدال</label>
+            <select
+              value={exchangeCause}
+              onChange={(e) => setExchangeCause(e.target.value as ReturnCause)}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {(["unknown", "customer", "shop", "courier"] as const).map((c) => (
+                <option key={c} value={c}>
+                  {c === "unknown" ? "-- اختر السبب --" : EXCHANGE_CAUSE_LABELS[c]}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">{EXCHANGE_CAUSE_HINTS[exchangeCause]}</p>
           </div>
 
           {/* The rule that hid the button on the order row, re-asked. */}

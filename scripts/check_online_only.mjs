@@ -58,7 +58,10 @@ const MUTATION_NAMES = [
   "addCustomer", "updateCustomer", "removeCustomer", "archiveCustomer",
   "addBranch", "updateBranch", "removeBranch",
   "addPromoDiscount", "updatePromoDiscount", "removePromoDiscount",
-  "addOrder", "updateOrder", "addReturnRecord", "addExpense", "addTransaction",
+  "addOrder", "updateOrder", "addReturnRecord", "addTransaction",
+  // 051/052: the finance registers and the expense went cloud-first.
+  "recordExpense", "recordPayroll", "removePayroll", "recordAsset", "removeAsset",
+  "toggleAsset", "setBudgetCap", "removeBudgetCap",
 ];
 
 
@@ -325,11 +328,15 @@ test("cloud-owned collections are not persisted to localStorage", () => {
     // client added on the till did not exist in the office — and an invoice
     // cannot be raised without one, so شاشة الجملة was unusable there.
     "wholesaleClients:", "wholesaleInvoices:",
+    // Migration 050: ownership is shared business data now, hydrated from
+    // `public.partners`. A persisted copy is how one browser kept partners no
+    // other device — or the same one after clearing storage — ever saw.
+    "partners:",
   ]) {
     assert.ok(!part.includes(cloudOwned), `${cloudOwned} is cloud-owned and must not be persisted`);
   }
   // …and it MUST keep the ones that exist nowhere else.
-  for (const localOnly of ["partners:"]) {
+  for (const localOnly of ["partnerLedger:"]) {
     assert.ok(part.includes(localOnly), `${localOnly} has no cloud table — dropping it deletes it`);
   }
 });

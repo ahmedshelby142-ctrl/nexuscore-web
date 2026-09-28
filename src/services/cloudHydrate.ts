@@ -24,6 +24,7 @@ import { useAuthStore } from "@/store/useAuthStore";
 import { readsDesktopBusinessData } from "@/lib/roles";
 import { cloudList } from "./cloudData";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import { useCourierStore } from "@/store/useCourierStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
 import { useBranchStore } from "@/store/useBranchStore";
 import { useOrderStore } from "@/store/useOrderStore";
@@ -37,6 +38,8 @@ type Sink = (rows: any[]) => void;
 const SINKS: Record<string, Sink> = {
   products: (rows) => useBusinessStore.setState({ products: rows }),
   suppliers: (rows) => useBusinessStore.setState({ suppliers: rows }),
+  couriers: (rows) => useCourierStore.setState({ accounts: rows }),
+  partners: (rows) => useBusinessStore.setState({ partners: rows }),
   // The local field is `promoDiscounts`; the table is `discount_codes`.
   discount_codes: (rows) => useBusinessStore.setState({ promoDiscounts: rows }),
   return_records: (rows) => useBusinessStore.setState({ returnRecords: rows }),
@@ -46,6 +49,9 @@ const SINKS: Record<string, Sink> = {
   wholesale_invoices: (rows) => useBusinessStore.setState({ wholesaleInvoices: rows }),
   transactions: (rows) => useBusinessStore.setState({ transactions: rows }),
   expenses: (rows) => useFinancialStore.setState({ expenses: rows }),
+  fixed_assets: (rows) => useFinancialStore.setState({ assets: rows }),
+  budget_caps: (rows) => useFinancialStore.setState({ budgetCaps: rows }),
+  payroll: (rows) => useFinancialStore.setState({ payroll: rows }),
   customers: (rows) => useCustomerStore.setState({ customers: rows }),
   branches: (rows) => useBranchStore.setState({ branches: rows }),
   orders: (rows) => useOrderStore.setState({ orders: rows }),

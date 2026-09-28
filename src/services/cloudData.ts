@@ -35,7 +35,7 @@
 import { getSupabaseClient } from "@/lib/supabase";
 import { toRemoteRow, fromRemoteRow } from "./api/fieldMapping";
 import { getSyncIdentity } from "./api/storeContext";
-import { isSyncedTable } from "./api/cloudSchema";
+import { isSyncedTable, CLOUD_SCHEMA } from "./api/cloudSchema";
 import { pageAll } from "@/lib/pageAll";
 
 export class CloudUnavailable extends Error {
@@ -65,7 +65,8 @@ export async function cloudList(table: string): Promise<any[]> {
   const sb = getSupabaseClient();
   if (!sb) throw new CloudUnavailable("لا يوجد اتصال بالسحابة");
 
-  for (const withTombstone of noTombstone.has(table) ? [false] : [true, false]) {
+  const unfiltered = noTombstone.has(table) || CLOUD_SCHEMA[table]?.keepsArchived === true;
+  for (const withTombstone of unfiltered ? [false] : [true, false]) {
     try {
       // Paged: PostgREST answers at most 1000 rows, and a truncated page is
       // indistinguishable from a table that short. See `pageAll`.

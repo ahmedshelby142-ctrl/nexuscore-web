@@ -78,6 +78,23 @@ interface OrderState {
     order: CreateEcommerceOrder & { orderNumber: string },
     placement: NewEvent,
   ) => Promise<PlaceOrderResult>;
+  /**
+   * Confirm a returned online order in ONE database transaction
+   * (`confirm_order_return`, migration 050). See the method.
+   */
+  /** Cancel a pending order in ONE transaction (`cancel_order`, 051). */
+  cancelOrder: (input: {
+    orderId: string;
+    cause: "customer" | "courier" | "shop";
+    event: NewEvent;
+  }) => Promise<EcommerceOrder>;
+  confirmOrderReturn: (input: {
+    orderId: string;
+    cause: "customer" | "courier" | "shop";
+    movement: "return" | "exchange";
+    events: NewEvent[];
+    customerId?: string | null;
+  }) => Promise<EcommerceOrder>;
   updateOrderStatus: (id: string, status: EcommerceOrderStatus) => Promise<void>;
   updateOrder: (id: string, updates: Partial<EcommerceOrder>) => Promise<void>;
 }
@@ -157,6 +174,19 @@ async function buildNewOrder(orderData: CreateEcommerceOrder, orderNumber: strin
   // Reference data: no ledger event, nothing here moves money.
   order.customerId = await useCustomerStore.getState().upsertCustomerFromOrder(order);
   return order;
+}
+
+/** The database's refusals, in the operator's language. */
+function returnErrorMessage(message: string): string {
+  if (message.includes("NEXUS_RETURN_ALREADY_CONFIRMED")) return "المرتجع ده اتأكد استلامه قبل كده.";
+  if (message.includes("NEXUS_CAUSE_NOT_AUTHORISED"))
+    return "تسجيل سبب المرتجع على المندوب أو المتجر للمدير أو المحاسب فقط.";
+  if (message.includes("NEXUS_ORDER_NOT_RETURNED")) return "الطلب مش في حالة مرتجع.";
+  if (message.includes("NEXUS_CAUSE_REQUIRED")) return "اختار سبب المرتجع الأول.";
+  if (message.includes("NEXUS_ORDER_ALREADY_CANCELLED")) return "الطلب ده اتلغى قبل كده.";
+  if (message.includes("NEXUS_ORDER_NOT_CANCELLABLE"))
+    return "الطلب خرج من المحل — مش ممكن يتلغي. لو رجع، سجّله كمرتجع.";
+  return message;
 }
 
 export function expandStockItems(items: OrderItemInput[]) {
@@ -320,6 +350,81 @@ export const useOrderStore = create<OrderState>()(
           // Thrown before or during the request — nothing confirms either way.
           return { success: false as const, reason: e instanceof Error ? e.message : String(e), definite: false };
         }
+      },
+
+      /**
+       * The return confirmation, all or nothing.
+       *
+       * It used to be three requests — the ledger event(s), the customer's
+       * wasted trip, then the order's `returnConfirmedAt` + `return_cause`.
+       * When the last one was refused (a role that may not record a courier or
+       * shop cause) the ledger had already moved while the order still looked
+       * unconfirmed, and a second press booked the return a second time.
+       * `confirm_order_return` stamps the order under a row lock, appends the
+       * events and counts the trip together; any refusal rolls all of it back,
+       * and a repeat is refused with `NEXUS_RETURN_ALREADY_CONFIRMED`.
+       *
+       * Throws on any failure, having committed nothing locally.
+       */
+      /**
+       * A pending order called off, all or nothing (`cancel_order`, 051):
+       * status, cause and the `order_cancelled` event in one transaction under
+       * a row lock. It used to be three requests; a failure between them left
+       * stock and money moved behind an order still showing «pending», and a
+       * second press booked it again. A repeat is refused with
+       * `NEXUS_ORDER_ALREADY_CANCELLED`. Throws, having committed nothing.
+       */
+      cancelOrder: async ({ orderId, cause, event }) => {
+        const sb = getSupabaseClient();
+        if (!sb) throw new Error("لا يوجد اتصال بالسحابة");
+        const p_event = await prepareEvent(event);
+        const { data, error } = await sb.rpc("cancel_order", {
+          p_order_id: orderId,
+          p_cause: cause,
+          p_event,
+        });
+        // The cause-trigger codes pass through raw: the cancel dialog words
+        // them for a cancellation, not a return.
+        if (error) {
+          const m = error.message;
+          throw new Error(
+            m.includes("NEXUS_ORDER_ALREADY_CANCELLED") || m.includes("NEXUS_ORDER_NOT_CANCELLABLE")
+              ? returnErrorMessage(m)
+              : m,
+          );
+        }
+        const saved = fromRemoteRow("orders", (data as any).order) as EcommerceOrder;
+        set((state: any) => ({
+          orders: state.orders.map((o: EcommerceOrder) => (o.id === saved.id ? { ...o, ...saved } : o)),
+        }));
+        return saved;
+      },
+
+      confirmOrderReturn: async ({ orderId, cause, movement, events, customerId }) => {
+        const sb = getSupabaseClient();
+        if (!sb) throw new Error("لا يوجد اتصال بالسحابة");
+        const p_events: Awaited<ReturnType<typeof prepareEvent>>[] = [];
+        for (const event of events) p_events.push(await prepareEvent(event));
+        const { data, error } = await sb.rpc("confirm_order_return", {
+          p_order_id: orderId,
+          p_cause: cause,
+          p_movement: movement,
+          p_events,
+          p_customer_id: customerId ?? null,
+        });
+        if (error) throw new Error(returnErrorMessage(error.message));
+        const saved = fromRemoteRow("orders", (data as any).order) as EcommerceOrder;
+        set((state: any) => ({
+          orders: state.orders.map((o: EcommerceOrder) => (o.id === saved.id ? { ...o, ...saved } : o)),
+        }));
+        const customer = (data as any).customer;
+        if (customer) {
+          const row = fromRemoteRow("customers", customer) as any;
+          useCustomerStore.setState((state: any) => ({
+            customers: state.customers.map((c: any) => (c.id === row.id ? { ...c, ...row } : c)),
+          }));
+        }
+        return saved;
       },
 
       // Moves the order document between states. It moves NO money and NO

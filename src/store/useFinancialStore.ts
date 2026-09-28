@@ -19,10 +19,76 @@ import type {
   CourierReceivable,
   SyncAction,
 } from "@/types";
-import { SyncService } from "@/services/api/SyncService";
+import { writeThrough, deleteThrough } from "@/services/cloudData";
+import { getSupabaseClient } from "@/lib/supabase";
+import { getSyncIdentity } from "@/services/api/storeContext";
+import { fromRemoteRow, toRemoteRow } from "@/services/api/fieldMapping";
+import { prepareEvent, type NewEvent } from "@/lib/ledger";
 
 
-import { WALLET_LABELS } from "@/types";
+
+/**
+ * Where a browser's pre-051 local fixed assets, payroll documents and budget
+ * caps wait for an explicit upload (see the persist `migrate` below).
+ */
+export const LEGACY_FINANCE_KEY = "nexus-legacy-finance";
+
+/**
+ * A document written together with its ledger event (migration 051).
+ *
+ * `definite`: the database answered and refused, so NOTHING exists. When false
+ * the answer never arrived — retry with the SAME document id: the RPC returns
+ * the row already recorded (`replayed`) instead of paying twice.
+ */
+export type RecordResult<T> =
+  | { success: true; row: T; replayed: boolean }
+  | { success: false; reason: string; definite: boolean };
+
+async function recordWithEvent<T>(
+  rpc: "record_payroll" | "record_fixed_asset" | "record_expense",
+  table: "payroll" | "fixed_assets" | "expenses",
+  docArg: "p_payroll" | "p_asset" | "p_expense",
+  resultKey: "payroll" | "asset" | "expense",
+  doc: Record<string, unknown>,
+  event: NewEvent | null,
+): Promise<RecordResult<T>> {
+  const sb = getSupabaseClient();
+  const identity = await getSyncIdentity();
+  if (!sb || !identity) return { success: false, reason: "لا يوجد اتصال بالسحابة", definite: true };
+  try {
+    const remote = toRemoteRow(table, doc, {
+      storeId: identity.storeId,
+      deviceId: identity.deviceId,
+      stamp: Date.now(),
+    });
+    const p_event = event ? await prepareEvent(event) : null;
+    const { data, error } = await sb.rpc(rpc, { [docArg]: remote, p_event });
+    if (error) return { success: false, reason: error.message, definite: Boolean(error.code) };
+    return {
+      success: true,
+      row: fromRemoteRow(table, (data as any)[resultKey]) as T,
+      replayed: (data as any).replayed === true,
+    };
+  } catch (e) {
+    return { success: false, reason: e instanceof Error ? e.message : String(e), definite: false };
+  }
+}
+
+/** Commit what the database stored, replacing any local copy of that row. */
+function upsertLocal(
+  set: (fn: (state: any) => any) => void,
+  field: "payroll" | "assets" | "budgetCaps" | "expenses",
+  row: any,
+) {
+  set((state: any) => {
+    const list: any[] = state[field] ?? [];
+    const at = list.findIndex((r) => r.id === row.id);
+    if (at < 0) return { [field]: [...list, row] };
+    const next = list.slice();
+    next[at] = { ...list[at], ...row };
+    return { [field]: next };
+  });
+}
 
 /** The answer to "may this expense be recorded?" — unknown is not "yes". */
 export type ExpenseBudgetCheck =
@@ -61,7 +127,13 @@ interface FinancialState {
 
   // ── Multi-Wallet System (الخزينة) ───────────────────────────────
   wallets: Wallet[];
+  /**
+   * The store's transfer history, READ FROM THE LEDGER (`wallet_transfer_history`,
+   * 053) — newest first. Never kept per browser: it used to be a list only the
+   * device that made the transfer had.
+   */
   walletTransfers: WalletTransfer[];
+  walletTransfersStatus: "idle" | "loading" | "ready" | "error";
 
   // Capital & shareholders used to live here as a SECOND list of part-owners
   // beside `useBusinessStore.partners`. Deleted 2026-08-18: one list, one
@@ -79,16 +151,34 @@ interface FinancialState {
    * ledger event — see `checkExpenseBudget` below for why it moved.
    */
   checkExpenseBudget: (category: string, amount: number) => ExpenseBudgetCheck;
-  /** Record the expense DOCUMENT. The budget is checked before, not here. */
-  addExpense: (record: Omit<ExpenseRecord, "id">) => Promise<{ success: true }>;
+  /**
+   * The expense document AND its `expense` ledger event, in one transaction
+   * (`record_expense`, 052). The screen checks the budget first; the database
+   * checks it again inside the transaction, before anything moves.
+   */
+  recordExpense: (
+    record: ExpenseRecord & { id: string },
+    event: NewEvent,
+  ) => Promise<RecordResult<ExpenseRecord>>;
   removeExpense: (id: string) => Promise<void>;
-  addPayroll: (record: Omit<PayrollRecord, "id">) => void;
-  removePayroll: (id: string) => void;
-  addAsset: (record: Omit<FixedAsset, "id" | "monthlyDepreciation">) => void;
-  removeAsset: (id: string) => void;
-  toggleAsset: (id: string) => void;
-  setBudgetCap: (category: string, capAmount: number) => void;
-  removeBudgetCap: (category: string) => void;
+  // Migration 051: all cloud-first. Nothing changes on screen until the
+  // database has the row; each write throws (or reports) on failure.
+  /** The payroll document AND its `payroll` event, in one transaction. */
+  recordPayroll: (
+    record: PayrollRecord & { id: string },
+    event: NewEvent,
+  ) => Promise<RecordResult<PayrollRecord>>;
+  /** Removes the DOCUMENT only — the salary already paid stays on the ledger, as before. */
+  removePayroll: (id: string) => Promise<void>;
+  /** The asset AND, when paid from a wallet now, its `expense` event, in one transaction. */
+  recordAsset: (
+    record: FixedAsset & { id: string },
+    event: NewEvent | null,
+  ) => Promise<RecordResult<FixedAsset>>;
+  removeAsset: (id: string) => Promise<void>;
+  toggleAsset: (id: string) => Promise<void>;
+  setBudgetCap: (category: string, capAmount: number) => Promise<void>;
+  removeBudgetCap: (category: string) => Promise<void>;
 
   // ── Shipping actions ───────────────────────────────────────────
   addShippingTariff: (t: Omit<ShippingTariff, "id">) => void;
@@ -98,7 +188,16 @@ interface FinancialState {
   reverseEcommerceOrderRevenue: (orderId: string) => void;
 
   // ── Multi-Wallet Actions ────────────────────────────────────────
-  transferBetweenWallets: (transfer: Omit<WalletTransfer, "id" | "timestamp">) => void;
+  /**
+   * One transfer, idempotent on its operation id (`event.refId`): a retry with
+   * the SAME id after a lost answer returns the transfer already recorded
+   * (`replayed`) instead of moving the money twice (`record_wallet_transfer`, 053).
+   */
+  recordWalletTransfer: (
+    event: NewEvent,
+  ) => Promise<{ success: true; replayed: boolean } | { success: false; reason: string; definite: boolean }>;
+  /** Re-read the shared transfer history from the ledger. */
+  loadWalletTransfers: () => Promise<void>;
 
   // ── Owner budget (ميزانية صاحبة العمل) ──────────────────────────
   // A SETTING, not a total: the limit and the period are typed by the owner.
@@ -200,6 +299,7 @@ export const useFinancialStore = create<FinancialState>()(
         { type: "bankAccount", label: "الحساب البنكي" },
       ],
       walletTransfers: [],
+      walletTransfersStatus: "idle",
 
       // ── Stock Log ──────────────────────────────────────────
       stockLogs: [],
@@ -217,9 +317,12 @@ export const useFinancialStore = create<FinancialState>()(
       // before it loads or after it fails — so a failed read waved any expense
       // through a cap. Asked first now, and "unknown" is its own answer.
       checkExpenseBudget: (category, amount) => {
+        const tables = useSyncStatus.getState().tables;
+        // The caps are cloud data now (051): an unread cap is not "no cap".
+        if (tables.budget_caps !== "ready") return { ok: false, reason: "spending_unknown" };
         const cap = get().budgetCaps.find((b) => b.category === category);
         if (!cap) return { ok: true };
-        if (useSyncStatus.getState().tables.expenses !== "ready") {
+        if (tables.expenses !== "ready" || (category === "salaries" && tables.payroll !== "ready")) {
           return { ok: false, reason: "spending_unknown" };
         }
         const currentTotal = get().getCategorySpending(category);
@@ -229,20 +332,17 @@ export const useFinancialStore = create<FinancialState>()(
         return { ok: true };
       },
 
-      addExpense: async (record) => {
-        const expense: ExpenseRecord = {
-          ...record,
-          id: crypto.randomUUID(),
-        };
-
-        // Awaited, and committed only on success. The queue this replaces held
-        // the expense locally when the push failed and drained it on a later
-        // reconnect — a fallback that has no place in a cloud-native app, and
-        // that made a rejected write look identical to an accepted one.
-        await SyncService.pushChanges("expenses", expense);
-        set((state) => ({ expenses: [...state.expenses, expense] }));
-
-        return { success: true as const };
+      // It was two requests — the ledger event, then this document — so a
+      // failed document write left money out of the wallet with no expense
+      // listed and nothing counted against the category's cap, and a retry
+      // after a lost answer paid twice. One transaction now, idempotent on
+      // the document id, committed locally only after the database answered.
+      recordExpense: async (record, event) => {
+        const result = await recordWithEvent<ExpenseRecord>(
+          "record_expense", "expenses", "p_expense", "expense", record, event,
+        );
+        if (result.success) upsertLocal(set, "expenses", result.row);
+        return result;
       },
 
       removeExpense: async (id) => {
@@ -255,62 +355,70 @@ export const useFinancialStore = create<FinancialState>()(
       },
 
       // ── Payroll ────────────────────────────────────────────────
-      addPayroll: (record) => {
-        const entry: PayrollRecord = {
-          ...record,
-          id: crypto.randomUUID(),
-        };
-        set((state) => ({ payroll: [...state.payroll, entry] }));
+      // These three registers lived only in this browser (`financial-storage`):
+      // another device had none of them and clearing site data erased them.
+      // Migration 051 gives each a store table; the money was already shared.
+      recordPayroll: async (record, event) => {
+        const result = await recordWithEvent<PayrollRecord>(
+          "record_payroll", "payroll", "p_payroll", "payroll", record, event,
+        );
+        if (result.success) upsertLocal(set, "payroll", result.row);
+        return result;
       },
 
-      removePayroll: (id) => {
+      removePayroll: async (id) => {
+        await deleteThrough("payroll", id);
         set((state) => ({ payroll: state.payroll.filter((p) => p.id !== id) }));
       },
 
       // ── Fixed Assets ───────────────────────────────────────────
-      addAsset: (record) => {
+      recordAsset: async (record, event) => {
         const salvage = record.salvageValue || 0;
         const monthlyDepreciation =
           record.usefulLifeYears > 0
             ? divide(record.purchaseValue - salvage, multiply(record.usefulLifeYears, 12))
             : 0;
-        const asset: FixedAsset = {
-          ...record,
-          id: crypto.randomUUID(),
-          monthlyDepreciation,
-        };
-        set((state) => ({ assets: [...state.assets, asset] }));
+        const result = await recordWithEvent<FixedAsset>(
+          "record_fixed_asset", "fixed_assets", "p_asset", "asset",
+          { ...record, monthlyDepreciation }, event,
+        );
+        if (result.success) upsertLocal(set, "assets", result.row);
+        return result;
       },
 
-      removeAsset: (id) => {
+      removeAsset: async (id) => {
+        await deleteThrough("fixed_assets", id);
         set((state) => ({ assets: state.assets.filter((a) => a.id !== id) }));
       },
 
-      toggleAsset: (id) => {
-        set((state) => ({
-          assets: state.assets.map((a) => (a.id === id ? { ...a, isActive: !a.isActive } : a)),
-        }));
+      toggleAsset: async (id) => {
+        const current = get().assets.find((a) => a.id === id);
+        if (!current) return;
+        const saved = await writeThrough("fixed_assets", { ...current, isActive: !current.isActive });
+        upsertLocal(set, "assets", saved);
       },
 
       // ── Budget Caps ────────────────────────────────────────────
-      setBudgetCap: (category, capAmount) => {
-        set((state) => {
-          const exists = state.budgetCaps.find((b) => b.category === category);
-          if (exists) {
-            return {
-              budgetCaps: state.budgetCaps.map((b) =>
-                b.category === category ? { ...b, capAmount } : b,
-              ),
-            };
-          }
-          return { budgetCaps: [...state.budgetCaps, { category, capAmount }] };
+      // One cap per category per STORE (unique in 051). The id is derived from
+      // the store and the category, so two devices setting the same category
+      // write the same row instead of racing to create two.
+      setBudgetCap: async (category, capAmount) => {
+        const identity = await getSyncIdentity();
+        if (!identity) throw new Error("لم يتم ربط هذا الجهاز بمتجر بعد — سجّل الدخول أولاً");
+        const existing = get().budgetCaps.find((b) => b.category === category);
+        const saved = await writeThrough("budget_caps", {
+          id: existing?.id ?? `cap:${identity.storeId}:${category}`,
+          category,
+          capAmount,
         });
+        upsertLocal(set, "budgetCaps", saved);
       },
 
-      removeBudgetCap: (category) => {
-        set((state) => ({
-          budgetCaps: state.budgetCaps.filter((b) => b.category !== category),
-        }));
+      removeBudgetCap: async (category) => {
+        const existing = get().budgetCaps.find((b) => b.category === category);
+        if (!existing) return;
+        await deleteThrough("budget_caps", existing.id);
+        set((state) => ({ budgetCaps: state.budgetCaps.filter((b) => b.category !== category) }));
       },
 
       // ── Shipping actions ───────────────────────────────────────
@@ -347,38 +455,50 @@ export const useFinancialStore = create<FinancialState>()(
       },
 
       // ── Multi-Wallet Actions ─────────────────────────────────────
-      transferBetweenWallets: (transferData) => {
-        const { fromWallet, toWallet, amount } = transferData;
-        if (amount <= 0) return;
+      // The money moves on ONE `wallet_transfer` event — two equal and opposite
+      // wallet lines, no expense (a transfer between the shop's own wallets is
+      // not a cost; it used to also add a fake local «أخرى» expense). The
+      // event's `ref_id` is the operation id the screen keeps across a failed
+      // attempt, and the database refuses a second transfer under it.
+      recordWalletTransfer: async (event) => {
+        const sb = getSupabaseClient();
+        if (!sb) return { success: false, reason: "لا يوجد اتصال بالسحابة", definite: true };
+        try {
+          const p_event = await prepareEvent(event);
+          const { data, error } = await sb.rpc("record_wallet_transfer", { p_event });
+          if (error) return { success: false, reason: error.message, definite: Boolean(error.code) };
+          return { success: true, replayed: (data as any)?.replayed === true };
+        } catch (e) {
+          return { success: false, reason: e instanceof Error ? e.message : String(e), definite: false };
+        }
+      },
 
-        // Records the transfer DOCUMENT for the history list only. The money
-        // moves on the `wallet_transfer` ledger event the caller appends, and
-        // the sufficient-funds check happens there against the real balance.
-        const transfer: WalletTransfer = {
-          ...transferData,
-          id: crypto.randomUUID(),
-          timestamp: new Date(),
-        };
-
-        set((state) => ({
-          walletTransfers: [...state.walletTransfers, transfer],
-        }));
-
-        // Log as expense for audit trail
-        const fromLabel = WALLET_LABELS[fromWallet];
-        const toLabel = WALLET_LABELS[toWallet];
-        set((state) => ({
-          expenses: [
-            ...state.expenses,
-            {
-              id: crypto.randomUUID(),
-              category: "other",
-              amount,
-              description: `تحويل من ${fromLabel} إلى ${toLabel}`,
-              date: new Date(),
-            },
-          ],
-        }));
+      loadWalletTransfers: async () => {
+        const sb = getSupabaseClient();
+        const identity = await getSyncIdentity();
+        if (!sb || !identity) return;
+        set({ walletTransfersStatus: "loading" });
+        const { data, error } = await sb.rpc("wallet_transfer_history", {
+          p_store: identity.storeId,
+          p_limit: 50,
+        });
+        if (error) {
+          // A failed read is not "no transfers": the screen says so.
+          set({ walletTransfersStatus: "error" });
+          return;
+        }
+        set({
+          walletTransfersStatus: "ready",
+          walletTransfers: (data ?? []).map((r: any) => ({
+            id: r.id,
+            fromWallet: r.from_wallet,
+            toWallet: r.to_wallet,
+            amount: Number(r.amount),
+            notes: r.notes ?? undefined,
+            actor: r.actor ?? undefined,
+            timestamp: r.occurred_at,
+          })),
+        });
       },
 
       // ── Owner budget ─────────────────────────────────────────────
@@ -502,14 +622,48 @@ export const useFinancialStore = create<FinancialState>()(
        * rest of this codebase deletes: a device showing rows the database no
        * longer has, and showing nothing on a browser that never cached them.
        *
-       * Everything else here has NO cloud table — payroll, assets, budget
-       * caps, courier receivables, wallet transfers. Dropping those would
-       * delete them outright, because there is nowhere to read them back from.
-       * So this is a deny-list of one, not an allow-list.
+       * Payroll, fixed assets and budget caps joined it in 051. What is still
+       * kept here has no table — courier receivables, wallet transfers, the
+       * owner's personal budget setting — so this stays a deny-list.
        */
       partialize: (state: any) => {
-        const { expenses: _cloudOwned, syncQueue: _noQueue, ...keep } = state;
+        const {
+          expenses: _cloudOwned,
+          payroll: _payroll,
+          assets: _assets,
+          budgetCaps: _caps,
+          walletTransfers: _transfers,
+          walletTransfersStatus: _transfersStatus,
+          syncQueue: _noQueue,
+          ...keep
+        } = state;
         return keep;
+      },
+      // v1: assets, payroll and budget caps left this blob for their 051
+      // tables. A browser's old copies go to LEGACY_FINANCE_KEY for an explicit
+      // upload rather than being dropped or pushed silently — the blob is per
+      // BROWSER, not per store.
+      // v2: the transfer history left this blob (053) — it is read from the
+      // ledger, which already holds every transfer, so the old local copy is
+      // simply dropped: it was never the record of anything.
+      version: 2,
+      migrate: (persisted: any, version: number) => {
+        if (version < 1 && persisted) {
+          const legacy = {
+            assets: Array.isArray(persisted.assets) ? persisted.assets : [],
+            payroll: Array.isArray(persisted.payroll) ? persisted.payroll : [],
+            budgetCaps: Array.isArray(persisted.budgetCaps) ? persisted.budgetCaps : [],
+          };
+          if (legacy.assets.length + legacy.payroll.length + legacy.budgetCaps.length > 0) {
+            try {
+              localStorage.setItem(LEGACY_FINANCE_KEY, JSON.stringify(legacy));
+            } catch {
+              /* storage full or blocked: nothing to hand over */
+            }
+          }
+        }
+        const { assets: _a, payroll: _p, budgetCaps: _b, walletTransfers: _t, ...rest } = persisted ?? {};
+        return rest;
       },
     },
   ),
@@ -553,18 +707,7 @@ export function getWallets(): Wallet[] {
   return useFinancialStore.getState().wallets;
 }
 
-export function logDiscrepancyToProfitLoss(amount: number, notes: string) {
-  const store = useFinancialStore.getState();
-  useFinancialStore.setState((state) => ({
-    expenses: [
-      ...state.expenses,
-      {
-        id: crypto.randomUUID(),
-        category: "other",
-        amount,
-        description: notes,
-        date: new Date(),
-      },
-    ],
-  }));
-}
+// `logDiscrepancyToProfitLoss` DELETED: it appended a local-only «أخرى»
+// expense with no ledger movement behind it — the same phantom as the wallet
+// transfer's — and nothing called it. A stock discrepancy is booked by the
+// جرد screen as a `stock_adjustment` ledger event.

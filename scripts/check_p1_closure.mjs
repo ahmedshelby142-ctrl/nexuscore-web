@@ -118,27 +118,33 @@ test("a courier settlement reprint reads its orders from the ledger event", () =
 test("an expense is checked against its cap BEFORE the ledger event", () => {
   const s = src("../src/components/finance/PartnersFinancePage.tsx");
   const fn = s.slice(s.indexOf("const handleAddExpense = async"), s.indexOf("const handleAddPayroll = async"));
+  // Since 052 the money and the document are ONE call (`recordExpense` →
+  // `record_expense`), and the cap is asked before it — here, and again by
+  // the database inside the transaction.
   const check = fn.indexOf("checkExpenseBudget(expenseForm.category, amount)");
-  const event = fn.indexOf("await appendEvent(");
-  assert.ok(check > -1 && check < event, "an over-cap expense would be paid, then 'refused'");
-  const refusal = fn.slice(check, event);
+  const money = fn.indexOf("await recordExpense(");
+  assert.ok(check > -1 && check < money, "an over-cap expense would be paid, then 'refused'");
+  const refusal = fn.slice(check, money);
   assert.match(refusal, /expenseGate\.exit\(\);\s*return;/, "a refusal must release the gate");
-  // The catch that follows the DOCUMENT write specifically — the ledger write
-  // above has its own catch of the same shape, which must not satisfy this.
-  const afterDoc = fn.slice(fn.indexOf("await addExpense("));
-  assert.match(
-    afterDoc,
-    /^await addExpense\(\{[\s\S]*?\}\);\s*\} catch \(e\) \{\s*setSpendError\([\s\S]{0,300}expenseGate\.exit\(\);\s*return;/,
-    "a document failure after the ledger must be reported, not left unhandled",
-  );
+  assert.doesNotMatch(fn, /await appendEvent\(/, "no ledger write outside the transaction");
+  // Every failure is reported and releases the gate — nothing is left half-done.
+  const afterCall = fn.slice(money);
+  assert.match(afterCall, /if \(!result\.success\) \{[\s\S]{0,900}setSpendError\([\s\S]{0,900}expenseGate\.exit\(\);\s*return;/);
+  assert.match(afterCall, /NEXUS_OVER_BUDGET/, "the database's own cap refusal is worded for the operator");
 });
 
 test("unknown spending is not 'within budget'", () => {
   const store = src("../src/store/useFinancialStore.ts");
   const fn = store.slice(store.indexOf("checkExpenseBudget: (category, amount) => {"));
-  assert.match(fn.slice(0, 600), /if \(useSyncStatus\.getState\(\)\.tables\.expenses !== "ready"\) \{\s*return \{ ok: false, reason: "spending_unknown" \};/);
-  const add = store.slice(store.indexOf("addExpense: async"), store.indexOf("removeExpense:"));
-  assert.ok(!/over_budget|capAmount/.test(add), "the document write must not refuse after the money moved");
+  // Since 051 an unread CAP is refused too (the caps are cloud data now), and
+  // an unread expense list still is — both before any money moves.
+  assert.match(fn.slice(0, 900), /if \(tables\.budget_caps !== "ready"\) return \{ ok: false, reason: "spending_unknown" \};/);
+  assert.match(fn.slice(0, 900), /if \(tables\.expenses !== "ready" \|\|[^)]*\)\) \{\s*return \{ ok: false, reason: "spending_unknown" \};/);
+  // The document can no longer be refused after the money moved: since 052
+  // both are one transaction (`record_expense`), which checks the cap first.
+  const rec = store.slice(store.indexOf("recordExpense: async"), store.indexOf("removeExpense: async"));
+  assert.match(rec, /"record_expense"/);
+  assert.ok(!/over_budget|capAmount/.test(rec));
 });
 
 test("the owner's budget card does not show a failed read as a full budget", () => {

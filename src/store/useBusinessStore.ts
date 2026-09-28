@@ -17,6 +17,9 @@ import type { ProfitDistribution } from "../services/financeService";
 import { writeThrough, deleteThrough } from "../services/cloudData";
 import { applyMovesToProducts, expandBundleMoves, type StockMove } from "../lib/stockMirror";
 
+/** Where a browser's pre-050 local partners wait for an explicit upload. */
+export const LEGACY_PARTNERS_KEY = "nexus-legacy-partners";
+
 /**
  * Write one reference record to Supabase, then commit WHAT SUPABASE STORED.
  *
@@ -118,15 +121,17 @@ interface BusinessState {
   // Actions
   setBusinessMode: (mode: BusinessMode) => void;
   togglePartnership: (enabled: boolean) => void;
-  addPartner: (partner: Omit<Partner, "id">) => void;
-  updatePartner: (id: string, updates: Partial<Partner>) => void;
+  // All cloud-first (`public.partners`, migration 050): nothing changes on
+  // screen until the database has the row. Each throws on failure.
+  addPartner: (partner: Omit<Partner, "id">) => Promise<Partner>;
+  updatePartner: (id: string, updates: Partial<Partner>) => Promise<void>;
   /** Hard delete. Only legal for a part-owner with NO ledger history. */
-  removePartner: (id: string) => void;
+  removePartner: (id: string) => Promise<void>;
   /** Soft-hide (tombstone). What a part-owner WITH history gets. */
-  archivePartner: (id: string) => void;
+  archivePartner: (id: string) => Promise<void>;
   /** Clears the tombstone — they hold a claim again. */
-  restorePartner: (id: string) => void;
-  updatePartnerEquity: (id: string, equityPercentage: number) => void;
+  restorePartner: (id: string) => Promise<void>;
+  updatePartnerEquity: (id: string, equityPercentage: number) => Promise<void>;
   // Returns the created product so the caller can append an opening-balance
   // event against its id. The id is generated here, so without this a caller
   // could not name the product it just created.
@@ -232,59 +237,46 @@ export const useBusinessStore = create<BusinessState>()(
       // Partner management actions
       // No `addCapitalContribution`: capital is a ledger fact (`owner_capital`
       // / `owner_contribution`, migration 049), never a number on this row.
-      addPartner: (partnerData) => {
-        const newPartner: Partner = {
-          ...partnerData,
-          id: crypto.randomUUID(),
-        };
-        set((state) => ({
-          partners: [...state.partners, newPartner],
-        }));
-        // TODO: Analytics Engine - log partner addition
+      // Ownership used to live only in the browser that typed it: another
+      // device had no partners, and clearing site data erased them.
+      addPartner: async (partnerData) => {
+        // `id` kept when given: the legacy import re-sends a browser's own
+        // partners under the ids its ledger lines already point at.
+        const row = { id: crypto.randomUUID(), ...partnerData } as Partner;
+        return commitRow(set, "partners", "partners", row);
       },
 
-      updatePartner: (id: string, updates: Partial<Partner>) => {
-        set((state) => ({
-          partners: state.partners.map((partner) =>
-            partner.id === id ? { ...partner, ...updates } : partner,
-          ),
-        }));
-        // TODO: Analytics Engine - log partner updates
+      updatePartner: async (id: string, updates: Partial<Partner>) => {
+        const current = get().partners.find((p) => p.id === id);
+        if (!current) throw new Error("الشريك غير موجود");
+        await commitRow(set, "partners", "partners", { ...current, ...updates });
       },
 
-      removePartner: (id: string) => {
-        set((state) => ({
-          partners: state.partners.filter((partner) => partner.id !== id),
-        }));
-        // TODO: Analytics Engine - log partner removal
+      removePartner: async (id: string) => {
+        await removeRow(set, "partners", "partners", id);
       },
 
       // A part-owner the ledger already knows about keeps their record — past
       // reports must still resolve their name — but stops being an active
       // claim: out of the 100% cap, out of رأس المال, out of every future
       // distribution. `updatePartner` stamps the change for LWW.
-      archivePartner: (id: string) => {
-        get().updatePartner(id, { deleted_at: Date.now(), status: "inactive" });
+      archivePartner: async (id: string) => {
+        await get().updatePartner(id, { deleted_at: Date.now(), status: "inactive" });
       },
 
       // `null`, never `undefined` — an undefined key drops out of a sync
       // payload and the next pull would re-archive them.
-      restorePartner: (id: string) => {
-        get().updatePartner(id, { deleted_at: null, status: "active" });
+      restorePartner: async (id: string) => {
+        await get().updatePartner(id, { deleted_at: null, status: "active" });
       },
 
-      updatePartnerEquity: (id: string, equityPercentage: number) => {
+      updatePartnerEquity: async (id: string, equityPercentage: number) => {
         // Validate equity percentage (0-100)
         if (equityPercentage < 0 || equityPercentage > 100) {
           throw new Error("Equity percentage must be between 0 and 100");
         }
 
-        set((state) => ({
-          partners: state.partners.map((partner) =>
-            partner.id === id ? { ...partner, equityPercentage } : partner,
-          ),
-        }));
-        // TODO: Analytics Engine - log equity changes and recalculate profit distributions
+        await get().updatePartner(id, { equityPercentage });
       },
 
       // Product management actions
@@ -671,6 +663,22 @@ export const useBusinessStore = create<BusinessState>()(
     }),
     {
       name: "business-storage",
+      // v1: partners left this blob for `public.partners` (migration 050). A
+      // browser's old list is handed to `LEGACY_PARTNERS_KEY` rather than
+      // dropped or pushed silently — an explicit, ADMIN/ACCOUNTANT upload
+      // decides which store it belongs to (see LegacyPartnersBanner).
+      version: 1,
+      migrate: (persisted: any, version: number) => {
+        if (version < 1 && Array.isArray(persisted?.partners) && persisted.partners.length > 0) {
+          try {
+            localStorage.setItem(LEGACY_PARTNERS_KEY, JSON.stringify(persisted.partners));
+          } catch {
+            /* storage full or blocked: nothing to hand over */
+          }
+        }
+        const { partners: _legacy, ...rest } = persisted ?? {};
+        return rest;
+      },
       /**
        * ONLINE-ONLY for reference data.
        *
@@ -683,14 +691,13 @@ export const useBusinessStore = create<BusinessState>()(
        * tables and both are hydrated on boot, so keeping a local copy would
        * recreate exactly the stale-cache problem this rewrite removes.
        *
-       * What IS still persisted is the data with NO cloud table — partners,
-       * wholesale, capital. Dropping those would delete them outright, since
-       * there is nowhere to re-read them from.
+       * What IS still persisted is the data with NO cloud table — legacy
+       * profit distributions and capital notes, and two display preferences.
+       * Partners moved to `public.partners` (050) and are hydrated on boot.
        */
       partialize: (state: any) => ({
         businessMode: state.businessMode,
         partnershipEnabled: state.partnershipEnabled,
-        partners: state.partners,
         partnerLedger: state.partnerLedger,
         // wholesaleClients / wholesaleInvoices are NOT persisted any more.
         // Both are cloud tables now (migration 016) and are hydrated on boot,

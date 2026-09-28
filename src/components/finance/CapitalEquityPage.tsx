@@ -1,5 +1,6 @@
+import { toast } from "sonner";
 import { useRunOnce } from "@/hooks/useSubmitGate";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
   Landmark,
   Users,
@@ -51,7 +52,23 @@ import {
 import { WALLET_LABELS } from "@/types";
 
 export function CapitalEquityPage() {
-  const { wallets, transferBetweenWallets, walletTransfers } = useFinancialStore();
+  const {
+    wallets,
+    recordWalletTransfer,
+    loadWalletTransfers,
+    walletTransfers,
+    walletTransfersStatus,
+  } = useFinancialStore();
+  // The store's transfer history, from the ledger — the same on every device.
+  useEffect(() => {
+    void loadWalletTransfers();
+  }, [loadWalletTransfers]);
+  // One operation id per transfer, kept across a failed attempt whose answer
+  // never arrived: the retry sends the SAME id and the database returns the
+  // transfer it already has instead of moving the money twice (053). Cleared
+  // on success and on a definite refusal. Held in memory only — the database
+  // is the record.
+  const pendingTransferOp = useRef<string | null>(null);
   // ONE list of part-owners. This screen used to keep its own `shareholders`
   // slice beside `useBusinessStore.partners` — same three fields, second list,
   // and each validated its own 100%. Registration lives on the الشركاء tab;
@@ -171,10 +188,13 @@ export function CapitalEquityPage() {
     try {
       // ONE event, two equal and opposite lines. Moving the shop's own money
       // between its own accounts creates none, so the pair must net to zero.
-      await appendEvent({
+      const op = pendingTransferOp.current ?? crypto.randomUUID();
+      pendingTransferOp.current = op;
+      const result = await recordWalletTransfer({
         kind: "wallet_transfer",
         actor: "تحويل بين الخزائن",
         refType: "wallet_transfer",
+        refId: op,
         payload: { notes: transferForm.notes || undefined },
         lines: buildWalletTransferLines({
           fromWallet: transferForm.fromWallet,
@@ -182,16 +202,19 @@ export function CapitalEquityPage() {
           amount,
         }),
       });
-
-      // The transfer document is kept for the history list below; the money
-      // itself moved on the ledger, not in a stored balance.
-      transferBetweenWallets({
-        fromWallet: transferForm.fromWallet as any,
-        toWallet: transferForm.toWallet as any,
-        amount,
-        notes: transferForm.notes,
-      });
+      if (!result.success) {
+        if (result.definite) pendingTransferOp.current = null;
+        setWalletActionError(
+          result.definite
+            ? `التحويل متسجّلش ومفيش رصيد اتغيّر. ${result.reason}`
+            : `الاتصال انقطع قبل ما نعرف النتيجة. اضغط تحويل تاني — لو كان اتسجّل مش هيتحوّل مرتين. ${result.reason}`,
+        );
+        return;
+      }
+      pendingTransferOp.current = null;
+      if (result.replayed) toast.info("التحويل ده كان اتسجّل قبل كده — ما اتحوّلش تاني.");
       refreshWallets();
+      void loadWalletTransfers();
       setTransferForm({
         fromWallet: "inStoreSafe",
         toWallet: "vodafoneCash",
@@ -525,13 +548,19 @@ export function CapitalEquityPage() {
       </div>
 
       {/* Recent Transfers */}
+      {walletTransfersStatus === "error" && (
+        <LoadError
+          message="مقدرناش نقرأ سجل التحويلات من الدفتر."
+          onRetry={() => void loadWalletTransfers()}
+        />
+      )}
       {walletTransfers.length > 0 && (
         <div className="rounded-2xl border border-border bg-card p-6">
           <h3 className="font-display text-xl font-bold mb-4">سجل التحويلات الأخيرة</h3>
           <div className="space-y-2 max-h-60 overflow-y-auto">
+            {/* Newest first, from the ledger (053). */}
             {walletTransfers
-              .slice(-10)
-              .reverse()
+              .slice(0, 10)
               .map((t) => (
                 <div
                   key={t.id}

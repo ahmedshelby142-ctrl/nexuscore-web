@@ -106,7 +106,10 @@ export function BranchesPage() {
             <Building2 className="size-7 text-primary" />
             الفروع والمنافذ
           </h1>
-          <p className="text-muted-foreground mt-1">إدارة فروع المحل وتعيين المستخدمين لكل فرع</p>
+          <p className="text-muted-foreground mt-1">
+            تسجيل فروع المحل وتعيين المستخدمين لكل فرع — للتنظيم فقط، وفصل المخزون والمبيعات حسب
+            الفرع غير متاح حاليًا
+          </p>
         </div>
         <Button onClick={() => setIsBranchOpen(true)}>
           <Plus className="size-4 ml-2" /> إضافة فرع
@@ -133,7 +136,7 @@ export function BranchesPage() {
                     <EmptyState
                       icon={Building2}
                       title="لا توجد فروع مسجلة"
-                      description="أضف فرعك الأول للبدء في إدارة المخزون والمبيعات."
+                      description="أضف فرعك الأول لتسجيل فروع المحل."
                     />
                     </CollectionGate>
                   </TableCell>
@@ -174,9 +177,9 @@ export function BranchesPage() {
                         variant={currentBranchId === b.id ? "default" : "ghost"}
                         size="sm"
                         onClick={() => setCurrentBranch(currentBranchId === b.id ? null : b.id)}
-                        title="تفعيل كنطاق العمل الحالي"
+                        title="علامة للفرع الحالي فقط — لا تغيّر البيانات المعروضة"
                       >
-                        {currentBranchId === b.id ? "النطاق الحالي" : "تعيين كنطاق"}
+                        {currentBranchId === b.id ? "الفرع الحالي" : "تحديد كفرع حالي"}
                       </Button>
                       <Button aria-label="تفعيل أو إيقاف الفرع"
                         variant="ghost"
@@ -316,7 +319,8 @@ export function BranchesPage() {
           <DialogHeader>
             <DialogTitle>تعيين مستخدم للفرع</DialogTitle>
             <DialogDescription>
-              سيتمكن المستخدم من العمل على بيانات هذا الفرع فقط (عند تفعيل النطاق)
+              تعيين تنظيمي فقط — المستخدم هيفضل شايف بيانات المتجر كلها. فصل البيانات حسب الفرع غير
+              متاح حاليًا.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

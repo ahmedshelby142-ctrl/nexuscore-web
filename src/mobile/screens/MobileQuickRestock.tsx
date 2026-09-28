@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect } from "react";
+import { useCallback, useState, useEffect, useMemo } from "react";
 import { PackageCheck, Loader2, Plus, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -21,7 +21,10 @@ import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
-import { formatMoney } from "@/lib/math";
+import { formatArabicCurrency } from "@/mobile/viewmodels/formatters";
+import { useStoreName } from "@/mobile/data/useStoreName";
+import { WhatsAppAction } from "@/mobile/components/WhatsAppAction";
+import { parseRestockNeed, restockRequestMessage } from "@/lib/whatsapp";
 import { WALLET_LABELS } from "@/types";
 import type { WalletType } from "@/types";
 
@@ -50,6 +53,9 @@ export function MobileQuickRestock() {
   const [saving, setSaving] = useState(false);
   const [showProductPicker, setShowProductPicker] = useState(false);
   const gate = useSubmitGate();
+  const storeName = useStoreName();
+  // The deficit نواقص read, per product — only for the WhatsApp request.
+  const need = useMemo(() => parseRestockNeed(params.get("need")), [params]);
   // The picked product RECORDS, keyed by id.
   //
   // The screen used to look products up in `page.rows`, the current search
@@ -189,6 +195,14 @@ export function MobileQuickRestock() {
   const paidAmount = paidInput.trim() === "" ? total : Math.min(Math.max(0, Number(paidInput) || 0), total);
   const owedAmount = Math.max(0, total - paidAmount);
   const registeringNew = supplierId === NEW_SUPPLIER;
+  const chosenSupplier = suppliers.find((s) => s.id === supplierId);
+  // What the supplier is asked for: the quantity typed here, else the
+  // shortage's deficit, else none — never a guess.
+  const requestItems = draftRows.map((r) => ({
+    name: String(r.product.name ?? ""),
+    variant: r.draft.variantName,
+    quantity: r.quantity > 0 ? r.quantity : (need.get(r.id) ?? null),
+  }));
   const supplierReady = registeringNew ? newSupplierName.trim().length > 0 : supplierId !== "";
   // A درجة-bearing product must say WHICH درجة arrived, or a later return off
   // this receipt cannot name it. Mirrors the desktop dialog's same guard.
@@ -378,7 +392,7 @@ export function MobileQuickRestock() {
                         متاح: {Number(row.product.mobileStock ?? 0).toLocaleString("ar-EG")}
                       </span>
                       <span className="font-semibold">
-                        {row.subtotal > 0 ? formatMoney(row.subtotal) : "—"}
+                        {row.subtotal > 0 ? formatArabicCurrency(row.subtotal) : "—"}
                       </span>
                     </div>
 
@@ -449,6 +463,27 @@ export function MobileQuickRestock() {
                 </div>
               )}
 
+              {supplierReady && (
+                <div className="space-y-1.5">
+                  <WhatsAppAction
+                    label="اطلب التوريد على واتساب"
+                    phone={registeringNew ? newSupplierPhone : chosenSupplier?.phone}
+                    message={restockRequestMessage({
+                      supplierName: registeringNew ? newSupplierName : chosenSupplier?.companyName,
+                      storeName,
+                      items: requestItems,
+                    })}
+                    fixWhere={
+                      registeringNew ? "في خانة التليفون فوق" : "من شاشة الموردين على الكمبيوتر"
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    الرسالة بتتفتح في واتساب وإنت اللي بتبعتها. الكمية فيها هي اللي كتبتها هنا، أو
+                    الناقص للطلبات لو لسه ما كتبتهاش.
+                  </p>
+                </div>
+              )}
+
               <div className="space-y-1.5">
                 <Label htmlFor="restock-wallet">اتدفع من</Label>
                 <Select value={wallet} onValueChange={setWallet}>
@@ -475,7 +510,7 @@ export function MobileQuickRestock() {
                   inputMode="decimal"
                   value={paidInput}
                   onChange={(e) => setPaidInput(e.target.value)}
-                  placeholder={formatMoney(total)}
+                  placeholder={formatArabicCurrency(total)}
                 />
                 <p className="text-xs text-muted-foreground">
                   سيبها فاضية يعني مدفوعة بالكامل. أي مبلغ أقل هيتسجّل آجل على المورد.
@@ -488,11 +523,11 @@ export function MobileQuickRestock() {
                     إجمالي التوريد
                     {received.length > 1 ? ` (${received.length} أصناف)` : ""}
                   </span>
-                  <span className="font-bold">{formatMoney(total)}</span>
+                  <span className="font-bold">{formatArabicCurrency(total)}</span>
                 </div>
                 <div className="flex items-center justify-between mt-1.5">
                   <span className="text-muted-foreground">المدفوع الآن</span>
-                  <span className="font-semibold">{formatMoney(paidAmount)}</span>
+                  <span className="font-semibold">{formatArabicCurrency(paidAmount)}</span>
                 </div>
                 {/* Shown only when there IS a debt. A permanent "آجل: ٠" would
                     be a financial zero that means nothing — see the same rule
@@ -500,7 +535,7 @@ export function MobileQuickRestock() {
                 {owedAmount > 0 && (
                   <div className="flex items-center justify-between mt-1.5 text-amber-600 dark:text-amber-400">
                     <span>المتبقي آجل على المورد</span>
-                    <span className="font-bold">{formatMoney(owedAmount)}</span>
+                    <span className="font-bold">{formatArabicCurrency(owedAmount)}</span>
                   </div>
                 )}
                 <p className="text-xs text-muted-foreground mt-2">

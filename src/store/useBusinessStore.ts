@@ -127,7 +127,6 @@ interface BusinessState {
   /** Clears the tombstone — they hold a claim again. */
   restorePartner: (id: string) => void;
   updatePartnerEquity: (id: string, equityPercentage: number) => void;
-  addCapitalContribution: (partnerId: string, amount: number) => void;
   // Returns the created product so the caller can append an opening-balance
   // event against its id. The id is generated here, so without this a caller
   // could not name the product it just created.
@@ -231,15 +230,8 @@ export const useBusinessStore = create<BusinessState>()(
       },
 
       // Partner management actions
-      addCapitalContribution: (partnerId: string, amount: number) => {
-        set((state) => ({
-          partners: state.partners.map((p) =>
-            p.id === partnerId
-              ? { ...p, capitalContribution: (p.capitalContribution || 0) + amount }
-              : p,
-          ),
-        }));
-      },
+      // No `addCapitalContribution`: capital is a ledger fact (`owner_capital`
+      // / `owner_contribution`, migration 049), never a number on this row.
       addPartner: (partnerData) => {
         const newPartner: Partner = {
           ...partnerData,

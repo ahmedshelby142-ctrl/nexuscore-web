@@ -44,6 +44,8 @@ import { CapitalEquityPage } from "@/components/finance/CapitalEquityPage";
 import { ownershipFits, totalOwnership, activePartners, isPartnerArchived } from "@/lib/partners";
 import { PartnerRemovalDialog } from "@/components/finance/PartnerRemovalDialog";
 import { OwnerBudgetCard } from "@/components/finance/OwnerBudgetCard";
+import { OwnerEquityCard } from "@/components/finance/OwnerEquityCard";
+import { useEquityStatement } from "@/lib/ledger/useEquityStatement";
 import { FinancialReportsPage } from "@/components/finance/FinancialReportsPage";
 import { SHIPPING_SUBJECTS } from "@/lib/ledger/reports";
 import { appendEvent } from "@/lib/ledger";
@@ -451,7 +453,6 @@ export function PartnersFinancePage() {
     addPartner,
     updatePartner,
     restorePartner,
-    addCapitalContribution,
     transactions,
   } = useBusinessStore();
   const persona: BusinessPersona = businessMode === "ecommerce" ? "ecommerce" : "retail";
@@ -644,11 +645,7 @@ export function PartnersFinancePage() {
     // Required at registration: it is what makes شريك and مساهم different.
     kind: "working" as PartnerKind,
     equityPercentage: "",
-    capitalContribution: "",
   });
-  const [isCapitalOpen, setIsCapitalOpen] = useState(false);
-  const [capitalPartnerId, setCapitalPartnerId] = useState("");
-  const [capitalAmount, setCapitalAmount] = useState("");
 
   const [isBudgetOpen, setIsBudgetOpen] = useState(false);
   const [budgetForm, setBudgetForm] = useState({ category: "", capAmount: "" });
@@ -678,13 +675,13 @@ export function PartnersFinancePage() {
       : livePartners.filter((p) => p.status === statusFilter);
   }, [livePartners, archivedPartners, showArchivedPartners, statusFilter]);
 
-  // Only active claims. An archived (or inactive) part-owner's capital is not
-  // part of the business's active capital any more — that was the reported
-  // bug: a "deleted" partner's contribution kept counting here forever.
-  const totalCapital = useMemo(
-    () => activePartners(partners).reduce((s, p) => add(s, p.capitalContribution || 0), 0),
-    [partners],
-  );
+  // Capital is a LEDGER fact (migration 049), not `partner.capitalContribution`
+  // — a number that lived only in this browser, summed over partner rows, so a
+  // sole owner with no partner row had no capital at all. One read, shared
+  // with the حقوق الملكية card below.
+  const equity = useEquityStatement();
+  const ownerEquityOf = (subjectId: string) =>
+    equity.data?.owners.find((o) => o.subjectId === subjectId) ?? null;
 
   // ── Category list for current persona ──
   const personaCategories = CATEGORIES[persona] || CATEGORIES.retail;
@@ -836,7 +833,6 @@ export function PartnersFinancePage() {
 
   const handleAddPartner = () => {
     const equity = parseFloat(partnerForm.equityPercentage);
-    const capital = parseFloat(partnerForm.capitalContribution) || 0;
     if (!partnerForm.name || isNaN(equity) || equity < 0 || equity > 100) return;
     // A shop has ONE hundred per cent. The two separate lists each checked
     // their own total, so 100% partners + 100% shareholders used to pass.
@@ -851,21 +847,13 @@ export function PartnersFinancePage() {
       name: partnerForm.name,
       kind: partnerForm.kind,
       equityPercentage: equity,
-      capitalContribution: capital,
+      // Capital is recorded on the ledger from «حقوق الملكية», with the wallet
+      // it arrived in — not typed onto the partner row.
       joinedDate: new Date(),
       status: "active",
     } as any);
-    setPartnerForm({ name: "", kind: "working", equityPercentage: "", capitalContribution: "" });
+    setPartnerForm({ name: "", kind: "working", equityPercentage: "" });
     setIsPartnerOpen(false);
-  };
-
-  const handleCapitalContribution = () => {
-    const amount = parseFloat(capitalAmount);
-    if (!capitalPartnerId || !amount || amount <= 0) return;
-    addCapitalContribution(capitalPartnerId, amount);
-    setCapitalPartnerId("");
-    setCapitalAmount("");
-    setIsCapitalOpen(false);
   };
 
   const handleAddAsset = async () => {
@@ -1008,7 +996,7 @@ export function PartnersFinancePage() {
           </TabsTrigger>
           <TabsTrigger value="partners">
             <Users className="size-4 ml-2" />
-            الشركاء ورأس المال
+            حقوق الملكية والشركاء
           </TabsTrigger>
           {/* The opening-balance / transfer / capital screen. It was built and
               then had ZERO importers — the owner could not open it at all, so
@@ -1394,6 +1382,9 @@ export function PartnersFinancePage() {
 
         {/* ════════════════════ TAB 2: PARTNERS & CAPITAL ════════════════════ */}
         <TabsContent value="partners" className="space-y-6">
+          {/* Equity belongs to the business: shown with or without partners. */}
+          <OwnerEquityCard equity={equity} />
+
           {/* ── Partner Stats ── */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="rounded-2xl border border-border bg-card p-6">
@@ -1401,18 +1392,16 @@ export function PartnersFinancePage() {
               <p className="text-sm text-muted-foreground mt-1">إجمالي الشركاء</p>
             </div>
             <div className="rounded-2xl border border-border bg-card p-6">
-              <p className="text-2xl font-bold">{formatMoney(totalCapital)}</p>
-              <p className="text-sm text-muted-foreground mt-1">إجمالي رأس المال</p>
+              <p className="text-2xl font-bold">
+                {equity.error ? "—" : !equity.data ? "…" : equity.data.capital === null ? "غير مسجل" : formatMoney(equity.data.capital)}
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">رأس المال (من الدفتر)</p>
             </div>
             <div className="rounded-2xl border border-border bg-card p-6">
               <p className="text-2xl font-bold">
-                {formatMoney(
-                  totalCapital > 0 && activePartners(partners).length > 0
-                    ? totalCapital / activePartners(partners).length
-                    : 0,
-                )}
+                {equity.error ? "—" : !equity.data ? "…" : equity.data.totalEquity < 0 ? `-${formatMoney(Math.abs(equity.data.totalEquity))}` : formatMoney(equity.data.totalEquity)}
               </p>
-              <p className="text-sm text-muted-foreground mt-1">متوسط المساهمة</p>
+              <p className="text-sm text-muted-foreground mt-1">صافي حقوق الملكية</p>
             </div>
             <div className="rounded-2xl border border-border bg-card p-6">
               {/* profit is sales − cogs − expenses, so a failure in any of the
@@ -1444,7 +1433,6 @@ export function PartnersFinancePage() {
                     name: "",
                     kind: "working",
                     equityPercentage: "",
-                    capitalContribution: "",
                   });
                   setIsPartnerOpen(true);
                 }}
@@ -1535,7 +1523,25 @@ export function PartnersFinancePage() {
                           {partner.equityPercentage}%
                         </TableCell>
                         <TableCell className="text-center px-4 font-mono whitespace-nowrap">
-                          {formatMoney(partner.capitalContribution || 0)}
+                          {(() => {
+                            // Capital + contributions for this person, from the ledger.
+                            if (equity.error) return "—";
+                            if (!equity.data) return "…";
+                            const own = ownerEquityOf(partner.id);
+                            const paid = own ? (own.capital ?? 0) + own.contributions : null;
+                            return (
+                              <>
+                                {paid === null ? "غير مسجل" : formatMoney(paid)}
+                                {/* The old browser-typed figure is not lost, but it is
+                                    not capital until it is recorded on the ledger. */}
+                                {paid === null && (partner.capitalContribution || 0) > 0 && (
+                                  <span className="block text-[10px] text-amber-700 font-sans">
+                                    رقم مكتوب قبل الدفتر: {formatMoney(partner.capitalContribution)} — سجّليه من «حقوق الملكية»
+                                  </span>
+                                )}
+                              </>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell
                           className="text-center px-4 font-mono whitespace-nowrap"
@@ -1556,19 +1562,6 @@ export function PartnersFinancePage() {
                         </TableCell>
                         <TableCell className="text-center px-4">
                           <div className="flex items-center justify-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-8"
-                              title="إضافة مساهمة رأسمالية"
-                              onClick={() => {
-                                setCapitalPartnerId(partner.id);
-                                setCapitalAmount("");
-                                setIsCapitalOpen(true);
-                              }}
-                            >
-                              <BadgePercent className="size-4" />
-                            </Button>
                             {/* Asks first, and the dialog decides delete vs
                                 archive off the ledger — the old button just
                                 toggled `status` to "inactive" forever. */}
@@ -1877,18 +1870,9 @@ export function PartnersFinancePage() {
               </p>
               {ownershipError && <p className="text-xs text-destructive">{ownershipError}</p>}
             </div>
-            <div className="space-y-2">
-              <Label>رأس المال المساهم (اختياري)</Label>
-              <Input
-                type="number"
-                min={0}
-                placeholder="المبلغ"
-                value={partnerForm.capitalContribution}
-                onChange={(e) =>
-                  setPartnerForm((f) => ({ ...f, capitalContribution: e.target.value }))
-                }
-              />
-            </div>
+            <p className="text-xs text-muted-foreground">
+              رأس مال الشريك بيتسجل من «حقوق الملكية» فوق، بالخزنة اللي دخلت فيها الفلوس.
+            </p>
           </div>
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setIsPartnerOpen(false)}>
@@ -1899,36 +1883,6 @@ export function PartnersFinancePage() {
               disabled={!partnerForm.name || !partnerForm.equityPercentage}
             >
               <UserPlus className="size-4 ml-2" /> إضافة
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* ── Capital Contribution Dialog ── */}
-      <Dialog open={isCapitalOpen} onOpenChange={setIsCapitalOpen}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>إضافة مساهمة رأسمالية</DialogTitle>
-            <DialogDescription>أدخل المبلغ المضاف لرأس مال الشريك</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>المبلغ</Label>
-              <Input
-                type="number"
-                min={0}
-                placeholder="أدخل المبلغ"
-                value={capitalAmount}
-                onChange={(e) => setCapitalAmount(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setIsCapitalOpen(false)}>
-              إلغاء
-            </Button>
-            <Button onClick={handleCapitalContribution} disabled={!capitalAmount}>
-              <BadgePercent className="size-4 ml-2" /> إضافة
             </Button>
           </DialogFooter>
         </DialogContent>

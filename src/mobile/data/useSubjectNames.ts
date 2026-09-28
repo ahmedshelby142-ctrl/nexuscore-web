@@ -40,9 +40,15 @@ export interface SubjectNames {
   suppliers: ReadonlyMap<string, string>;
   /** Courier id → registry name. */
   couriers: ReadonlyMap<string, string>;
+  /** Supplier id → stored phone, for the WhatsApp action. Same read as the names. */
+  supplierPhones: ReadonlyMap<string, string>;
 }
 
-const EMPTY: SubjectNames = { suppliers: new Map(), couriers: new Map() };
+const EMPTY: SubjectNames = {
+  suppliers: new Map(),
+  couriers: new Map(),
+  supplierPhones: new Map(),
+};
 
 /**
  * Read both registries once.
@@ -79,6 +85,11 @@ export function useSubjectNames(enabled: boolean): SubjectNames {
           [...couriers.values()]
             .filter((courier) => courier.id && courier.name)
             .map((courier) => [String(courier.id), String(courier.name)]),
+        ),
+        supplierPhones: new Map(
+          suppliers
+            .filter((supplier) => supplier.id && supplier.phone)
+            .map((supplier) => [String(supplier.id), String(supplier.phone)]),
         ),
       });
     })();

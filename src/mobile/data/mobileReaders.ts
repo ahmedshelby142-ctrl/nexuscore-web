@@ -4,6 +4,7 @@ import { balanceOf } from "@/lib/ledger";
 import { buildableFromRecipe, variantStockFrom } from "@/lib/product";
 import { canViewCost } from "@/lib/roles";
 import { useAuthStore } from "@/store/useAuthStore";
+import { formatArabicCurrency } from "@/mobile/viewmodels/formatters";
 
 export const MOBILE_PAGE_SIZE = 25;
 
@@ -481,7 +482,7 @@ export async function readMobileOrderTimeline(orderId: string): Promise<MobileOr
   if (Number(order.depositAmount ?? 0) > 0 && order.createdAt) {
     timeline.push({
       id: `deposit-${order.id}`,
-      labelAr: `عربون مدفوع: ${Number(order.depositAmount).toLocaleString("ar-EG")} ج.م.`,
+      labelAr: `عربون مدفوع: ${formatArabicCurrency(Number(order.depositAmount))}`,
       timestamp: order.createdAt,
       status: "deposit",
       source: "orders",

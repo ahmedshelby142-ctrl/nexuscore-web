@@ -818,6 +818,10 @@ main.mobile-state {
 
 .mobile-secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; min-block-size: 44px; padding-inline: 0.9rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--card); color: var(--foreground); font-weight: 800; font-size: 0.82rem; cursor: pointer; }
 .mobile-secondary-button svg { inline-size: 1.05rem; block-size: 1.05rem; }
+/* WhatsApp: the secondary button as a link, and a quiet line when there is no usable number. */
+.mobile-whatsapp-button { text-decoration: none; margin-block-start: 0.5rem; }
+.mobile-whatsapp-note { margin: 0.4rem 0 0; color: var(--muted-foreground); font-size: 0.78rem; font-weight: 700; }
+.mobile-whatsapp-note.is-warning { color: var(--foreground); padding: 0.5rem 0.65rem; border: 1px solid color-mix(in oklab, var(--warning) 35%, var(--border)); border-radius: 0.65rem; background: color-mix(in oklab, var(--warning) 8%, var(--card)); }
 .mobile-shortage-actions .mobile-primary-button { font-size: 0.82rem; }
 
 .mobile-inline-link { min-block-size: 44px; margin-inline-start: auto; padding-inline: 0.6rem; border: 0; background: transparent; color: var(--primary); font-size: 0.8rem; font-weight: 800; cursor: pointer; }

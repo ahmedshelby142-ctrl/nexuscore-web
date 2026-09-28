@@ -318,7 +318,7 @@ test("a stock count is never booked against an unread ledger", () => {
 test("a dividend is never computed without the partners' draws", () => {
   const s = src("../src/components/finance/CapitalEquityPage.tsx");
   assert.match(s, /periodProfit === null \|\| statusOf\(draws\) !== "ready"\s*\?\s*\[\]/, "draws of 0 pay a working partner twice");
-  assert.match(s, /const exportReady =\s*periodProfit !== null && statusOf\(walletRead\) === "ready" && statusOf\(draws\) === "ready";/);
+  assert.match(s, /const exportReady =\s*periodProfit !== null && statusOf\(walletRead\) === "ready" && statusOf\(draws\) === "ready" &&[^;]*equity\.data !== null;/);
   const exportFn = s.slice(s.indexOf("const handleExportPdf"));
   const guard = exportFn.indexOf("if (!exportReady) return;");
   assert.ok(

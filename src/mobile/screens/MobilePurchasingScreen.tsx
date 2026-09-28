@@ -48,6 +48,9 @@ import { readMobilePurchaseInvoices } from "@/mobile/data/mobileReaders";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
 import { useRealtimeTables } from "@/mobile/data/useMobileRealtime";
 import { useSubjectNames } from "@/mobile/data/useSubjectNames";
+import { useStoreName } from "@/mobile/data/useStoreName";
+import { WhatsAppAction } from "@/mobile/components/WhatsAppAction";
+import { supplierMessage } from "@/lib/whatsapp";
 import { formatArabicCurrency, formatArabicDate } from "@/mobile/viewmodels/formatters";
 import type { StatusTone } from "@/mobile/viewmodels/types";
 
@@ -195,7 +198,7 @@ function InvoicesTab({
                     <span className="mobile-owner-row-label" dir="ltr">
                       {String(invoice.invoiceNumber ?? invoice.id)}
                     </span>
-                    <span className="mobile-owner-row-value" dir="ltr">
+                    <span className="mobile-owner-row-value">
                       {formatArabicCurrency(Number(invoice.totalAmount ?? 0))}
                     </span>
                   </div>
@@ -236,6 +239,7 @@ function SuppliersTab() {
   const [rows, setRows] = useState<Balance[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const names = useSubjectNames(true);
+  const storeName = useStoreName();
 
   const load = useCallback(async () => {
     setError(null);
@@ -273,16 +277,21 @@ function SuppliersTab() {
           <div className="mobile-owner-row" key={row.subjectId}>
             <div className="mobile-owner-row-main">
               <span className="mobile-owner-row-label">{resolved ?? "غير معروف"}</span>
-              <span
-                className={`mobile-owner-row-value${row.amount < 0 ? " is-negative" : ""}`}
-                dir="ltr"
-              >
+              <span className={`mobile-owner-row-value${row.amount < 0 ? " is-negative" : ""}`}>
                 {formatArabicCurrency(row.amount)}
               </span>
             </div>
             <p className="mobile-owner-row-hint">
               {resolved ? "حساب payable_supplier" : row.subjectId}
             </p>
+            {/* An orphaned id has no supplier row, so no phone to offer. */}
+            {resolved && (
+              <WhatsAppAction
+                phone={names.supplierPhones.get(row.subjectId)}
+                message={supplierMessage({ supplierName: resolved, storeName })}
+                fixWhere="من شاشة الموردين على الكمبيوتر"
+              />
+            )}
           </div>
         );
       })}

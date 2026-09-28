@@ -30,7 +30,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 
 import { APP_ROLES } from "../src/lib/roles.ts";
@@ -339,4 +339,58 @@ test("the capability and the database agree, role by role (live)", { skip: skipD
   });
 
   for (const id of createdUsers) await admin.auth.admin.deleteUser(id).catch(() => {});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10 · حقوق الملكية on Mobile — the Desktop authority, not a second one
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Migration 049 made capital, contributions and equity ledger facts, and
+// `equityStatement()` in lib/ledger/equity.ts the one formula. Mobile reads it
+// through Desktop's own `useEquityStatement` — never a mobile copy.
+
+const mobileCode = (dir = new URL("../src/mobile/", import.meta.url)) =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory()
+      ? mobileCode(new URL(`${e.name}/`, dir))
+      : /\.tsx?$/.test(e.name) ? [[e.name, strip(readFileSync(new URL(e.name, dir), "utf8"))]] : [],
+  );
+
+test("Mobile equity is Desktop's hook — no mobile formula, reader or storage", () => {
+  assert.match(screen, /import \{ useEquityStatement \} from "@\/lib\/ledger\/useEquityStatement";/);
+  for (const [name, code] of mobileCode()) {
+    for (const forbidden of ["fetchEquity(", "equityStatement(", "ledger_balances", "owner_equity", "owner_capital", "owner_contribution", "owner_budget"]) {
+      assert.ok(!code.includes(forbidden), `${name} must not re-implement equity (${forbidden})`);
+    }
+    assert.ok(!/localStorage[\s\S]{0,120}(capital|equity)/i.test(code), `${name}: no browser-held capital`);
+  }
+});
+
+test("equity is mounted only after Postgres confirmed the Owner", () => {
+  // owner_financial_summary is ADMIN-only in SQL; the section lives inside its
+  // data branch, so a refused caller never reads — or renders — equity.
+  const branch = screenCode.indexOf("{!offline && !loading && !error && data && (");
+  const mount = screenCode.indexOf("<EquitySection />");
+  assert.ok(branch > -1 && mount > branch, "inside the data branch");
+  assert.equal(screenCode.split("<EquitySection />").length, 2, "mounted once");
+});
+
+test("no capital recorded reads «غير مسجل», and a failed read is an error, not zeros", async () => {
+  // «غير مسجل» is the shared formatter's answer for a missing amount; the row
+  // passes capital through untouched so it can give it.
+  const { formatArabicCurrency } = await import("../src/mobile/viewmodels/formatters.ts");
+  assert.equal(formatArabicCurrency(null), "غير مسجل");
+  assert.equal(formatArabicCurrency(0), "٠ ج.م.", "a real zero stays a zero");
+  assert.match(screenCode, /\{formatArabicCurrency\(amount\)\}/);
+  assert.match(screenCode, /amount=\{s\.capital\}/, "capital passes through as null");
+  assert.ok(!/capital \?\? 0/.test(screenCode), "formatArabicCurrency(null) would print a zero");
+  assert.match(screenCode, /equity\.error \? \(\s*<ErrorState[^>]*onRetry=\{equity\.refresh\}/);
+  assert.match(screenCode, /: !s \? \(\s*<SkeletonState/);
+});
+
+test("a ledger change reaches both Owner readers through the existing realtime cue", () => {
+  assert.match(screenCode, /useRealtimeTables\(\["ledger_events"\], \(\) => equity\.refresh\(\)\);/);
+  assert.match(hookCode, /useRealtimeTables\(\["ledger_events"\], \(\) => \{\s*background\.current = true;/);
+  // A realtime re-read keeps the figures up; a period change still shows the skeleton.
+  assert.match(hookCode, /if \(!background\.current\) setLoading\(true\);\s*background\.current = false;/);
 });

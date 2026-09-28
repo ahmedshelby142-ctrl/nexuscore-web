@@ -42,6 +42,8 @@ import { toPiastres } from "../src/lib/ledger/money.ts";
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const sql = (text) => text.replace(/--[^\n]*/g, "");
 const MIGRATION = read("docs/migrations/044_ledger_event_semantic_integrity.sql");
+// The CURRENT validator (044 -> 046 -> 049), whose lists the TypeScript unions mirror.
+const CURRENT = read("docs/migrations/049_owner_equity.sql");
 const MATRIX = read("scripts/security/044_semantic_matrix.sql");
 
 // ═══ The oracle: the validator's per-kind rules, in JS ═════════════════════
@@ -237,7 +239,7 @@ test("the reproduced attacks are refused by the same rules", () => {
 test("the validator's kinds, accounts and wallets are exactly the code's", () => {
   const types = read("src/lib/ledger/types.ts");
   const union = (name) => [...types.match(new RegExp(`export type ${name} =([\\s\\S]*?);`))[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
-  const src = sql(MIGRATION);
+  const src = sql(CURRENT);
   const kinds = [...src.match(/v_kind <> ALL \(ARRAY\[([\s\S]*?)\]\)/)[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual(kinds, [...union("EventKind"), "deposit_refunded"].sort(), "kinds = EventKind + 038's deposit_refunded");
   const accounts = [...src.match(/acc <> ALL \(ARRAY\['stock','wallet'([\s\S]*?)\]\)\)/)[0].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();

@@ -186,7 +186,10 @@ the moment of the sale — this is what replaces the hardcoded 70% COGS rule).
 
 `account` ∈ `stock` · `wallet` · `revenue` · `cogs` · `expense` ·
 `payable_supplier` · `receivable_client` · `receivable_courier` ·
-`customer_ltv` · `owner_budget`
+`customer_ltv` · `owner_budget` · `owner_equity`
+
+`owner_equity` (049) is capital and contributions, subject `owner` or a partner
+id — see `docs/OWNER_EQUITY_MODEL.md`.
 
 `payable_courier` is the courier's mirror of `receivable_courier`: they hold our
 COD (owed to us) while we owe them fees. Same counterparty, two accounts,
@@ -293,7 +296,9 @@ it syncs to other devices instead of resurrecting on the next pull.
 | `expense` / `payroll` | `wallet −` · `expense +` |
 | `wallet_transfer` | `wallet −` + `wallet +` |
 | `courier_settlement` | `wallet +` (amount − withheld) · `receivable_courier −` (in full) · `payable_courier −` (the withheld fees). **No expense line** — the fee was booked at the movement, and booking it again here would count every return's shipping twice |
-| `owner_draw` | `wallet −` · `owner_budget −` |
+| `owner_draw` | `wallet −` · `owner_budget +` (equal) |
+| `owner_capital` (049, ADMIN) | `owner_equity ±` · optionally `wallet ±` equal to it (cash now); without a wallet line it declares historical capital. Per-subject capital never below 0 |
+| `owner_contribution` (049, ADMIN) | `owner_equity +` · `wallet +` (equal) — never revenue |
 | `stock_adjustment` | `stock ±` · `expense ∓` (subject `shrinkage`) — one event per جرد, two lines per discrepancy. Counted fewer than recorded → `stock −` · `expense +`; counted more → `stock +` · `expense −` (a surplus cancels a cost, it is not revenue — nothing was sold). Valued at the ledger's weighted-average cost, never a flat per-unit figure |
 
 The split between `order_returned_pending` and `return_confirmed` is what

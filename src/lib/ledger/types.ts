@@ -20,7 +20,9 @@ export type Account =
   | "receivable_courier"
   | "payable_courier"
   | "customer_ltv"
-  | "owner_budget";
+  | "owner_budget"
+  /** What an owner PUT IN — capital and later contributions (migration 049). */
+  | "owner_equity";
 
 /** What happened. Mirrors the CHECK constraint on `ledger_events`. */
 export type EventKind =
@@ -40,7 +42,11 @@ export type EventKind =
   | "wallet_transfer"
   | "courier_settlement"
   | "owner_draw"
-  | "stock_adjustment";
+  | "stock_adjustment"
+  /** Opening capital: owner_equity ±, and wallet ± when cash arrives now (049). */
+  | "owner_capital"
+  /** Later capital: owner_equity +, wallet + (049). */
+  | "owner_contribution";
 
 export type SyncStatus = "pending" | "synced" | "conflict";
 

@@ -13,19 +13,28 @@
 // ── Currency ──────────────────────────────────────────────────────────────────
 
 /**
- * Formats a number as an Arabic-locale EGP amount.
- * Uses the system locale for digit shaping — Arabic locale uses Eastern
- * Arabic numerals (١٢٣), which is the store's standard.
+ * Formats a number as an Arabic-locale EGP amount — display only.
  *
- * Example: 1234.5 → "١٬٢٣٤٫٥٠ ج.م."
+ * Arabic-Indic digits, `٬` thousands, `٫` decimals, never compact (no «ألف»).
+ * Piastre precision, as before: a whole amount has no decimals to show
+ * (800000 → «٨٠٠٬٠٠٠ ج.م.»), and an amount with piastres always shows both
+ * places (1234.5 → «١٬٢٣٤٫٥٠ ج.م.»).
+ *
+ * `null` / `undefined` are MISSING, not zero: «غير مسجل». A zero is «٠ ج.م.».
+ * This used to print «٠٫٠٠ ج.م.» for both — see the Owner equity capital line.
  */
 export function formatArabicCurrency(value: number | null | undefined): string {
-  const num = Number(value ?? 0);
+  if (value === null || value === undefined) return "غير مسجل";
+  const num = Number(value);
   if (!Number.isFinite(num)) return "—";
+  // Rounded to the piastre only to decide how many places to SHOW — the same
+  // two places the old formatter rounded to. `|| 0` folds −0 into 0.
+  const piastres = Math.round(num * 100);
+  const digits = piastres % 100 === 0 ? 0 : 2;
   return (
-    num.toLocaleString("ar-EG", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+    (piastres / 100 || 0).toLocaleString("ar-EG", {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
     }) + " ج.م."
   );
 }

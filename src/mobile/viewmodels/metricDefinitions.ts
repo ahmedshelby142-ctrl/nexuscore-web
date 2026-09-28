@@ -142,11 +142,15 @@ export const MOBILE_METRIC_DEFINITIONS: readonly MetricDefinition[] = [
   // summed. NOTHING here is recomputed on the client, and no metric may be
   // added to this block unless the M3.2 authority matrix named its account.
   //
-  // `owner draw`, `capital / equity`, `wallet transfers` and every
-  // period-over-period comparison are deliberately ABSENT: `owner_budget`
-  // holds 0 lines, `owner_draw` and `wallet_transfer` 0 events, and the ledger
-  // is weeks old. A metric with no authority is omitted, never registered with
-  // a zero — see `emptyValueAr` below for what a REAL zero looks like.
+  // `wallet transfers` and every period-over-period comparison are
+  // deliberately ABSENT: no authority, so omitted, never registered with a zero
+  // — see `emptyValueAr` below for what a REAL zero looks like.
+  //
+  // Capital, contributions, drawings and equity are NOT summary fields either.
+  // Since migration 049 they have one authority — `equityStatement()` in
+  // `lib/ledger/equity.ts`, read by Desktop and by the Owner screen through
+  // the same `useEquityStatement` — so they are not registered here as a
+  // second definition of the same figures.
   {
     id: "owner_net_profit",
     labelAr: "صافي الربح",

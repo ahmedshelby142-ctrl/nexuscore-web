@@ -20,12 +20,14 @@
  *
  * ## What it does NOT return, and why that is not a zero
  *
- * Owner draw, capital/equity, wallet transfers and every period-over-period
- * comparison are absent from the payload because the audit proved there is no
- * authoritative data behind them: `owner_budget` holds 0 lines, `owner_draw`
- * and `wallet_transfer` have 0 events, and the ledger is three weeks old. They
- * are omitted, never returned as 0 — `0` reads as "asked, and there are none",
- * which is the lie `alertModel` already refuses to tell.
+ * Wallet transfers and every period-over-period comparison are absent from the
+ * payload: omitted, never returned as 0 — `0` reads as "asked, and there are
+ * none", which is the lie `alertModel` already refuses to tell.
+ *
+ * Capital, contributions, drawings and equity are absent for a different
+ * reason: they have their own single authority since migration 049,
+ * `equityStatement()` in `./equity.ts`, which Desktop and the Mobile Owner
+ * screen both read. Adding them here would be a second formula in SQL.
  *
  * ## Lifetime and period are different questions
  *

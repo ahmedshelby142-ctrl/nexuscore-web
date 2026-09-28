@@ -29,12 +29,13 @@
  * "try again".
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   readOwnerFinancialSummary,
   type OwnerFinancialSummary,
 } from "@/lib/ledger/ownerFinancials";
+import { useRealtimeTables } from "@/mobile/data/useMobileRealtime";
 
 export interface OwnerFinancialsView {
   data: OwnerFinancialSummary | null;
@@ -59,6 +60,10 @@ export function useOwnerFinancials(window: { from?: Date; to?: Date }): OwnerFin
   const [error, setError] = useState<string | null>(null);
   const [denied, setDenied] = useState(false);
   const [tick, setTick] = useState(0);
+  // A realtime re-read keeps the figures on screen until the new ones land: it
+  // is the same window, so they are not stale in the sense the skeleton guards
+  // against — and a skeleton flash on every sale in the shop is noise.
+  const background = useRef(false);
 
   // The window is two Dates, so a new object every render would re-fire the
   // effect forever. Key on the instants instead — the same millisecond is the
@@ -68,7 +73,8 @@ export function useOwnerFinancials(window: { from?: Date; to?: Date }): OwnerFin
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    if (!background.current) setLoading(true);
+    background.current = false;
 
     void (async () => {
       try {
@@ -105,6 +111,15 @@ export function useOwnerFinancials(window: { from?: Date; to?: Date }): OwnerFin
   }, [fromKey, toKey, tick]);
 
   const reload = useCallback(() => setTick((t) => t + 1), []);
+
+  // Any movement — a sale, or capital, a contribution or a draw recorded on
+  // Desktop — changes wallets and profit. `ledger_events` arrives as a
+  // `store_activity` cue for every role; the summary itself is still refused
+  // to anyone but ADMIN by Postgres.
+  useRealtimeTables(["ledger_events"], () => {
+    background.current = true;
+    setTick((t) => t + 1);
+  });
 
   return { data, loading, error, denied, reload };
 }

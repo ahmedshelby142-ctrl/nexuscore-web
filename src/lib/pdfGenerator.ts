@@ -15,7 +15,8 @@ interface PDFReportData {
   walletBalances: { type: WalletType; label: string; balance: number }[];
   shareholderDistributions: {
     name: string;
-    capitalContributed: number;
+    /** null = no capital entry on the ledger — printed «غير مسجل», not 0. */
+    capitalContributed: number | null;
     sharePercentage: number;
     /** Draws already taken in the period — an advance on the share. */
     drawsTaken: number;
@@ -350,7 +351,7 @@ export function generateFinancialPdf(data: PDFReportData) {
               (s) => `
             <tr>
               <td>${s.name}</td>
-              <td>${formatMoney(s.capitalContributed)}</td>
+              <td>${s.capitalContributed === null ? "غير مسجل" : formatMoney(s.capitalContributed)}</td>
               <td>${s.sharePercentage}%</td>
               <td>${formatMoney(s.drawsTaken)}</td>
               <td class="positive">${formatMoney(s.currentShare)}</td>

@@ -203,7 +203,16 @@ export function MobileShortagesScreen() {
                       <button
                         type="button"
                         className="mobile-primary-button"
-                        onClick={() => navigate(`/restock?products=${encodeURIComponent(row.product_id)}`)}
+                        // `need` carries the deficit this screen just read, so a
+                        // WhatsApp request from توريد asks for it without retyping.
+                        onClick={() =>
+                          navigate(
+                            `/restock?products=${encodeURIComponent(row.product_id)}` +
+                              (Number(row.deficit) > 0
+                                ? `&need=${encodeURIComponent(`${row.product_id}:${Number(row.deficit)}`)}`
+                                : ""),
+                          )
+                        }
                       >
                         <Plus aria-hidden="true" />
                         توريد

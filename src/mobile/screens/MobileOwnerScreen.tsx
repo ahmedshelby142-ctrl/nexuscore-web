@@ -43,6 +43,9 @@ import { MobileSection } from "@/mobile/components/MobileSection";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { useOwnerFinancials } from "@/mobile/data/useOwnerFinancials";
+import { useRealtimeTables } from "@/mobile/data/useMobileRealtime";
+import { useEquityStatement } from "@/lib/ledger/useEquityStatement";
+import { OWNER_SUBJECT } from "@/lib/ledger/ownerDraw";
 import { useSubjectNames } from "@/mobile/data/useSubjectNames";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { formatArabicCurrency } from "@/mobile/viewmodels/formatters";
@@ -76,7 +79,8 @@ function AmountRow({
   tone,
 }: {
   label: string;
-  amount: number;
+  /** null = nothing recorded — `formatArabicCurrency` says «غير مسجل», never a zero. */
+  amount: number | null;
   hint?: string;
   tone?: "positive" | "negative" | "muted";
 }) {
@@ -129,6 +133,86 @@ function SubjectList({
         );
       })}
     </div>
+  );
+}
+
+/**
+ * حقوق الملكية — the SAME statement Desktop's «حقوق الملكية» card shows.
+ *
+ * `useEquityStatement` is Desktop's own hook: `fetchEquity(balances)` over
+ * `ledger_balances`, then `equityStatement()` in `lib/ledger/equity.ts`. There
+ * is no mobile copy of the formula and no mobile store for any of it.
+ *
+ * Mounted only inside the data branch, i.e. after `owner_financial_summary`
+ * — ADMIN-only in Postgres — answered. The ledger read itself is limited by
+ * `can_read_store_finance` (048); a MODERATOR gets no rows, and never reaches
+ * this component to have them rendered as a zero statement.
+ *
+ * Lifetime, like the positions below it: the period filter does not apply.
+ */
+function EquitySection() {
+  const equity = useEquityStatement();
+  // Capital, a contribution or a draw recorded on Desktop is a ledger event.
+  // Re-read on the cue; the figures stay up while it is in flight.
+  useRealtimeTables(["ledger_events"], () => equity.refresh());
+
+  const s = equity.data;
+  return (
+    <MobileSection titleAr="حقوق الملكية — من البداية لدلوقتي">
+      {equity.error ? (
+        <ErrorState messageAr="تعذّر تحميل حقوق الملكية. جرّب تاني." onRetry={equity.refresh} />
+      ) : !s ? (
+        <SkeletonState count={3} />
+      ) : (
+        <div className="mobile-owner-card">
+          <AmountRow
+            // Named from the ledger's own subjects — the partner registry is
+            // not on this device.
+            label={
+              s.owners.some((o) => o.subjectId !== OWNER_SUBJECT)
+                ? "رأس المال (صاحبة الشغل والشركاء)"
+                : "رأس مال صاحبة الشغل"
+            }
+            amount={s.capital}
+            hint={
+              s.capital === null
+                ? "رأس المال الافتتاحي غير مسجل — ده مش معناه إنه صفر. بيتسجل من الكمبيوتر."
+                : "المبلغ اللي اتضخّ في المشروع كرأس مال."
+            }
+          />
+          <AmountRow
+            label="المساهمات الإضافية"
+            amount={s.contributions}
+            hint="فلوس دخلت من صاحبة الشغل بعد رأس المال."
+          />
+          <AmountRow
+            label="الأرباح / الخسائر المتراكمة"
+            amount={s.accumulatedResult}
+            hint="من أول تسجيل على النظام — مش ربح الفترة اللي فوق."
+            tone={s.accumulatedResult < 0 ? "negative" : "positive"}
+          />
+          <AmountRow
+            label="المسحوبات"
+            amount={s.withdrawals}
+            hint="فلوس خرجت لصاحبة الشغل أو الشركاء — مش مصروف."
+            tone="muted"
+          />
+          {s.openingBalances !== 0 && (
+            <AmountRow
+              label="أرصدة افتتاحية غير مصنفة كرأس مال"
+              amount={s.openingBalances}
+              hint="خزن ومخزون اتسجلوا كأرصدة بداية من غير ما يتحدد جزء منهم كرأس مال."
+              tone="muted"
+            />
+          )}
+          <AmountRow
+            label="صافي حقوق الملكية"
+            amount={s.totalEquity}
+            tone={s.totalEquity < 0 ? "negative" : "positive"}
+          />
+        </div>
+      )}
+    </MobileSection>
   );
 }
 
@@ -246,6 +330,7 @@ export function MobileOwnerScreen() {
 
             {/* Everything below is a POSITION: it is what it is now, and the
                 period filter above does not touch it. */}
+            <EquitySection />
             <MobileSection titleAr="المراكز المالية — دلوقتي">
               <div className="mobile-owner-card">
                 <AmountRow

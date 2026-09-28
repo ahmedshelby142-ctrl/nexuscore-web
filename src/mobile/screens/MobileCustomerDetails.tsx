@@ -10,9 +10,13 @@ import { formatArabicCurrency, formatArabicDate, formatArabicRelativeTime, forma
 import { readMobileCustomer, readMobileCustomerFinancialSummary, readMobileCustomerOrderHistory } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
+import { useStoreName } from "@/mobile/data/useStoreName";
+import { WhatsAppAction } from "@/mobile/components/WhatsAppAction";
+import { customerMessage } from "@/lib/whatsapp";
 
 export function MobileCustomerDetails() {
   const navigate = useNavigate();
+  const storeName = useStoreName();
   const { customerId } = useParams();
   const loadCustomer = useCallback(() => readMobileCustomer(customerId ?? ""), [customerId]);
   const { data: customer, loading, error, reload } = useMobileEntity(loadCustomer);
@@ -132,6 +136,11 @@ export function MobileCustomerDetails() {
       </div>
 
       <MobileSection titleAr="بيانات التواصل">
+        <WhatsAppAction
+          phone={customer.phone}
+          message={customerMessage({ customerName: customer.name, storeName })}
+          fixWhere="من شاشة العملاء على الكمبيوتر"
+        />
         <p className="mobile-muted">{customer.address ?? "لا يوجد عنوان مسجل"}</p>
         {customer.governorate && <div className="mobile-detail-line"><span>المحافظة</span><strong>{customer.governorate}</strong></div>}
         {customer.region && <div className="mobile-detail-line"><span>المنطقة</span><strong>{customer.region}</strong></div>}

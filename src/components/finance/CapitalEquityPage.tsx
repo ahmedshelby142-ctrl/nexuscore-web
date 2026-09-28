@@ -23,6 +23,7 @@ import { PARTNER_KIND_LABELS } from "@/types";
 import { appendEvent, balances } from "@/lib/ledger";
 import { customWindow, fetchPnl } from "@/lib/ledger/reports";
 import { useBalances } from "@/lib/ledger/useBalances";
+import { useEquityStatement } from "@/lib/ledger/useEquityStatement";
 import { buildWalletOpeningLines, buildWalletTransferLines } from "@/lib/ledger/audit";
 import type { WalletType } from "@/types";
 import { add, subtract, multiply, divide, formatMoney } from "@/lib/math";
@@ -85,10 +86,14 @@ export function CapitalEquityPage() {
     endDate: new Date().toISOString().slice(0, 10),
   });
 
-  const totalCapital = useMemo(
-    () => activePartners.reduce((total, p) => add(total, p.capitalContribution || 0), 0),
-    [activePartners],
-  );
+  // Capital + contributions per owner, from the ledger (migration 049). It was
+  // `partner.capitalContribution` — typed into this browser, never money that
+  // moved — so a sole owner had none and two devices disagreed.
+  const equity = useEquityStatement();
+  const paidInOf = (subjectId: string): number | null => {
+    const own = equity.data?.owners.find((o) => o.subjectId === subjectId);
+    return own ? (own.capital ?? 0) + own.contributions : null;
+  };
 
   // `totalLifetimeDividends` is gone with the `lifetimeDividendsPaid` field it
   // summed: a stored per-person running total, the same shape as the CRM's
@@ -224,6 +229,9 @@ export function CapitalEquityPage() {
    * the P&L, or one of the two screens is lying about the same period.
    */
   const [periodProfit, setPeriodProfit] = useState<number | null>(null);
+  // Net sales of the same period, for the printout — it used to print the
+  // wallet total under «إجمالي المبيعات».
+  const [periodSales, setPeriodSales] = useState<number | null>(null);
   const [profitError, setProfitError] = useState<string | null>(null);
   // Bumped by the retry button: the same `fetchPnl`, asked again.
   const [profitTick, setProfitTick] = useState(0);
@@ -241,6 +249,7 @@ export function CapitalEquityPage() {
         const report = await fetchPnl(balances, w);
         if (cancelled) return;
         setPeriodProfit(report.netProfit);
+        setPeriodSales(report.netSales);
         setProfitError(null);
       } catch (e) {
         if (cancelled) return;
@@ -270,7 +279,9 @@ export function CapitalEquityPage() {
   // printed when every number on it was actually read — never with a profit
   // of 0 standing in for a failed one.
   const exportReady =
-    periodProfit !== null && statusOf(walletRead) === "ready" && statusOf(draws) === "ready";
+    periodProfit !== null && statusOf(walletRead) === "ready" && statusOf(draws) === "ready" &&
+    // Capital comes from the ledger too; a read still in flight is not «غير مسجل».
+    equity.data !== null;
 
   const handleExportPdf = () => {
     if (!exportReady) return;
@@ -285,7 +296,7 @@ export function CapitalEquityPage() {
       label: WALLET_LABELS[type],
       balance: walletBalance(type),
     }));
-    const totalSales = walletsTotal;
+    const totalSales = periodSales ?? 0;
     generateFinancialPdf({
       companyName: storeIdentity().name,
       reportDate: new Date(),
@@ -300,7 +311,8 @@ export function CapitalEquityPage() {
       // the advance already drawn, and what is actually payable.
       shareholderDistributions: distributions.map((row) => ({
         name: `${row.partner.name} (${PARTNER_KIND_LABELS[row.partner.kind]})`,
-        capitalContributed: row.partner.capitalContribution || 0,
+        // null prints «غير مسجل» — no capital entry is not a capital of 0.
+        capitalContributed: paidInOf(row.partner.id),
         sharePercentage: row.partner.equityPercentage,
         drawsTaken: row.draws,
         currentShare: row.net,
@@ -324,9 +336,11 @@ export function CapitalEquityPage() {
         <div className="rounded-2xl border border-border bg-card p-6">
           <div className="flex items-center gap-3 mb-2">
             <Landmark className="size-5 text-primary" />
-            <p className="text-sm text-muted-foreground">إجمالي رأس المال</p>
+            <p className="text-sm text-muted-foreground">رأس المال (من الدفتر)</p>
           </div>
-          <p className="text-2xl font-bold">{formatMoney(totalCapital)}</p>
+          <p className="text-2xl font-bold">
+            {equity.error ? "—" : !equity.data ? "…" : equity.data.capital === null ? "غير مسجل" : formatMoney(equity.data.capital)}
+          </p>
         </div>
         <div className="rounded-2xl border border-border bg-card p-6">
           <div className="flex items-center gap-3 mb-2">
@@ -447,7 +461,7 @@ export function CapitalEquityPage() {
                     {row.partner.equityPercentage}%
                   </TableCell>
                   <TableCell className="text-center px-4 font-mono">
-                    {formatMoney(row.partner.capitalContribution || 0)}
+                    {equity.error ? "—" : !equity.data ? "…" : paidInOf(row.partner.id) === null ? "غير مسجل" : formatMoney(paidInOf(row.partner.id) ?? 0)}
                   </TableCell>
                   <TableCell className="text-center px-4 font-mono">
                     {formatMoney(row.gross)}

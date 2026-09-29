@@ -1,3 +1,6 @@
+// FIRST: moves an invite/recovery link to /set-password before supabase-js
+// consumes its fragment. See the module for why the order matters.
+import "@/lib/auth/authLinkIntent";
 import { purgeStoredIntegrationSecrets } from "@/store/useIntegrationsStore";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

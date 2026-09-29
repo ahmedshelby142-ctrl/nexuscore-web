@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { KeyRound, ShieldCheck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { authLinkIntent } from "@/lib/auth/authLinkIntent";
 import { completePasswordSetup, readPasswordSetupSession } from "@/lib/auth/sessionWorkflow";
 
 export function MobileSetPassword() {
   const navigate = useNavigate();
+  // Captured before supabase-js cleared the fragment (`authLinkIntent.ts`).
+  const intent = authLinkIntent();
   const [email, setEmail] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
   const [password, setPassword] = useState("");
@@ -16,14 +19,16 @@ export function MobileSetPassword() {
     let cancelled = false;
     void readPasswordSetupSession().then((session) => {
       if (cancelled) return;
-      setEmail(session.email);
+      // A failed/expired link must not fall through to a form for whatever
+      // session this browser already had.
+      setEmail(intent === "link_error" ? null : session.email);
       setError(session.error ?? "");
       setChecking(false);
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [intent]);
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -46,14 +51,14 @@ export function MobileSetPassword() {
     }
   };
 
-  if (checking) return <main className="mobile-state">جارٍ التحقق من الدعوة…</main>;
+  if (checking) return <main className="mobile-state">جارٍ التحقق من الرابط…</main>;
 
   if (!email) {
     return (
       <main className="mobile-state" dir="rtl">
         <ShieldCheck className="mobile-license-icon" aria-hidden="true" />
-        <h1>الدعوة غير صالحة</h1>
-        <p>{error || "افتح رابط الدعوة أو الاسترداد من البريد الإلكتروني."}</p>
+        <h1>{intent === "link_error" ? "الرابط انتهى أو اتستخدم قبل كده" : "الرابط غير صالح"}</h1>
+        <p>{error || "افتح رابط الدعوة أو الاسترداد من البريد الإلكتروني، أو اطلب رابط جديد من «نسيت كلمة المرور؟»."}</p>
         <button type="button" className="mobile-primary-button" onClick={() => navigate("/login", { replace: true })}>
           الذهاب لتسجيل الدخول
         </button>
@@ -65,7 +70,7 @@ export function MobileSetPassword() {
     <main className="mobile-auth-page" dir="rtl">
       <section className="mobile-auth-card" aria-labelledby="mobile-password-title">
         <KeyRound className="mobile-placeholder-icon" aria-hidden="true" />
-        <h1 id="mobile-password-title">إنشاء كلمة المرور</h1>
+        <h1 id="mobile-password-title">{intent === "recovery" ? "تغيير كلمة المرور" : "إنشاء كلمة المرور"}</h1>
         <p className="mobile-auth-description" dir="ltr">{email}</p>
         <form className="mobile-form" onSubmit={(event) => void submit(event)}>
           <label htmlFor="mobile-new-password">كلمة المرور الجديدة</label>

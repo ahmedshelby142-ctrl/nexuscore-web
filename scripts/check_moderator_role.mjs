@@ -95,7 +95,7 @@ test("MODERATOR reaches no desktop business screen", () => {
     assert.equal(canAccess("MODERATOR", path), false, `${path} must be shut on desktop`);
   }
   assert.ok(canAccess("MODERATOR", "/preferences"), "appearance is a preference, not a permission");
-  assert.equal(homeFor("MODERATOR"), "/preferences");
+  assert.equal(homeFor("MODERATOR"), "/mobile-app", "on Desktop a Moderator is moved to Mobile Home, never Preferences");
 });
 
 test("MODERATOR is not an alias of any existing role", () => {

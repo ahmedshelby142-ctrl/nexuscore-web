@@ -6,6 +6,8 @@ import {
   completePasswordSetup,
   readPasswordSetupSession,
 } from "@/lib/auth/sessionWorkflow";
+import { authLinkIntent } from "@/lib/auth/authLinkIntent";
+import { moveSessionToMobile } from "@/lib/auth/mobileSessionTransfer";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,6 +42,9 @@ import { Label } from "@/components/ui/label";
 export function SetPassword() {
   const navigate = useNavigate();
   const runOnce = useRunOnce();
+  // Captured before supabase-js cleared the fragment (`authLinkIntent.ts`).
+  const intent = authLinkIntent();
+  const recovery = intent === "recovery";
 
   /** null while we are still asking supabase-js whether the link carried one. */
   const [email, setEmail] = useState<string | null>(null);
@@ -56,14 +61,27 @@ export function SetPassword() {
       // runs; the shared workflow reads the resulting session.
       const setupSession = await readPasswordSetupSession();
       if (cancelled) return;
-      setEmail(setupSession.email);
+      // MODERATOR is Mobile-only. Supabase sends a link it cannot route to
+      // the Mobile app to the Site URL — this Desktop — so move the session,
+      // untouched, to the Mobile password screen before any form is shown.
+      // The password is then set once, there, and the user lands on Mobile Home.
+      if (intent !== "link_error" && setupSession.role === "MODERATOR") {
+        const moved = await moveSessionToMobile(
+          "/set-password",
+          intent === "invite" || intent === "recovery" ? intent : undefined,
+        );
+        if (moved) return;
+      }
+      // A failed/expired link must not fall through to a form for whatever
+      // session this browser already had.
+      setEmail(intent === "link_error" ? null : setupSession.email);
       setError(setupSession.error);
       setChecking(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [intent]);
 
   const submit = async () =>
     runOnce(async () => {
@@ -96,7 +114,7 @@ export function SetPassword() {
   if (checking) {
     return (
       <div className="min-h-screen grid place-items-center bg-background" dir="rtl">
-        <p className="text-muted-foreground">جاري التحقق من الدعوة...</p>
+        <p className="text-muted-foreground">جاري التحقق من الرابط...</p>
       </div>
     );
   }
@@ -108,11 +126,13 @@ export function SetPassword() {
       <div className="min-h-screen grid place-items-center bg-background p-6" dir="rtl">
         <div className="max-w-md space-y-4 text-center rounded-2xl border border-border bg-card p-8">
           <ShieldCheck className="size-10 mx-auto text-muted-foreground/60" />
-          <h1 className="text-xl font-bold">الدعوة مش صالحة</h1>
+          <h1 className="text-xl font-bold">
+            {intent === "link_error" ? "الرابط انتهى أو اتستخدم قبل كده" : "الرابط مش صالح"}
+          </h1>
           <p className="text-sm text-muted-foreground leading-relaxed">
             الرابط ده لازم يتفتح من الإيميل اللي وصلك، ومرة واحدة بس. لو كنت حطيت
-            باسورد قبل كده ادخل عادي من شاشة الدخول، ولو الرابط قديم اطلب دعوة جديدة
-            من صاحب المحل.
+            باسورد قبل كده ادخل عادي من شاشة الدخول. لو الرابط قديم: اطلب رابط جديد
+            من «نسيت كلمة المرور؟» في شاشة الدخول، أو دعوة جديدة من صاحب المحل.
           </p>
           <Button variant="outline" onClick={() => navigate("/login")}>
             روح لشاشة الدخول
@@ -127,9 +147,13 @@ export function SetPassword() {
       <div className="w-full max-w-md space-y-6 rounded-2xl border border-border bg-card p-8">
         <div className="text-center space-y-2">
           <KeyRound className="size-10 mx-auto text-primary" />
-          <h1 className="text-2xl font-bold">أهلاً بيك في NexusCore</h1>
+          <h1 className="text-2xl font-bold">
+            {recovery ? "غيّر كلمة المرور" : "أهلاً بيك في NexusCore"}
+          </h1>
           <p className="text-sm text-muted-foreground">
-            حط باسورد لحسابك عشان تقدر تدخل بيه بعد كده.
+            {recovery
+              ? "اكتب باسورد جديد لحسابك."
+              : "حط باسورد لحسابك عشان تقدر تدخل بيه بعد كده."}
           </p>
           <p className="text-sm font-medium" dir="ltr">
             {email}

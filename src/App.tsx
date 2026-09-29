@@ -62,6 +62,7 @@ import { BranchesPage } from "@/routes/branches";
 import { UsersPage } from "@/routes/users";
 import { BackupsPage } from "@/routes/backups";
 import { PlaceholderPage } from "@/routes/placeholder";
+import { MobileAppRedirect } from "@/routes/mobile-app";
 
 import { useRealtimeSync } from "@/hooks/useRealtimeSync";
 import { Toaster } from "@/components/ui/sonner";
@@ -107,6 +108,12 @@ export function App() {
             <Route path="/system-admin/licenses" element={<SystemAdminLicenses />} />
           </Route>
           <Route element={<LicenseGate />}>
+          {/* MODERATOR is Mobile-only. If one reaches the Desktop anyway, this
+              moves their session to Mobile Home — no Desktop shell (outside
+              <Layout>). Same access map as every other screen. */}
+          <Route element={<RequireAccess />}>
+            <Route path="/mobile-app" element={<MobileAppRedirect />} />
+          </Route>
           <Route path="/" element={<Layout />}>
             {/* Every screen below is gated by ONE map — see lib/roles.ts. The
                 per-route RoleGuards this replaced covered some paths and not

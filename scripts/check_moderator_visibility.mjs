@@ -308,7 +308,7 @@ test("a typed URL cannot put a Moderator on a Desktop screen", () => {
     assert.equal(roles.canAccess("MODERATOR", path), false, `MODERATOR must not reach ${path}`);
   }
   assert.equal(roles.canAccess("MODERATOR", "/preferences"), true);
-  assert.equal(roles.homeFor("MODERATOR"), "/preferences");
+  assert.equal(roles.homeFor("MODERATOR"), "/mobile-app");
   // Desktop access for the other roles is untouched.
   assert.equal(roles.canAccess("ADMIN", "/partners"), true);
   assert.equal(roles.canAccess("ACCOUNTANT", "/purchasing"), true);

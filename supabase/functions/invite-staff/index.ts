@@ -52,7 +52,19 @@ const CORS = {
 };
 
 /**
+ * The Mobile Operations app. Function secret `MOBILE_APP_URL`; the default is
+ * the production deployment (the client-side twin is `VITE_MOBILE_APP_URL`,
+ * `src/lib/appSurfaces.ts`).
+ */
+const MOBILE_APP_URL = Deno.env.get("MOBILE_APP_URL") || "https://nexuscore-mobile.vercel.app";
+
+/**
  * Where the invitation link should land the employee.
+ *
+ * MODERATOR is a Mobile-only role: its invitation opens the Mobile app's
+ * `/set-password`, so the password is set once, there, and the person lands on
+ * Mobile Home. Sending it to the Desktop is what left invited moderators on
+ * «التفضيلات الشخصية» with nothing but «تسجيل الخروج».
  *
  * It used to be the bare request origin, which was wrong twice over. The origin
  * is the ADMIN's browser, so inviting from a local preview mailed the employee a
@@ -65,8 +77,10 @@ const CORS = {
  * Supabase still has the final say: a URL outside the project's redirect
  * allowlist is replaced with the Site URL.
  */
-function acceptUrl(req: Request): string | undefined {
-  const base = Deno.env.get("APP_URL") || req.headers.get("origin");
+function acceptUrl(req: Request, role: string): string | undefined {
+  const base = role === "MODERATOR"
+    ? MOBILE_APP_URL
+    : Deno.env.get("APP_URL") || req.headers.get("origin");
   if (!base) return undefined;
   try {
     return new URL("/set-password", base).toString();
@@ -160,7 +174,7 @@ Deno.serve(async (req: Request) => {
   if (status === "no_account") {
     const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
     const { data: created, error: inviteError } = await admin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: acceptUrl(req),
+      redirectTo: acceptUrl(req, role),
     });
 
     if (inviteError || !created?.user?.id) {

@@ -106,7 +106,7 @@ test("MODERATOR opens no desktop business screen", () => {
 
 test("MODERATOR still lands somewhere it can open, so the desktop cannot loop", () => {
   assert.ok(canAccess("MODERATOR", "/preferences"), "appearance is a preference, not a permission");
-  assert.equal(homeFor("MODERATOR"), "/preferences");
+  assert.equal(homeFor("MODERATOR"), "/mobile-app", "on Desktop a Moderator is moved to Mobile Home, never Preferences");
   assert.ok(
     canAccess("MODERATOR", homeFor("MODERATOR")),
     "a redirect target the role cannot open is an infinite loop",

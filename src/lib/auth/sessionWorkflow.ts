@@ -270,6 +270,8 @@ export async function signInWithPassword(input: {
 export interface PasswordSetupSession {
   email: string | null;
   error: string | null;
+  /** The membership role, for routing only (Desktop hands a Mobile-only role to Mobile). */
+  role?: AppRole | null;
 }
 
 /** Read the invite/recovery session that supabase-js consumed from the URL fragment. */
@@ -280,7 +282,19 @@ export async function readPasswordSetupSession(): Promise<PasswordSetupSession> 
   }
 
   const { data } = await supabase.auth.getSession();
-  return { email: data.session?.user.email ?? null, error: null };
+  if (!data.session) return { email: null, error: null, role: null };
+
+  // Read-only, own row (RLS). Routing only — completePasswordSetup re-reads it.
+  const { data: membership } = await supabase
+    .from("store_members")
+    .select("role")
+    .eq("user_id", data.session.user.id)
+    .maybeSingle();
+  return {
+    email: data.session.user.email ?? null,
+    error: null,
+    role: membership ? toAppRole(membership.role) : null,
+  };
 }
 
 /**
@@ -348,6 +362,38 @@ export async function completePasswordSetup(password: string): Promise<SessionWo
   } as never);
 
   return { success: true, role };
+}
+
+/**
+ * «نسيت كلمة المرور؟» — email a recovery link that opens THIS app's
+ * `/set-password` (Desktop or Mobile, whichever the user is on).
+ *
+ * The answer never says whether the address has an account. If the project's
+ * Redirect URLs do not list `/set-password`, Supabase falls back to the Site
+ * URL — `authLinkIntent` moves that link to `/set-password` anyway.
+ */
+export async function requestPasswordReset(email: string): Promise<{ ok: boolean; message: string }> {
+  const address = email.trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) {
+    return { ok: false, message: "اكتب الإيميل الأول عشان نبعتلك رابط تغيير الباسورد." };
+  }
+  const supabase = getSupabaseClient();
+  if (!supabase) return { ok: false, message: "لم يتم العثور على إعدادات السحابة" };
+  const { error } = await supabase.auth.resetPasswordForEmail(address, {
+    redirectTo: `${window.location.origin}/set-password`,
+  });
+  // Rate limits and transport failures are worth saying; "no such user" is
+  // never distinguished (Supabase does not report it either).
+  if (error && /rate|limit|seconds/i.test(error.message)) {
+    return { ok: false, message: "طلبت رابط من شوية — استنى دقيقة وجرّب تاني." };
+  }
+  if (error && !error.status) {
+    return { ok: false, message: `تعذّر إرسال الرابط: ${error.message}` };
+  }
+  return {
+    ok: true,
+    message: `لو ${address} مسجّل عندنا، هيوصلك رابط لتغيير الباسورد. افتحه من نفس الجهاز.`,
+  };
 }
 
 /** Same sign-out ordering the desktop sidebar already uses. */

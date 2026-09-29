@@ -79,6 +79,12 @@ const ROUTE_ACCESS: Record<string, readonly AppRole[]> = {
   // set light/dark; nothing that changes the business belongs on this path.
   "/preferences": ["POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT", "MODERATOR"],
 
+  // ── MODERATOR on Desktop: straight on to Mobile Operations ───────────────
+  // The role's screens exist only in the Mobile build. This Desktop route only
+  // moves the session there (`routes/mobile-app.tsx`); it reads no data and
+  // grants nothing.
+  "/mobile-app": ["MODERATOR"],
+
   // ── Selling ───────────────────────────────────────────────────────────────
   "/pos": ["POS_ECOMMERCE"],
   "/orders": ["POS_ECOMMERCE", "ECOMMERCE_ONLY"],
@@ -113,10 +119,11 @@ const ROLE_HOME: Record<AppRole, string> = {
   POS_ECOMMERCE: "/pos",
   ECOMMERCE_ONLY: "/orders",
   ACCOUNTANT: "/purchasing",
-  // The Moderator is a Mobile persona with no Desktop screen of its own. This
-  // is the only path `canAccess` opens for it, so it is the only destination a
-  // Desktop redirect can use without looping.
-  MODERATOR: "/preferences",
+  // The Moderator is a Mobile persona with no Desktop screen of its own. It
+  // used to land on `/preferences` — a settings page with a menu holding only
+  // «تسجيل الخروج». On the Desktop origin it is now moved, session and all, to
+  // Mobile Home; its normal invite/reset/sign-in paths never open the Desktop.
+  MODERATOR: "/mobile-app",
 };
 
 /** Legacy role strings → one of the fixed set. None of them maps to MODERATOR:

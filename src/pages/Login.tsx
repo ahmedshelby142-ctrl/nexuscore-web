@@ -27,6 +27,7 @@ import { useThemeStore } from "@/store/useThemeStore";
 import logoLight from "@/assets/logo-light.png";
 import logoDark from "@/assets/logo-dark.png";
 import { useAuthStore } from "@/store/useAuthStore";
+import { homeFor, toAppRole } from "@/lib/roles";
 import { getOperationMode } from "@/lib/supabase";
 import { getActiveStoreId } from "@/services/api/storeContext";
 import { useBusinessStore } from "@/store/useBusinessStore";
@@ -55,6 +56,7 @@ import { getMachineFingerprint } from "@/lib/machineId";
 import { getSupabaseClient } from "@/lib/supabase";
 import {
   establishSupabaseSession,
+  requestPasswordReset,
   signInWithPassword,
 } from "@/lib/auth/sessionWorkflow";
 
@@ -337,7 +339,9 @@ export function Login() {
         .then((m) => m.hydrateAll())
         .catch((e) => console.error("[Login] hydrate failed:", e));
 
-      navigate("/", { replace: true });
+      // Every role lands on its own home. For MODERATOR that is `/mobile-app`,
+      // which moves this session to Mobile Home.
+      navigate(homeFor(toAppRole(useAuthStore.getState().userRole)), { replace: true });
     } finally {
       setIsSubmitting(false);
     }
@@ -568,6 +572,27 @@ export function Login() {
                 {isSubmitting ? "يرجى الانتظار…" : (authMode === "signup" ? "إنشاء الحساب الجديد" : "دخول إلى النظام")}
               </Button>
               
+
+              {opMode === "cloud_sync" && authMode === "signin" && (
+                <div className="text-center">
+                  {/* The recovery email opens /set-password on this app. Uses
+                      the address typed above; the answer never says whether
+                      it has an account. */}
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={() => {
+                      setIsSubmitting(true);
+                      void requestPasswordReset(username)
+                        .then((r) => setLocalError(r.message))
+                        .finally(() => setIsSubmitting(false));
+                    }}
+                    className="text-sm text-slate-400 hover:text-white transition-colors"
+                  >
+                    نسيت كلمة المرور؟
+                  </button>
+                </div>
+              )}
 
               {opMode === "cloud_sync" && (
                 <div className="text-center pt-2">

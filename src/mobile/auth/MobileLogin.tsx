@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Eye, EyeOff, LogIn } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { signInWithPassword } from "@/lib/auth/sessionWorkflow";
+import { requestPasswordReset, signInWithPassword } from "@/lib/auth/sessionWorkflow";
 import type { BusinessProfile } from "@/types";
 
 const profiles: { value: BusinessProfile; label: string }[] = [
@@ -19,6 +19,20 @@ export function MobileLogin() {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const forgotPassword = async () => {
+    setError("");
+    setNotice("");
+    setSubmitting(true);
+    try {
+      const result = await requestPasswordReset(email);
+      if (result.ok) setNotice(result.message);
+      else setError(result.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -28,6 +42,7 @@ export function MobileLogin() {
     }
 
     setError("");
+    setNotice("");
     setSubmitting(true);
     try {
       const result = await signInWithPassword({
@@ -102,9 +117,18 @@ export function MobileLogin() {
             ))}
           </select>
           {error && <p className="mobile-form-error" role="alert">{error}</p>}
+          {notice && <p className="mobile-auth-description" role="status">{notice}</p>}
           <button type="submit" className="mobile-primary-button" disabled={submitting}>
             <LogIn aria-hidden="true" />
             {submitting ? "جارٍ تسجيل الدخول…" : "تسجيل الدخول"}
+          </button>
+          <button
+            type="button"
+            className="mobile-text-button"
+            disabled={submitting}
+            onClick={() => void forgotPassword()}
+          >
+            نسيت كلمة المرور؟
           </button>
         </form>
       </section>

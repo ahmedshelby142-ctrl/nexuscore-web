@@ -41,6 +41,8 @@ import {
   depositDispositionOn,
   depositRefundEligible,
   depositResolutionState,
+  codState,
+  COD_STATE_LABELS_AR,
   shippingBorneBy,
   toReturnCause,
   RETURN_CAUSES,
@@ -132,7 +134,7 @@ import type { EcommerceOrder, EcommerceOrderItem, EcommerceOrderStatus, WalletTy
 import { WALLET_LABELS, canonicalWallet } from "@/types";
 import { generateOrdersPdf } from "@/lib/pdfGenerator";
 
-const STATUS_META: Record<
+export const STATUS_META: Record<
   EcommerceOrderStatus,
   {
     label: string;
@@ -1961,7 +1963,18 @@ export function OrdersPage() {
                           {formatMoney(order.totalAmount)}
                         </TableCell>
                         <TableCell className="text-center px-4 font-mono whitespace-nowrap text-amber-600">
-                          {formatMoney(order.expectedCod)}
+                          {(() => {
+                            // Outstanding only while the customer still owes it —
+                            // see `codState`. A returned order owes nothing here.
+                            const cod = codState(order);
+                            if (cod === "due" || cod === "with_courier") return formatMoney(order.expectedCod);
+                            return (
+                              <span className="font-sans text-xs text-muted-foreground">
+                                {cod === "remitted" && <span className="line-through ml-1">{formatMoney(order.expectedCod)}</span>}
+                                {COD_STATE_LABELS_AR[cod]}
+                              </span>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell className="text-center px-4">
                           {statusBadge(order.status)}

@@ -382,6 +382,35 @@ export function depositRefundEligible(cause: ReturnCause): boolean {
 }
 
 /**
+ * Is any COD still to come from the CUSTOMER on this order — and if not, why.
+ *
+ * `expectedCod` is fixed at placement. Shown raw under «COD المستحق» /
+ * «المتبقي على المندوب» it kept reading as money due on a returned order (and
+ * on one already collected and remitted), inviting staff to chase the courier,
+ * or a customer, for nothing. What the courier still holds after a return is a
+ * courier-account matter — `/courier-ledger`, from the ledger — not this.
+ */
+export function codState(order: {
+  status: string;
+  expectedCod?: number | null;
+  codSettledAt?: unknown;
+}): "due" | "with_courier" | "remitted" | "returned" | "cancelled" | "none" {
+  if (order.status === "cancelled") return "cancelled";
+  if (order.status === "returned") return "returned";
+  if (!((order.expectedCod ?? 0) > 0)) return "none";
+  if (order.codSettledAt) return "remitted";
+  return order.status === "delivered" ? "with_courier" : "due";
+}
+
+/** The Arabic line for every non-outstanding `codState`. */
+export const COD_STATE_LABELS_AR = {
+  returned: "مرتجع — مفيش تحصيل",
+  cancelled: "ملغي — مفيش تحصيل",
+  none: "مدفوع بالكامل",
+  remitted: "اتورّد",
+} as const;
+
+/**
  * What the تسوية العميلة control shows for one order.
  *
  * `heldPending` is the order's balance on `revenue / deposit_pending_resolution`

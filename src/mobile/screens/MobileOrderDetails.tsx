@@ -15,7 +15,7 @@ import { useAuthStore } from "@/store/useAuthStore";
 import { useStoreName } from "@/mobile/data/useStoreName";
 import { WhatsAppIconLink } from "@/mobile/components/WhatsAppAction";
 import { customerMessage } from "@/lib/whatsapp";
-import { causeLabelsFor, type ReturnCause } from "@/lib/shippingRates";
+import { causeLabelsFor, codState, COD_STATE_LABELS_AR, type ReturnCause } from "@/lib/shippingRates";
 
 export function MobileOrderDetails() {
   const navigate = useNavigate();
@@ -93,6 +93,9 @@ export function MobileOrderDetails() {
   const discountAmount = Number(order.discountAmount ?? 0);
   const totalAmount = Number(order.totalAmount ?? order.total ?? 0);
   const expectedCod = Number(order.expectedCod ?? 0);
+  // Still owed by the customer? A returned/cancelled order is not — `codState`.
+  const cod = codState({ status: String(order.status ?? ""), expectedCod, codSettledAt: order.codSettledAt });
+  const codOutstanding = cod === "due" || cod === "with_courier";
   const courierFee = Number(order.courierFee ?? 0);
   // Recovery of one earlier wasted trip (054): owed by the customer on top of
   // base delivery. Absent/0 on every order placed before 054.
@@ -218,7 +221,7 @@ export function MobileOrderDetails() {
         </div>
         <div className="mobile-detail-line">
           <span>المتبقي على المندوب (COD)</span>
-          <strong>{formatArabicCurrency(expectedCod)}</strong>
+          <strong>{codOutstanding ? formatArabicCurrency(expectedCod) : COD_STATE_LABELS_AR[cod as keyof typeof COD_STATE_LABELS_AR]}</strong>
         </div>
         {/* The books' own consistency check — the shop's, not the customer's. */}
         {showInternal && (
@@ -247,7 +250,7 @@ export function MobileOrderDetails() {
         )}
         <div className="mobile-detail-line"><span>حالة الشحنة</span><StatusPill labelAr={resolveShipmentStatus(order.status).labelAr} tone={resolveShipmentStatus(order.status).tone} /></div>
         {order.trackingNumber && <div className="mobile-detail-line"><span>رقم التتبع</span><strong dir="ltr">{order.trackingNumber}</strong></div>}
-        {showInternal && expectedCod > 0 && <div className="mobile-detail-line"><span>المبلغ المستحق تحصيله (COD)</span><strong>{formatArabicCurrency(expectedCod)}</strong></div>}
+        {showInternal && codOutstanding && <div className="mobile-detail-line"><span>المبلغ المستحق تحصيله (COD)</span><strong>{formatArabicCurrency(expectedCod)}</strong></div>}
         {showInternal && order.codSettledAt && <div className="mobile-detail-line"><span>تم التوريد في</span><strong>{formatArabicDate(order.codSettledAt)}</strong></div>}
       </MobileSection>
 
@@ -290,10 +293,10 @@ export function MobileOrderDetails() {
         )}
         {order.codSettledAt ? (
           <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--success)" }}>مستلم</strong></div>
-        ) : expectedCod > 0 ? (
+        ) : codOutstanding ? (
           <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--warning)" }}>معلق</strong></div>
         ) : (
-          <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--muted-foreground)" }}>غير مطلوب (مدفوع بالكامل)</strong></div>
+          <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--muted-foreground)" }}>غير مطلوب ({cod === "none" ? "مدفوع بالكامل" : COD_STATE_LABELS_AR[cod as keyof typeof COD_STATE_LABELS_AR]})</strong></div>
         )}
       </MobileSection>}
 

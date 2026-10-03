@@ -30,6 +30,9 @@ import { useBalances } from "@/lib/ledger/useBalances";
 import { events } from "@/lib/ledger";
 import type { LedgerEvent } from "@/lib/ledger";
 import { toWhatsAppNumber } from "@/lib/phone";
+import { codState, COD_STATE_LABELS_AR } from "@/lib/shippingRates";
+import { STATUS_META } from "@/components/ecommerce/OrdersPage";
+import type { EcommerceOrderStatus } from "@/types";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -185,6 +188,7 @@ export function CRMPage() {
       status: o.status,
       totalAmount: o.totalAmount,
       expectedCod: o.expectedCod,
+      cod: codState(o),
       originalData: o,
     }));
     
@@ -201,6 +205,7 @@ export function CRMPage() {
         status: "delivered",
         totalAmount,
         expectedCod: 0,
+        cod: "none" as const,
         originalData: s,
       };
     });
@@ -592,7 +597,7 @@ export function CRMPage() {
                                       : "secondary"
                                 }
                               >
-                                {event.status}
+                                {STATUS_META[event.status as EcommerceOrderStatus]?.label ?? event.status}
                               </Badge>
                             )}
                           </TableCell>
@@ -600,7 +605,14 @@ export function CRMPage() {
                             {formatMoney(event.totalAmount)}
                           </TableCell>
                           <TableCell className="text-center px-4 font-mono text-amber-600">
-                            {event.expectedCod > 0 ? formatMoney(event.expectedCod) : "-"}
+                            {/* Only while the customer still owes it — see `codState`. */}
+                            {event.cod === "due" || event.cod === "with_courier" ? (
+                              formatMoney(event.expectedCod)
+                            ) : event.type === "pos" || event.cod === "none" ? (
+                              "-"
+                            ) : (
+                              <span className="font-sans text-xs text-muted-foreground">{COD_STATE_LABELS_AR[event.cod]}</span>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))

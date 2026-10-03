@@ -40,6 +40,7 @@ import {
   clearsShippingDebt,
   depositDispositionOn,
   depositRefundEligible,
+  depositResolutionState,
   shippingBorneBy,
   toReturnCause,
   RETURN_CAUSES,
@@ -63,7 +64,7 @@ import {
 } from "@/services/courierClaims";
 import { useEffect } from "react";
 import { toast } from "sonner";
-import { appendEvent, type NewEvent } from "@/lib/ledger";
+import { appendEvent, balancesByRef, type NewEvent } from "@/lib/ledger";
 import {
   buildOrderDeliveredLines,
   buildReturnPendingLines,
@@ -293,6 +294,51 @@ export function OrdersPage() {
   useEffect(() => {
     void reloadClaims();
   }, [reloadClaims]);
+
+  /**
+   * Each order's deposit still HELD for تسوية العميلة, from the ledger: the
+   * balance on `revenue / deposit_pending_resolution` per order number — what
+   * `refund_order_deposit` refunds and then reverses to zero. An order with no
+   * row was never held; one at zero has been refunded. `null` = not read yet,
+   * "error" = the read failed (the button is then offered and the server decides).
+   */
+  const [heldDeposits, setHeldDeposits] = useState<Map<string, number> | null | "error">(null);
+  const reloadHeldDeposits = useCallback(async () => {
+    try {
+      const rows = await balancesByRef({
+        account: "revenue",
+        refType: "ecommerce_order",
+        subjectId: "deposit_pending_resolution",
+      });
+      setHeldDeposits(new Map(rows.map((r) => [r.refId, r.amount])));
+    } catch {
+      setHeldDeposits("error");
+    }
+  }, []);
+  // Re-read when an order becomes eligible (a return confirmed here) and on
+  // every ledger change — this tab's refund and other devices' via realtime.
+  const eligibleForResolution = useMemo(
+    () =>
+      orders
+        .filter((o) => o.returnConfirmedAt && depositRefundEligible(toReturnCause(o.return_cause)))
+        .map((o) => o.orderNumber)
+        .sort()
+        .join(","),
+    [orders],
+  );
+  useEffect(() => {
+    void reloadHeldDeposits();
+  }, [reloadHeldDeposits, eligibleForResolution]);
+  useEffect(() => {
+    const onPulled = () => void reloadHeldDeposits();
+    window.addEventListener("ledger-sync-pulled", onPulled);
+    return () => window.removeEventListener("ledger-sync-pulled", onPulled);
+  }, [reloadHeldDeposits]);
+  const resolutionStateOf = (order: EcommerceOrder) =>
+    depositResolutionState(
+      order,
+      heldDeposits === null ? "loading" : heldDeposits === "error" ? "unknown" : (heldDeposits.get(order.orderNumber) ?? "none"),
+    );
 
   const claimOf = (orderId: string) => claims.find((c) => c.order_id === orderId) ?? null;
   /** Cash out of the till now, or netted off the courier's account. See §5. */
@@ -886,6 +932,9 @@ export function OrdersPage() {
       toast.success("تم رد العربون للعميلة وتسجيله في الدفتر.");
     } catch (e) {
       setResolutionError(e instanceof Error ? e.message : String(e));
+      // A refusal (e.g. already refunded from another tab) means this screen
+      // was stale: re-read, so the control matches the ledger again.
+      void reloadHeldDeposits();
     } finally {
       setIsWorking(false);
     }
@@ -2064,10 +2113,15 @@ export function OrdersPage() {
                                 deposit and the duplicate against the database
                                 under a lock, and the role gate is
                                 `insert_ledger_events` — so a button rendered by
-                                a patched bundle buys nothing. */}
-                            {order.returnConfirmedAt &&
-                              depositRefundEligible(toReturnCause(order.return_cause)) &&
-                              (order.depositAmount ?? 0) > 0 && (
+                                a patched bundle buys nothing. Shown only while
+                                the ledger still HOLDS the deposit; once refunded
+                                it reads as settled — see `depositResolutionState`. */}
+                            {resolutionStateOf(order) === "settled" && (
+                              <span className="text-xs text-muted-foreground">
+                                تمت تسوية العميلة — العربون اترد
+                              </span>
+                            )}
+                            {resolutionStateOf(order) === "offer" && (
                                 <Button
                                   variant="outline"
                                   size="sm"

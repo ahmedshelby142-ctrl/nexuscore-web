@@ -246,6 +246,7 @@ const supabaseDriver: LedgerDriver = {
 
         if (query.kind) q = q.eq("ledger_events.kind", query.kind);
         if (query.refId) q = q.eq("ledger_events.ref_id", query.refId);
+        if (query.subjectId) q = q.eq("subject_id", query.subjectId);
 
         return q.range(from, to);
       },

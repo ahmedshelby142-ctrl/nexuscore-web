@@ -382,6 +382,35 @@ export function depositRefundEligible(cause: ReturnCause): boolean {
 }
 
 /**
+ * What the تسوية العميلة control shows for one order.
+ *
+ * `heldPending` is the order's balance on `revenue / deposit_pending_resolution`
+ * read from the LEDGER (`balancesByRef`) — the very number `refund_order_deposit`
+ * refunds and then reverses to zero. Not a flag on the order: offering the
+ * button from the order row alone kept it on screen after the refund, where a
+ * press could only be refused with NEXUS_NOTHING_TO_REFUND.
+ *
+ *   number > 0  held, unresolved          → "offer"
+ *   number ≤ 0  booked, then refunded     → "settled" (only the refund reverses it)
+ *   "none"      never held as pending     → "none"    (the server would refuse)
+ *   "loading"   not read yet              → "none"    (no flash of a stale button)
+ *   "unknown"   the read failed           → "offer"   (the server still decides)
+ */
+export function depositResolutionState(
+  order: { returnConfirmedAt?: unknown; return_cause?: string | null; depositAmount?: number | null },
+  heldPending: number | "none" | "loading" | "unknown",
+): "offer" | "settled" | "none" {
+  if (
+    !order.returnConfirmedAt ||
+    !depositRefundEligible(toReturnCause(order.return_cause)) ||
+    !((order.depositAmount ?? 0) > 0)
+  ) return "none";
+  if (heldPending === "unknown") return "offer";
+  if (heldPending === "none" || heldPending === "loading") return "none";
+  return heldPending > 0 ? "offer" : "settled";
+}
+
+/**
  * Does this confirmation add a wasted trip to the customer's debt?
  *
  * TWO conditions, both required.

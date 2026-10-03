@@ -277,10 +277,11 @@ test("the UI separates cause, responsibility and resolution", () => {
 });
 
 test("the resolution is offered only where it is eligible", () => {
-  assert.match(
-    ORDERS,
-    /depositRefundEligible\(toReturnCause\(order\.return_cause\)\)/,
-    "gated on the cause",
-  );
-  assert.match(ORDERS, /order\.returnConfirmedAt &&/, "and only once the goods are back");
+  // The gate lives in `depositResolutionState` (shared, unit-tested in
+  // check_deposit_resolution_state) and the screen renders through it.
+  const RATES = strip(read("../src/lib/shippingRates.ts"));
+  const gate = RATES.slice(RATES.indexOf("export function depositResolutionState"));
+  assert.match(gate, /depositRefundEligible\(toReturnCause\(order\.return_cause\)\)/, "gated on the cause");
+  assert.match(gate, /!order\.returnConfirmedAt \|\|/, "and only once the goods are back");
+  assert.match(ORDERS, /resolutionStateOf\(order\) === "offer" && \(/, "the button renders through that gate");
 });

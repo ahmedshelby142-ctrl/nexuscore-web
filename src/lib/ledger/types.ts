@@ -140,6 +140,8 @@ export interface RefBalanceQuery {
   /** Narrow to one document. Omit for every document of that type. */
   refId?: string;
   kind?: EventKind;
+  /** Narrow to one subject — e.g. `deposit_pending_resolution` on `revenue`. */
+  subjectId?: string;
 }
 
 /** One document's share of an account, in EGP. */

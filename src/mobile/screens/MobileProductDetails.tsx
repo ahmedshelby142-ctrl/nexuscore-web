@@ -20,6 +20,8 @@ export function MobileProductDetails() {
   const navigate = useNavigate();
   const { productId } = useParams();
   const showCost = canViewCost(useAuthStore((s) => s.userRole));
+  // Same gate as Order Details: hidden from the Moderator (support) only.
+  const showInternal = showCost;
   const loadProduct = useCallback(() => readMobileProduct(productId ?? ""), [productId]);
   const { data: product, loading, error, reload } = useMobileEntity(loadProduct);
   const offline = useIsOffline();
@@ -233,7 +235,10 @@ export function MobileProductDetails() {
         </MobileSection>
       )}
 
-      <MobileSection titleAr="معلومات النظام">
+      {/* Record id and archive flag are internal to running the shop — the same
+          `showInternal` gate as Order Details. Barcode, SKU and category stay
+          visible to everyone in the header above. */}
+      {showInternal && <MobileSection titleAr="معلومات النظام">
         <div className="mobile-detail-line"><span>معرف المنتج</span><strong dir="ltr">{product.id}</strong></div>
         <div className="mobile-detail-line"><span>الباركود</span><strong dir="ltr">{barcode}</strong></div>
         <div className="mobile-detail-line"><span>الكود (SKU)</span><strong dir="ltr">{sku}</strong></div>
@@ -241,7 +246,7 @@ export function MobileProductDetails() {
         {product.createdAt && <div className="mobile-detail-line"><span>تاريخ الإنشاء</span><strong>{formatArabicDate(product.createdAt)}</strong></div>}
         {product.updatedAt && <div className="mobile-detail-line"><span>آخر تحديث</span><strong>{formatArabicDate(product.updatedAt)}</strong></div>}
         <div className="mobile-detail-line"><span>مؤرشف</span><strong>{archived ? "نعم" : "لا"}</strong></div>
-      </MobileSection>
+      </MobileSection>}
     </div>
   </section>;
 }

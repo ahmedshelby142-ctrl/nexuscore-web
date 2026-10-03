@@ -16,6 +16,7 @@ import { useStoreName } from "@/mobile/data/useStoreName";
 import { WhatsAppIconLink } from "@/mobile/components/WhatsAppAction";
 import { customerMessage } from "@/lib/whatsapp";
 import { causeLabelsFor, codState, COD_STATE_LABELS_AR, type ReturnCause } from "@/lib/shippingRates";
+import { depositOutcome, DEPOSIT_OUTCOME_LABELS_AR } from "@/mobile/viewmodels/depositOutcome";
 
 export function MobileOrderDetails() {
   const navigate = useNavigate();
@@ -100,6 +101,15 @@ export function MobileOrderDetails() {
   // Recovery of one earlier wasted trip (054): owed by the customer on top of
   // base delivery. Absent/0 on every order placed before 054.
   const wastedTripCompensation = Number(order.wastedTripCompensation ?? 0);
+
+  // The deposit's fate. `null` = the ledger timeline is not (yet) readable.
+  const refundEvent = timeline.find((e) => e.status === "deposit_refunded") ?? null;
+  const deposit = depositOutcome(order, timelineLoading || timelineError ? null : refundEvent !== null);
+  const depositTone =
+    deposit === "none" ? undefined
+      : DEPOSIT_OUTCOME_LABELS_AR[deposit].tone === "success" ? "var(--success)"
+        : DEPOSIT_OUTCOME_LABELS_AR[deposit].tone === "warning" ? "var(--warning)"
+          : "var(--muted-foreground)";
 
   const netGoods = Math.max(0, goodsTotal - discountAmount);
   const collected = netGoods + shippingFee + wastedTripCompensation;
@@ -219,6 +229,17 @@ export function MobileOrderDetails() {
           <span>مدفوع مقدماً (عربون)</span>
           <strong>{formatArabicCurrency(depositAmount)}</strong>
         </div>
+        {/* What became of it — every role, the Moderator included: it is the
+            answer to «did I get my deposit back?». See `depositOutcome`. */}
+        {deposit !== "none" && (
+          <div className="mobile-detail-line">
+            <span>حالة العربون</span>
+            <strong style={{ color: depositTone }}>
+              {deposit === "unknown" && timelineLoading ? "…" : DEPOSIT_OUTCOME_LABELS_AR[deposit].labelAr}
+              {deposit === "refunded" && refundEvent ? ` — ${formatArabicDate(refundEvent.timestamp)}` : ""}
+            </strong>
+          </div>
+        )}
         <div className="mobile-detail-line">
           <span>المتبقي على المندوب (COD)</span>
           <strong>{codOutstanding ? formatArabicCurrency(expectedCod) : COD_STATE_LABELS_AR[cod as keyof typeof COD_STATE_LABELS_AR]}</strong>

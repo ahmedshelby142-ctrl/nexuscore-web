@@ -421,6 +421,9 @@ const TIMELINE_LABELS: Record<string, { labelAr: string; entity: "order" | "ship
   order_cancelled: { labelAr: "تم إلغاء الطلب", entity: "order" },
   courier_settlement: { labelAr: "توريد المندوب (استلمنا الكاش)", entity: "courier" },
   client_payment: { labelAr: "دفعة من العميل", entity: "payment" },
+  // تسوية العميلة on Desktop (038) — read-only here. Also what Order Details
+  // reads the deposit's state from (`depositOutcome`).
+  deposit_refunded: { labelAr: "العربون اترد للعميلة", entity: "payment" },
 };
 
 /**

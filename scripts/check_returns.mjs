@@ -30,6 +30,7 @@ import {
 import { round } from "../src/lib/math.ts";
 import {
   shippingFeeFor,
+  wastedTripCompensationFor,
   isRepeatReturner,
   clearsShippingDebt,
 } from "../src/lib/shippingRates.ts";
@@ -672,6 +673,13 @@ test("a first-time customer pays the normal fee", () => {
 test("a customer who owes a wasted trip pays double on the next order", () => {
   assert.equal(shippingFeeFor(50, { returned_orders_count: 1 }), 100);
   assert.equal(shippingFeeFor(50, { returned_orders_count: 7 }), 100, "double, not ×7");
+});
+
+test("the recovery amount is one base rate and is separate from base delivery", () => {
+  assert.equal(wastedTripCompensationFor(60, { returned_orders_count: 1 }), 60, "Cairo");
+  assert.equal(wastedTripCompensationFor(70, { returned_orders_count: 4 }), 70, "Giza");
+  assert.equal(wastedTripCompensationFor(70, { returned_orders_count: 0 }), 0);
+  assert.equal(shippingFeeFor(70, { returned_orders_count: 4 }), 140, "legacy combined quote remains equivalent");
 });
 
 test("free delivery stays free", () => {

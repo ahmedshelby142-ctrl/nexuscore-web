@@ -57,7 +57,7 @@ test("every declared column really exists in the deployed schema", () => {
       // …or added later by an additive migration (e.g. 052's
       // `ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS ledger_event_id`).
       const added = new RegExp(
-        `ALTER TABLE public\\.${table} ADD COLUMN IF NOT EXISTS (?:"${col}"|${col})\\b`,
+        `ALTER TABLE public\\.${table} ADD COLUMN IF NOT EXISTS (?:"${col}\\b"|${col}\\b)`,
       ).test(sql);
       const present = body.includes(`\n  ${col} `) || body.includes(`"${col}"`) || added;
       assert.ok(present, `${table}.${col} is declared here but not in the SQL`);
@@ -209,6 +209,22 @@ test("push then pull round-trips a product without losing the shelf count", () =
   const back = fromRemoteRow("products", remote);
   assert.equal(back.totalQuantity, 5);
   assert.equal(back.name, "ب");
+});
+
+test("order wasted-trip compensation survives the cloud field map", () => {
+  const remote = toRemoteRow("orders", {
+    id: "o1",
+    shippingFee: 60,
+    wastedTripCompensation: 60,
+    courierFee: 60,
+    totalAmount: 1000,
+  }, { storeId: STORE });
+  assert.equal(remote.shippingFee, 60);
+  assert.equal(remote.wastedTripCompensation, 60);
+  assert.equal(remote.courierFee, 60);
+
+  const local = fromRemoteRow("orders", remote);
+  assert.equal(local.wastedTripCompensation, 60);
 });
 
 test("a rename beats a same-named field, whatever the key order", () => {

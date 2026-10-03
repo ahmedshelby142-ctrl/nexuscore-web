@@ -648,7 +648,10 @@ export function OrdersPage() {
         discountAmount: draftDiscount || undefined,
         totalAmount: draftTotal,
         cogsAmount: after.reduce((sum, l) => sum + l.unitCost * l.quantity, 0),
-        expectedCod: Math.max(0, draftTotal + order.shippingFee - order.depositAmount),
+        expectedCod: Math.max(
+          0,
+          draftTotal + order.shippingFee + (order.wastedTripCompensation ?? 0) - order.depositAmount,
+        ),
       });
 
       // The edit re-priced the discount, so what the code has GRANTED changed
@@ -1011,6 +1014,8 @@ export function OrdersPage() {
               })),
               goodsTotal: order.totalAmount,
               shippingFee: order.shippingFee,
+              wastedTripCompensation: order.wastedTripCompensation ?? 0,
+              courierFee: order.courierFee,
               depositAmount: order.depositAmount,
               wallet: targetWallet,
               codAmount: order.expectedCod,
@@ -1484,6 +1489,8 @@ export function OrdersPage() {
             // the courier as `payable_courier`.
             goodsTotal: order.totalAmount,
             shippingFee: order.shippingFee,
+            wastedTripCompensation: order.wastedTripCompensation ?? 0,
+            courierFee: order.courierFee,
             depositAmount: order.depositAmount,
             wallet: targetWallet,
             codAmount: order.expectedCod,
@@ -1536,13 +1543,13 @@ export function OrdersPage() {
             clientId: wholesaleClient,
             wallet: targetWallet,
             paidAmount: (order.depositAmount || 0) + paidAmount,
-            shippingCharge: order.shippingFee,
+            shippingCharge: (order.shippingFee || 0) + (order.wastedTripCompensation || 0),
             shippingCost: 0, // No direct courier cost here since it goes through courier lifecycle
             skipStockDeduction: true, // Stock was already reserved at order_placed!
           }),
         });
 
-        const totalAmount = wholesaleGoodsTotal + (order.shippingFee || 0);
+        const totalAmount = wholesaleGoodsTotal + (order.shippingFee || 0) + (order.wastedTripCompensation || 0);
         const actualPaidAmount = (order.depositAmount || 0) + paidAmount;
         const remainingAmount = totalAmount - actualPaidAmount;
         const status = remainingAmount <= 0 ? "paid" : actualPaidAmount > 0 ? "partial" : "unpaid";
@@ -1592,7 +1599,7 @@ export function OrdersPage() {
           status,
           dueDate: dueDate.toISOString(),
           notes: `محولة من طلب أونلاين: ${order.orderNumber}`
-        });
+        }, { afterCommit: true });
 
         // The order now knows two things it did not before: that it went out on
         // a trader's account, and WHICH wholesale invoice it became. One write,
@@ -1607,7 +1614,7 @@ export function OrdersPage() {
             ...line,
             wholesaleInvoiceId: wholesaleInvoice?.id,
           })),
-        } as never);
+        } as never, { afterCommit: true });
       }
 
       const expectedCod = saleMode === "wholesale" ? (parseFloat(wholesalePaidAmount) || 0) : order.expectedCod;
@@ -1650,8 +1657,8 @@ export function OrdersPage() {
       // longer holds a claim. Without that, any replay of this path — an edit,
       // a re-delivery after a status correction, a stale tab — would credit the
       // same trip again and hand the customer free shipping they never earned.
-      // The audit trail survives regardless: `shippingFee` still records 80
-      // against a base of 40.
+      // The audit trail survives regardless: base shipping and the recovered
+      // compensation remain separately recorded on the order.
       //
       // Until migration 026 this branch was unreachable: the flag was in no
       // column and no sync whitelist, so `clearsShippingDebt` was always false
@@ -2522,6 +2529,12 @@ export function OrdersPage() {
                 <span className="text-muted-foreground">الشحن</span>
                 <span>{formatMoney(editingOrder?.shippingFee ?? 0)}</span>
               </div>
+              {(editingOrder?.wastedTripCompensation ?? 0) > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">تعويض رحلة شحن سابقة</span>
+                  <span>{formatMoney(editingOrder?.wastedTripCompensation ?? 0)}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-muted-foreground">المدفوع مقدماً</span>
                 <span>− {formatMoney(editingOrder?.depositAmount ?? 0)}</span>
@@ -2533,7 +2546,8 @@ export function OrdersPage() {
                     Math.max(
                       0,
                       draftTotal +
-                      (editingOrder?.shippingFee ?? 0) -
+                      (editingOrder?.shippingFee ?? 0) +
+                      (editingOrder?.wastedTripCompensation ?? 0) -
                       (editingOrder?.depositAmount ?? 0),
                     ),
                   )}

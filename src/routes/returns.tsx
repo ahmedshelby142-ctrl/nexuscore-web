@@ -261,6 +261,8 @@ export function Returns() {
               })),
               goodsTotal: order.totalAmount,
               shippingFee: order.shippingFee,
+              wastedTripCompensation: order.wastedTripCompensation ?? 0,
+              courierFee: order.courierFee,
               depositAmount: order.depositAmount,
               wallet: "inStoreSafe",
               codAmount: order.expectedCod,
@@ -602,7 +604,7 @@ export function Returns() {
           processed_by: "owner",
           return_cause: counterCause,
           notes: notes.trim(),
-        });
+        }, { afterCommit: true });
         refreshStock();
         toast.error(
           `تم تسجيل الإرجاع، لكن المنتج البديل لم يُسجَّل. العملية مسجّلة كـ "بديل معلّق" تحت — لازم تسجّله كبيع. ${e instanceof Error ? e.message : String(e)}`
@@ -650,7 +652,7 @@ export function Returns() {
       processed_by: "owner",
       return_cause: counterCause,
       notes: notes.trim(),
-    });
+    }, { afterCommit: true });
 
     // The cause the operator picked belongs on the ORDER too, not only on the
     // return record. Only the courier path stamped it, so a counter return for
@@ -668,7 +670,7 @@ export function Returns() {
     // the return as failed.
     await useOrderStore
       .getState()
-      .updateOrder(selectedOrder.id, { return_cause: counterCause } as never)
+      .updateOrder(selectedOrder.id, { return_cause: counterCause } as never, { afterCommit: true })
       .catch(() => {});
 
     refreshStock();
@@ -838,7 +840,7 @@ export function Returns() {
                 <p className="font-medium text-sm">{order.customerName}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {order.orderNumber} — {order.customerPhone} — {order.items.length} منتج —{" "}
-                  {(order.totalAmount + order.shippingFee).toLocaleString("ar-EG")} ج.م
+                  {(order.totalAmount + order.shippingFee + (order.wastedTripCompensation ?? 0)).toLocaleString("ar-EG")} ج.م
                 </p>
               </button>
             ))}

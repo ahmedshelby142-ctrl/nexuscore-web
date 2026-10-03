@@ -186,6 +186,16 @@ export interface OrderDeliveredInput {
    * would make shipping look like a loss it is not.
    */
   shippingFee?: number;
+  /**
+   * Recovery for a previous wasted trip. It is collected from the customer and
+   * belongs to the shop; it never increases what this courier is owed.
+   */
+  wastedTripCompensation?: number;
+  /**
+   * What this courier is actually owed. Defaults to the base customer delivery
+   * charge, while preserving an explicitly entered courier-fee override.
+   */
+  courierFee?: number;
   /** Who carries it. Required when there is a fee to owe them. */
   courierId?: string;
   /**
@@ -241,8 +251,15 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
   const deposit = order.depositAmount ?? 0;
   const cod = order.codAmount ?? 0;
   const shippingFee = order.shippingFee ?? 0;
-  if (deposit < 0 || shippingFee < 0) {
-    throw new Error("order: deposit and shipping fee cannot be negative");
+  const wastedTripCompensation = order.wastedTripCompensation ?? 0;
+  // `orders."courierFee"` is NOT NULL DEFAULT 0, so a creation path that never
+  // set it (a storefront import) stores 0. Read 0/absent as "no override" and
+  // owe the courier the base delivery fee — what this builder always booked —
+  // rather than turning the whole fee into shop income. A strictly positive
+  // value is an operator's override and is honoured as entered.
+  const courierFee = order.courierFee && order.courierFee > 0 ? order.courierFee : shippingFee;
+  if (deposit < 0 || shippingFee < 0 || wastedTripCompensation < 0 || courierFee < 0) {
+    throw new Error("order: deposit, shipping, compensation and courier fee cannot be negative");
   }
   const discount = order.discountAmount ?? 0;
   if (discount < 0) {
@@ -250,8 +267,8 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
   }
   const netGoodsTotal = Math.max(0, order.goodsTotal - discount);
 
-  // The customer pays for the goods AND the delivery, so the money collected
-  // has to cover both. A silent mismatch would mean the books and the cash
+  // The customer pays for the goods, base delivery and (when applicable) one
+  // earlier wasted trip. A silent mismatch would mean the books and the cash
   // disagreeing forever.
   //
   // Compared in PIASTRES, not floats. `expectedCod` is stored at placement as
@@ -262,10 +279,10 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
   // delivery done, for a difference the ledger cannot even store. Piastres are
   // the resolution the books actually keep, so that is the resolution to
   // compare at; anything genuinely off by a piastre still throws.
-  const collected = netGoodsTotal + shippingFee;
+  const collected = netGoodsTotal + shippingFee + wastedTripCompensation;
   if (toPiastres(deposit + cod) !== toPiastres(collected)) {
     throw new Error(
-      `order: deposit (${deposit}) + COD (${cod}) must equal net goods (${netGoodsTotal}) + shipping (${shippingFee}) = ${collected}`,
+      `order: deposit (${deposit}) + COD (${cod}) must equal net goods (${netGoodsTotal}) + shipping (${shippingFee}) + compensation (${wastedTripCompensation}) = ${collected}`,
     );
   }
 
@@ -286,18 +303,50 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
     amount: netGoodsTotal,
   });
 
+  // Unlike base delivery, recovery of a previous wasted trip belongs to the
+  // merchant. Keep it explicit inside the existing revenue account so it is
+  // never mistaken for a courier cost in settlement or reports.
+  if (wastedTripCompensation > 0) {
+    lines.push({
+      account: "revenue",
+      subjectId: "wasted_trip_compensation",
+      amount: wastedTripCompensation,
+    });
+  }
+
+  // A manual courier amount can differ from the customer-facing base delivery
+  // rate. Its difference is the merchant's delivery margin (or loss), never
+  // the wasted-trip recovery. The default is equal, so existing normal-rate
+  // delivery remains the same pass-through with no extra line.
+  //
+  // A loss is booked to `expense / shipping` — the subject the P&L already
+  // counts as shipping cost (`SHIPPING_SUBJECTS`) — so it lands in the same
+  // shipping line as every other delivery cost the shop bears.
+  const deliveryMargin = shippingFee - courierFee;
+  if (deliveryMargin > 0) {
+    lines.push({ account: "revenue", subjectId: "shipping_delivery_margin", amount: deliveryMargin });
+  } else if (deliveryMargin < 0) {
+    lines.push({ account: "expense", subjectId: "shipping", amount: -deliveryMargin });
+  }
+
   // What we owe the courier for carrying it. Together with the fee sitting
   // inside the money collected above, this nets to zero — which is exactly
   // what a pass-through should do.
-  if (shippingFee > 0) {
+  if (courierFee > 0) {
     if (!order.courierId) throw new Error("order: needs a courier to owe the delivery fee to");
-    lines.push({ account: "payable_courier", subjectId: order.courierId, amount: shippingFee });
+    lines.push({ account: "payable_courier", subjectId: order.courierId, amount: courierFee });
   }
 
   if (order.customerId) {
     // LTV mirrors revenue: what they spent WITH US, not what they paid the
-    // courier through us.
-    lines.push({ account: "customer_ltv", subjectId: order.customerId, amount: netGoodsTotal });
+    // courier through us. The validator requires exactly that (`ltv` is 0 or
+    // equal to the event's revenue), so a recovered wasted trip — paid to the
+    // shop — counts, and the base delivery passed to the courier does not.
+    lines.push({
+      account: "customer_ltv",
+      subjectId: order.customerId,
+      amount: netGoodsTotal + wastedTripCompensation + Math.max(0, deliveryMargin),
+    });
   }
 
   return lines;

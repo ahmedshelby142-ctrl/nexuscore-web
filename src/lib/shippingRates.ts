@@ -448,5 +448,18 @@ export function shippingFeeFor(
   customer?: { returned_orders_count?: number } | null,
 ): number {
   if (!Number.isFinite(baseFee) || baseFee <= 0) return 0;
-  return isRepeatReturner(customer) ? baseFee * RETURN_PENALTY_MULTIPLIER : baseFee;
+  return baseFee + wastedTripCompensationFor(baseFee, customer);
+}
+
+/**
+ * The part of a repeat returner's quoted delivery that recovers ONE earlier
+ * wasted trip. It is deliberately separate from the base delivery fee: the
+ * customer pays it to the shop, not to the courier making this delivery.
+ */
+export function wastedTripCompensationFor(
+  baseFee: number,
+  customer?: { returned_orders_count?: number } | null,
+): number {
+  if (!Number.isFinite(baseFee) || baseFee <= 0) return 0;
+  return isRepeatReturner(customer) ? baseFee * (RETURN_PENALTY_MULTIPLIER - 1) : 0;
 }

@@ -109,6 +109,83 @@ test("shipping never lands in revenue or expense", () => {
   assert.equal(on(lines, "expense"), 0, "delivery is not our cost — the customer paid it");
 });
 
+test("a recovered wasted trip stays with the merchant, not the courier", () => {
+  // Acceptance case: Cairo, 1,000 goods + 60 base delivery + 60 recovery,
+  // with 300 deposited and 820 still COD.
+  const delivery = buildOrderDeliveredLines({
+    items: [{ productId: "p1", quantity: 1, unitPrice: 1000, unitCost: 400 }],
+    goodsTotal: 1000,
+    shippingFee: 60,
+    wastedTripCompensation: 60,
+    depositAmount: 300,
+    codAmount: 820,
+    courierId: "j-and-t",
+    customerId: "cust-1",
+  });
+
+  assert.equal(on(delivery, "receivable_courier"), 820, "COD is the customer remainder of 1,120");
+  assert.equal(on(delivery, "payable_courier"), 60, "only base delivery is owed to J&T");
+  assert.equal(on(delivery, "revenue"), 1060, "goods plus the merchant's recovered trip");
+  assert.equal(on(delivery, "customer_ltv"), 1060, "LTV mirrors merchant revenue");
+  assert.equal(on(delivery, "expense"), 0, "recovery is never a courier expense");
+
+  const settlement = buildCourierSettlementLines({
+    courierId: "j-and-t",
+    wallet: "inStoreSafe",
+    amount: 820,
+    commission: 60,
+  });
+  assert.equal(on(settlement, "wallet"), 760, "820 COD less only the 60 base fee reaches the till");
+  assert.equal(on(settlement, "payable_courier"), -60);
+});
+
+test("an explicit courier-fee override never absorbs wasted-trip compensation", () => {
+  const lines = buildOrderDeliveredLines({
+    items: [{ productId: "p1", quantity: 1, unitPrice: 1000, unitCost: 400 }],
+    goodsTotal: 1000,
+    shippingFee: 60,
+    wastedTripCompensation: 60,
+    courierFee: 45,
+    depositAmount: 300,
+    codAmount: 820,
+    courierId: "courier-1",
+    customerId: "cust-1",
+  });
+  assert.equal(on(lines, "payable_courier"), 45, "the operator's existing override is retained");
+  assert.equal(on(lines, "revenue"), 1075, "the 15 delivery margin remains with the merchant");
+  assert.equal(on(lines, "customer_ltv"), 1075);
+});
+
+test("a courier-fee override above base records only the delivery overrun", () => {
+  const lines = buildOrderDeliveredLines({
+    items: [{ productId: "p1", quantity: 1, unitPrice: 1000, unitCost: 400 }],
+    goodsTotal: 1000,
+    shippingFee: 60,
+    wastedTripCompensation: 60,
+    courierFee: 75,
+    depositAmount: 300,
+    codAmount: 820,
+    courierId: "courier-1",
+  });
+  assert.equal(on(lines, "payable_courier"), 75);
+  assert.equal(on(lines, "revenue"), 1060, "only goods plus recovery are merchant revenue");
+  assert.equal(on(lines, "expense"), 15, "the courier overrun is explicit");
+});
+
+test("a full-prepaid recovery still owes only base delivery", () => {
+  const lines = buildOrderDeliveredLines({
+    items: [{ productId: "p1", quantity: 1, unitPrice: 1000, unitCost: 400 }],
+    goodsTotal: 1000,
+    shippingFee: 60,
+    wastedTripCompensation: 60,
+    depositAmount: 1120,
+    codAmount: 0,
+    courierId: "courier-1",
+  });
+  assert.equal(on(lines, "payable_courier"), 60);
+  assert.equal(on(lines, "revenue"), 1060);
+});
+
 test("a free-delivery order owes the courier nothing", () => {
   const lines = buildOrderDeliveredLines({
     items,

@@ -217,6 +217,10 @@ const CHANNEL_LABELS: Record<string, string> = {
   wholesale: "الجملة",
   exchange: "استبدال",
   forfeited_deposit: "عربون محتجز",
+  // Written by `order_delivered` (054): a recovered earlier wasted trip, and
+  // what a courier override saved the shop against the base delivery fee.
+  wasted_trip_compensation: "تعويض رحلة شحن سابقة",
+  shipping_delivery_margin: "فرق تكلفة الشحن",
 };
 
 export function channelLabel(subjectId: string): string {

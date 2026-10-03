@@ -236,7 +236,7 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
     columns: [
       "id", "orderNumber", "status", "customerId", "customerName",
       "customerPhone", "governorate", "city", "address", "items", "stockItems",
-      "totalAmount", "discountCodeId", "discountAmount", "shippingFee",
+      "totalAmount", "discountCodeId", "discountAmount", "shippingFee", "wastedTripCompensation",
       "depositAmount", "depositWallet", "expectedCod", "cogsAmount",
       "paymentMethod", "courierName", "courierId", "courierFee",
       "revenueLogged", "codSettledAt", "returnConfirmedAt", "returnType",

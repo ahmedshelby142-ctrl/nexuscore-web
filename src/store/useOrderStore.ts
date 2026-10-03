@@ -12,7 +12,7 @@ import type {
   WalletType,
   SyncAction,
 } from "@/types";
-import { writeThrough } from "@/services/cloudData";
+import { writeThrough, type WriteContext } from "@/services/cloudData";
 import { nextDocumentNumber } from "@/services/documentNumber";
 import { getSupabaseClient } from "@/lib/supabase";
 import { getSyncIdentity } from "@/services/api/storeContext";
@@ -96,7 +96,8 @@ interface OrderState {
     customerId?: string | null;
   }) => Promise<EcommerceOrder>;
   updateOrderStatus: (id: string, status: EcommerceOrderStatus) => Promise<void>;
-  updateOrder: (id: string, updates: Partial<EcommerceOrder>) => Promise<void>;
+  /** `ctx.afterCommit` when written after a ledger event — see `WriteContext`. */
+  updateOrder: (id: string, updates: Partial<EcommerceOrder>, ctx?: WriteContext) => Promise<void>;
 }
 
 export type PlaceOrderResult =
@@ -130,8 +131,9 @@ async function saveOrder(
   // A new order may leave the defaulted columns to Postgres; what comes back
   // (and what the store keeps) is the full stored row.
   order: NewEcommerceOrder,
+  ctx?: WriteContext,
 ): Promise<EcommerceOrder> {
-  const saved = (await writeThrough("orders", order)) as EcommerceOrder;
+  const saved = (await writeThrough("orders", order, ctx)) as EcommerceOrder;
   set((state: any) => {
     const at = state.orders.findIndex((o: EcommerceOrder) => o.id === saved.id);
     if (at < 0) return { orders: [saved, ...state.orders] };
@@ -496,7 +498,7 @@ export const useOrderStore = create<OrderState>()(
         }
       },
 
-      updateOrder: async (id, updates) => {
+      updateOrder: async (id, updates, ctx) => {
         const current = get().orders.find((o) => o.id === id);
         if (!current) return;
         await saveOrder(set, {
@@ -504,7 +506,7 @@ export const useOrderStore = create<OrderState>()(
           ...updates,
           updatedAt: new Date(),
           updated_at: Date.now(),
-        });
+        }, ctx);
       },
     }),
     {

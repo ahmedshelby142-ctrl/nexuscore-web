@@ -36,6 +36,7 @@ const code = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n
 const M044 = read("docs/migrations/044_ledger_event_semantic_integrity.sql");
 const M045 = read("docs/migrations/045_place_order_atomic.sql");
 const M046 = read("docs/migrations/046_order_deposit_boundary.sql");
+const M054 = read("docs/migrations/054_wasted_trip_compensation.sql");
 const fnOf = (text, name) => text.match(new RegExp(`CREATE OR REPLACE FUNCTION public\\.${name}[\\s\\S]*?\\$function\\$;`))?.[0] ?? "";
 
 // ═══ 1. 046 is 044 plus one block — nothing weakened ═══════════════════════
@@ -71,6 +72,48 @@ function depositProblems(text) {
 
 test("the deposit rule holds", () => {
   assert.deepEqual(depositProblems(M046), []);
+});
+
+test("054 persists compensation and extends only the placement total", () => {
+  assert.match(M054, /ADD COLUMN IF NOT EXISTS "wastedTripCompensation" numeric NOT NULL DEFAULT 0/);
+  assert.match(M054, /COALESCE\(o\."wastedTripCompensation", 0\)/);
+  assert.match(M054, /abs\(v_dep \+ v_cod - v_total - v_ship - v_comp\) >= 0\.005 THEN/);
+  assert.match(M054, /pg_get_functiondef\('public\.ledger_validate_event\(jsonb\)'::regprocedure\)/);
+});
+
+test("054's guarded rewrite preserves the 046 validator outside its three new facts", () => {
+  let rewritten = fnOf(M046, "ledger_validate_event");
+  const rewrites = [
+    [
+      "v_total numeric; v_ship numeric; v_dep numeric; v_cod numeric; v_disc numeric; v_goods numeric;",
+      "v_total numeric; v_ship numeric; v_comp numeric; v_dep numeric; v_cod numeric; v_disc numeric; v_goods numeric;",
+    ],
+    [
+      'SELECT o."totalAmount", o."shippingFee", o."depositAmount", o."expectedCod",',
+      'SELECT o."totalAmount", o."shippingFee", COALESCE(o."wastedTripCompensation", 0), o."depositAmount", o."expectedCod",',
+    ],
+    [
+      "INTO v_total, v_ship, v_dep, v_cod, v_disc, v_goods",
+      "INTO v_total, v_ship, v_comp, v_dep, v_cod, v_disc, v_goods",
+    ],
+    [
+      "abs(v_dep + v_cod - v_total - v_ship) >= 0.005 THEN",
+      "abs(v_dep + v_cod - v_total - v_ship - v_comp) >= 0.005 THEN",
+    ],
+    [
+      "WHEN 'order_delivered'    THEN ARRAY['cogs','receivable_courier','revenue','payable_courier','customer_ltv']",
+      "WHEN 'order_delivered'    THEN ARRAY['cogs','receivable_courier','revenue','payable_courier','customer_ltv','expense']",
+    ],
+    [
+      "IF v_rco_neg > 0 OR v_pc_neg > 0 OR v_rev_neg > 0 OR v_cogs_neg > 0 OR ltv NOT IN (0, r) THEN",
+      "IF v_rco_neg > 0 OR v_pc_neg > 0 OR v_rev_neg > 0 OR v_cogs_neg > 0 OR v_ex_neg > 0 OR ltv NOT IN (0, r) THEN",
+    ],
+  ];
+  for (const [before, after] of rewrites) {
+    assert.ok(rewritten.includes(before), `054 source no longer matches its guarded target: ${before}`);
+    rewritten = rewritten.replace(before, after);
+  }
+  for (const [, after] of rewrites) assert.ok(rewritten.includes(after));
 });
 
 test("removing any deposit predicate is caught", () => {

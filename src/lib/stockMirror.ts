@@ -125,6 +125,24 @@ export function applyMovesToProducts<T extends { id: string }>(
   return { products: next, touched };
 }
 
+/**
+ * The cache columns `applyToOne` changes — and nothing else — for the cloud
+ * push. A variant product's per-درجة counts live in `metadata.variants`; a plain
+ * product has only the total. Name, prices and the rest are deliberately absent:
+ * they are the product's definition, which a till must never overwrite.
+ *
+ * ponytail: `metadata` travels whole for a variant product, so a variant
+ * renamed on another device since this till last loaded could be written back.
+ * Narrow it to a server-side per-variant patch if variants become editable
+ * while tills are selling.
+ */
+export function stockMirrorPatch(product: any): Record<string, unknown> {
+  const variants = product?.metadata?.variants;
+  return Array.isArray(variants) && variants.length > 0
+    ? { totalQuantity: product.totalQuantity, metadata: product.metadata }
+    : { totalQuantity: product.totalQuantity };
+}
+
 function applyToOne<T extends { id: string }>(product: T, moves: StockMove[]): T {
   const p = product as any;
   const variants = p.metadata?.variants;

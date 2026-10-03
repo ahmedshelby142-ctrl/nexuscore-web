@@ -94,9 +94,12 @@ export function MobileOrderDetails() {
   const totalAmount = Number(order.totalAmount ?? order.total ?? 0);
   const expectedCod = Number(order.expectedCod ?? 0);
   const courierFee = Number(order.courierFee ?? 0);
+  // Recovery of one earlier wasted trip (054): owed by the customer on top of
+  // base delivery. Absent/0 on every order placed before 054.
+  const wastedTripCompensation = Number(order.wastedTripCompensation ?? 0);
 
   const netGoods = Math.max(0, goodsTotal - discountAmount);
-  const collected = netGoods + shippingFee;
+  const collected = netGoods + shippingFee + wastedTripCompensation;
   const depositPlusCod = depositAmount + expectedCod;
   const financialsMatch = Math.abs(collected - depositPlusCod) < 0.01;
 
@@ -207,6 +210,7 @@ export function MobileOrderDetails() {
         {showInternal && discountAmount > 0 && <div className="mobile-detail-line"><span>الخصم</span><strong>− {formatArabicCurrency(discountAmount)}</strong></div>}
         <div className="mobile-detail-line"><span>صافي البضاعة</span><strong>{formatArabicCurrency(netGoods)}</strong></div>
         <div className="mobile-detail-line"><span>رسوم التوصيل</span><strong>{formatArabicCurrency(shippingFee)}</strong></div>
+        {wastedTripCompensation > 0 && <div className="mobile-detail-line"><span>تعويض رحلة شحن سابقة</span><strong>{formatArabicCurrency(wastedTripCompensation)}</strong></div>}
         <div className="mobile-detail-line"><span>المجموع المستحق</span><strong>{formatArabicCurrency(collected)}</strong></div>
         <div className="mobile-detail-line" style={{ borderTop: "1px solid var(--border)", paddingBlockStart: "0.5rem" }}>
           <span>مدفوع مقدماً (عربون)</span>

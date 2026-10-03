@@ -127,6 +127,7 @@ export type DbDefaultedOrderField =
   | "revenueLogged"
   | "isExchange"
   | "shippingPenaltyApplied"
+  | "wastedTripCompensation"
   | "return_cause";
 
 /** `orders_paymentMethod_check`, live schema. */
@@ -149,6 +150,8 @@ export interface EcommerceOrder {
   stockItems?: EcommerceOrderItem[];
   totalAmount: number;
   shippingFee: number;
+  /** Recovery of one earlier customer-caused wasted delivery; never courier cost. */
+  wastedTripCompensation: number;
   paymentMethod: OrderPaymentMethod;
   depositAmount: number;
   depositWallet?: string | null;

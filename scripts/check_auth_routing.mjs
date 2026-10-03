@@ -29,7 +29,8 @@ import { APP_ROLES, canAccess, homeFor } from "../src/lib/roles.ts";
 import { parseAuthLinkIntent, routeAuthLinkToPasswordSetup, authLinkIntent } from "../src/lib/auth/authLinkIntent.ts";
 import { MOBILE_APP_URL, mobileAppUrl, mobileSessionUrl } from "../src/lib/appSurfaces.ts";
 
-const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+// CRLF-normalised: a fresh Windows checkout (core.autocrlf) has \r\n line ends.
+const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const app = read("src/App.tsx");
 const redirect = read("src/routes/mobile-app.tsx");
 const transfer = read("src/lib/auth/mobileSessionTransfer.ts");

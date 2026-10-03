@@ -761,7 +761,7 @@ export function WholesalePage() {
             ? "partial"
             : "unpaid",
       notes: invoiceForm.notes || undefined,
-    });
+    }, { afterCommit: true });
 
     refreshStock();
     refreshDebt();

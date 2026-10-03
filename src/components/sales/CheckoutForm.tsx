@@ -603,6 +603,10 @@ export default function CheckoutForm() {
     // `finally`, gated on this: it is the one construct every exit path runs
     // through, whether the sale threw, returned, or succeeded.
     let saleCommitted = false;
+    // A document written AFTER the ledger accepted the operation (the return
+    // record, the wholesale invoice). Its failure does not undo the sale, so it
+    // must not reach the "nothing changed" catch — see `WriteContext`.
+    let documentError: unknown = null;
     if (appliedDiscount?.id && discountAmount > 0 && !isReturnMode) {
       try {
         await claimDiscountUse(appliedDiscount.id, discountAmount);
@@ -678,6 +682,10 @@ export default function CheckoutForm() {
             discountAmount: appliedDiscount ? discountAmount : undefined,
           }),
         });
+        // The ledger accepted it: stock, cash and revenue have moved. From here
+        // on nothing may say "nothing changed", and the basket must not survive
+        // to be sold a second time.
+        saleCommitted = true;
       } else {
         // The tab is hidden for these roles, but a stale mode in a restored
         // draft could still reach here. The database is the boundary; this is
@@ -775,6 +783,7 @@ export default function CheckoutForm() {
               }),
             }),
           );
+          saleCommitted = true;
 
           // The goods are back on the shelf. Bundles expand at the choke point.
           useBusinessStore.getState().applyStockMoves(
@@ -862,7 +871,9 @@ export default function CheckoutForm() {
             discountAmount: appliedDiscount ? discountAmount : undefined,
           }),
         });
+        saleCommitted = true;
 
+        try {
         await addWholesaleInvoice({
           invoiceNumber: invNum,
           clientId: selectedCustomerId,
@@ -892,7 +903,10 @@ export default function CheckoutForm() {
             ...bundleFieldsFor(i.productId),
             total: i.quantity * i.unitPrice
           })),
-        });
+        }, { afterCommit: true });
+        } catch (e) {
+          documentError = e;
+        }
       }
 
       const negativeItems = cart.filter(i => i.quantity < 0);
@@ -903,8 +917,9 @@ export default function CheckoutForm() {
 
         // Awaited: the POS sale/refund is already in the ledger by this point,
         // so a lost return RECORD would leave money moved with no document
-        // explaining it. `.catch` keeps a failed document from rolling back a
-        // completed till operation — the store has already told the user.
+        // explaining it. Its failure is captured, not thrown: it cannot roll
+        // back a completed till operation, and the toast it raises says so.
+        try {
         await useBusinessStore.getState().addReturnRecord({
           original_order_id: `pos_${Date.now()}`,
           type: isExchange ? "exchange" : "return",
@@ -939,12 +954,11 @@ export default function CheckoutForm() {
           financial_difference: totalAmount,
           processed_by: "POS",
           notes: "تم تسجيلها عبر واجهة نقاط البيع (POS)",
-        });
+        }, { afterCommit: true });
+        } catch (e) {
+          documentError = e;
+        }
       }
-
-      // Past every early return and every throw: the sale is on the ledger, so
-      // the use it claimed is genuinely spent.
-      saleCommitted = true;
 
       // Every line, variant or not. A negative `quantity` is a مرتجع line and
       // its sign carries through untouched — it puts the goods back.
@@ -964,8 +978,12 @@ export default function CheckoutForm() {
       // next action may be a return that has to reconcile against it.
       refreshDebt();
       setResult({
+        // Committed either way. A missing document is said plainly, with the
+        // one instruction that matters: do not ring it up again.
         success: true,
-        message: "تمت العملية بنجاح!",
+        message: documentError
+          ? "تمت العملية وسُجّلت في الدفتر (المخزون والخزنة)، لكن تعذّر حفظ مستندها على السحابة. متعيدش العملية — بلّغ المسؤول."
+          : "تمت العملية بنجاح!",
         sold: {
           lines: cart,
           total: totalAmount,
@@ -993,12 +1011,24 @@ export default function CheckoutForm() {
       setPaidAmountInput("");
       setIsReturnMode(false);
     } catch (e) {
-      // A rejected append wrote nothing, so the cart is still valid and the
-      // cashier can retry. Say that rather than leaving them guessing.
-      setResult({
-        success: false,
-        message: `لم تُسجَّل العملية ولم يتغيّر أي رصيد. ${e instanceof Error ? e.message : String(e)}`,
-      });
+      if (!saleCommitted) {
+        // A rejected append wrote nothing, so the cart is still valid and the
+        // cashier can retry. Say that rather than leaving them guessing.
+        setResult({
+          success: false,
+          message: `لم تُسجَّل العملية ولم يتغيّر أي رصيد. ${e instanceof Error ? e.message : String(e)}`,
+        });
+      } else {
+        // The ledger has it. Whatever failed after it, the basket goes, so a
+        // retry cannot sell or refund the same goods twice.
+        setResult({
+          success: false,
+          message: `العملية اتسجلت في الدفتر، لكن حصل خطأ بعدها. متعيدش العملية. ${e instanceof Error ? e.message : String(e)}`,
+        });
+        clearDrafts("pos:");
+        setCart([]);
+        setIsReturnMode(false);
+      }
     } finally {
       // Nothing was booked, so the use claimed for it goes back. Without this a
       // failed sale would quietly burn one use of the code — and on a one-use

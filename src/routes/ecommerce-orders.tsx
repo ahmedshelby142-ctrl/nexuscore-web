@@ -29,7 +29,7 @@ import { useOrderStore, expandStockItems } from "@/store/useOrderStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
 import {
   rateFor,
-  shippingFeeFor,
+  wastedTripCompensationFor,
   shippingBorneBy,
   blockingCauseReason,
   EXCHANGE_CAUSE_LABELS,
@@ -408,14 +408,7 @@ function EcommerceOrdersInner() {
     [governorate, shippingRates, isExchange],
   );
 
-  /**
-   * Doubled for a customer who has returned an order before.
-   *
-   * A return costs the shop the trip out AND the trip back while the customer
-   * pays nothing, so the second time they order, the delivery is priced at what
-   * their deliveries actually risk costing. Goods are never marked up — only
-   * the shipping.
-   */
+  /** Base delivery and recovery of one earlier wasted trip stay separate. */
   // An exchange trip is charged to the customer ONLY when they caused it
   // (changed their mind). A shop or courier mistake is not theirs to pay: the
   // replacement carries no shipping, and the original's return confirmation
@@ -424,11 +417,18 @@ function EcommerceOrdersInner() {
   // owed 150).
   const exchangeChargesCustomer = !isExchange || shippingBorneBy(exchangeCause, "exchange") === "customer";
   const shipping_fee = useMemo(
-    () => (exchangeChargesCustomer ? shippingFeeFor(baseShippingFee, matchedCustomer) : 0),
+    () => (exchangeChargesCustomer ? baseShippingFee : 0),
+    [baseShippingFee, exchangeChargesCustomer],
+  );
+  const wastedTripCompensation = useMemo(
+    () =>
+      exchangeChargesCustomer
+        ? wastedTripCompensationFor(baseShippingFee, matchedCustomer)
+        : 0,
     [baseShippingFee, matchedCustomer, exchangeChargesCustomer],
   );
 
-  const shippingPenaltyApplied = shipping_fee > baseShippingFee;
+  const shippingPenaltyApplied = wastedTripCompensation > 0;
 
   const subtotal = useMemo(
     () => rows.reduce((s, r) => s + r.quantity * r.unit_price, 0),
@@ -451,13 +451,13 @@ function EcommerceOrdersInner() {
   );
 
   const depositVal = useMemo(() => {
-    if (paymentMethod === "full_prepaid") return total_price + shipping_fee;
+    if (paymentMethod === "full_prepaid") return total_price + shipping_fee + wastedTripCompensation;
     return parseFloat(deposit_amount) || 0;
-  }, [paymentMethod, deposit_amount, total_price, shipping_fee]);
+  }, [paymentMethod, deposit_amount, total_price, shipping_fee, wastedTripCompensation]);
 
   const remaining_balance = useMemo(
-    () => total_price + shipping_fee - depositVal,
-    [total_price, shipping_fee, depositVal],
+    () => total_price + shipping_fee + wastedTripCompensation - depositVal,
+    [total_price, shipping_fee, wastedTripCompensation, depositVal],
   );
 
   const addProductRow = useCallback(
@@ -885,6 +885,7 @@ function EcommerceOrdersInner() {
         ...(isExchange && originalOrderId ? { original_order_id: originalOrderId } : {}),
         paymentMethod,
         shippingFee: shipping_fee,
+        wastedTripCompensation,
         // Marks this order as the one recovering a previous wasted trip. Delivery
         // reads it to know the debt is settled — see `clearsShippingDebt`.
         shippingPenaltyApplied: shippingPenaltyApplied || undefined,
@@ -1706,14 +1707,11 @@ function EcommerceOrdersInner() {
                 : "rounded-xl border border-border bg-muted/40 p-4 space-y-1"
             }
           >
-            <p className="text-xs text-muted-foreground">رسوم الشحن</p>
+            <p className="text-xs text-muted-foreground">الشحن</p>
             <p className="text-xl font-bold">{formatMoney(shipping_fee)}</p>
-            {/* A doubled fee must never be silent — the operator will be asked
-                why the number changed, and "the system did it" is not an
-                answer they can give the customer. */}
             {shippingPenaltyApplied && (
               <p className="text-[11px] font-medium text-amber-800 dark:text-amber-300 leading-relaxed">
-                شحن مضاعف لتعويض رحلة شحن ضائعة — متبقي{" "}
+                تعويض رحلة شحن سابقة: {formatMoney(wastedTripCompensation)} — متبقي{" "}
                 {matchedCustomer?.returned_orders_count} رحلة على العميل
                 (الأساسي {formatMoney(baseShippingFee)})
               </p>
@@ -1742,7 +1740,7 @@ function EcommerceOrdersInner() {
           </div>
           <div className="rounded-xl border-2 border-amber-400/40 bg-amber-50 dark:bg-amber-950/20 p-4 space-y-1">
             <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
-              المتبقي للمندوب
+              إجمالي الطلب
             </p>
             <p
               className={cn(
@@ -1752,10 +1750,10 @@ function EcommerceOrdersInner() {
                   : "text-green-600 dark:text-green-400",
               )}
             >
-              {formatMoney(remaining_balance)}
+              {formatMoney(total_price + shipping_fee + wastedTripCompensation)}
             </p>
             <p className="text-[10px] text-muted-foreground">
-              ({formatQty(total_price)} + {formatQty(shipping_fee)}) − {formatQty(depositVal)}
+              المتبقي للمندوب: {formatMoney(remaining_balance)}
             </p>
           </div>
         </div>

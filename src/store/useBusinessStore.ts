@@ -14,8 +14,14 @@ import type {
   SyncAction,
 } from "../types";
 import type { ProfitDistribution } from "../services/financeService";
-import { writeThrough, deleteThrough } from "../services/cloudData";
-import { applyMovesToProducts, expandBundleMoves, type StockMove } from "../lib/stockMirror";
+import {
+  writeThrough,
+  deleteThrough,
+  updateMirror,
+  announceMirrorFailure,
+  type WriteContext,
+} from "../services/cloudData";
+import { applyMovesToProducts, expandBundleMoves, stockMirrorPatch, type StockMove } from "../lib/stockMirror";
 
 /** Where a browser's pre-050 local partners wait for an explicit upload. */
 export const LEGACY_PARTNERS_KEY = "nexus-legacy-partners";
@@ -38,8 +44,9 @@ async function commitRow<T extends { id: string }>(
   field: string,
   row: T,
   place: "append" | "prepend" = "append",
+  ctx?: WriteContext,
 ): Promise<T> {
-  const saved = (await writeThrough(table, row)) as T;
+  const saved = (await writeThrough(table, row, ctx)) as T;
   set((state: any) => {
     const list: T[] = state[field] ?? [];
     const at = list.findIndex((r) => r.id === saved.id);
@@ -65,13 +72,12 @@ async function removeRow(
 }
 
 /**
- * Fire-and-forget push for the legacy `quantity` mirror on the product record.
+ * Fire-and-forget push of a legacy local record (`transactions`).
  *
- * ponytail: deliberately NOT awaited, and deliberately not rolled back. This
- * column is documented as never read for stock — every screen reads
- * `qtyOf(product.id)` from the ledger, which is the awaited authority. Losing a
- * mirror write costs nothing a reload does not fix. If the column ever becomes
- * load-bearing, route it through `commitRow` like everything else.
+ * ponytail: deliberately NOT awaited, and deliberately not rolled back. If the
+ * record ever becomes load-bearing, route it through `commitRow` like
+ * everything else. The product stock mirror does NOT come through here — see
+ * `applyStockMoves` and `updateMirror`.
  */
 function mirrorRow(table: string, row: any): void {
   void writeThrough(table, row).catch(() => {
@@ -166,8 +172,10 @@ interface BusinessState {
     client: Omit<WholesaleClient, "id" | "createdAt" | "updatedAt">,
   ) => Promise<WholesaleClient>;
   updateWholesaleClient: (id: string, updates: Partial<WholesaleClient>) => Promise<void>;
+  /** `ctx.afterCommit` when written after the sale's ledger event — see `WriteContext`. */
   addWholesaleInvoice: (
     invoice: Omit<WholesaleInvoice, "id" | "createdAt" | "updatedAt">,
+    ctx?: WriteContext,
   ) => Promise<WholesaleInvoice>;
   recordWholesalePayment: (invoiceId: string, amount: number) => Promise<void>;
   /**
@@ -191,7 +199,8 @@ interface BusinessState {
   // Returns & Exchanges actions
   // The field is `created_at`, not `createdAt` — the old signature omitted a
   // key that does not exist, so callers were asked for one the store fills in.
-  addReturnRecord: (record: Omit<ReturnRecord, "id" | "created_at">) => Promise<ReturnRecord>;
+  /** `ctx.afterCommit` when written after the return's ledger event — see `WriteContext`. */
+  addReturnRecord: (record: Omit<ReturnRecord, "id" | "created_at">, ctx?: WriteContext) => Promise<ReturnRecord>;
 
   // Discounts
   addPromoDiscount: (discount: Omit<PromoDiscount, "id" | "createdAt">) => Promise<void>;
@@ -335,12 +344,19 @@ export const useBusinessStore = create<BusinessState>()(
 
         // Sync AFTER the write, reading the stored row, so what goes out is
         // what the shop now believes rather than what the caller asked for.
+        //
+        // Every caller runs this after its ledger event was accepted, so a push
+        // that does not land is a stale cache, not a lost sale: ONE truthful
+        // warning per operation, never «لم يتم حفظ أي شيء». Deliberately not
+        // awaited — the ledger is the authority every screen reads for stock.
         const products = get().products;
-        for (const id of touched) {
-          const product = products.find((p) => p.id === id);
-          if (!product) continue;
-          mirrorRow('products', product);
-        }
+        const pushes = touched
+          .map((id) => products.find((p) => p.id === id))
+          .filter((p): p is Product => Boolean(p))
+          .map((p) => updateMirror('products', p.id, stockMirrorPatch(p)));
+        void Promise.all(pushes).then((landed) => {
+          if (landed.includes(false)) void announceMirrorFailure();
+        });
       },
 
       // A real delete, allowed ONLY for a product the ledger has never
@@ -423,14 +439,14 @@ export const useBusinessStore = create<BusinessState>()(
       // `sale` event the caller appends moves it — and neither are the client
       // totals: debt is SUM(receivable_client) over the ledger, invoiced and
       // paid are summed from these invoice documents on render.
-      addWholesaleInvoice: async (invoiceData) => {
+      addWholesaleInvoice: async (invoiceData, ctx) => {
         return commitRow(set, "wholesale_invoices", "wholesaleInvoices", {
           ...invoiceData,
           id: crypto.randomUUID(),
           createdAt: new Date(),
           updatedAt: new Date(),
           updated_at: Date.now(),
-        } as WholesaleInvoice);
+        } as WholesaleInvoice, "append", ctx);
       },
 
       // Updates the invoice document only — how much of THIS invoice is still
@@ -624,7 +640,7 @@ export const useBusinessStore = create<BusinessState>()(
 
       // ── Returns & Exchanges ─────────────────────────────────
 
-      addReturnRecord: async (recordData) => {
+      addReturnRecord: async (recordData, ctx) => {
         const newRecord: ReturnRecord = {
           ...recordData,
           id: crypto.randomUUID(),
@@ -634,7 +650,7 @@ export const useBusinessStore = create<BusinessState>()(
         // The saved row is handed back, not swallowed: a wholesale return needs
         // its id so `commitWholesaleReturn` can undo the record when the ledger
         // event that was supposed to follow it is refused.
-        return commitRow(set, 'return_records', 'returnRecords', newRecord, "prepend");
+        return commitRow(set, 'return_records', 'returnRecords', newRecord, "prepend", ctx);
       },
 
       addPromoDiscount: async (discount) => {

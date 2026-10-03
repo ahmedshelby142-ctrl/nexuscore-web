@@ -133,18 +133,85 @@ export async function cloudDelete(table: string, id: string): Promise<void> {
 }
 
 /**
+ * What a failed write may tell the user. ONE invariant:
+ *
+ *   «لم يتم حفظ أي شيء»  ⇒  no business mutation was committed.
+ *
+ * True for a standalone write (a product edit, a customer, a discount code):
+ * that one row IS the whole operation. False for a document written AFTER the
+ * ledger accepted the sale/return it belongs to — the money and stock already
+ * moved — and false for the stock-mirror cache, which is not a business write.
+ */
+export const NOTHING_SAVED_MESSAGE = "تعذّر حفظ التعديل على السحابة. لم يتم حفظ أي شيء — حاول مرة أخرى.";
+export const AFTER_COMMIT_MESSAGE =
+  "العملية نفسها اتسجلت (المخزون والخزنة اتحدّثوا)، لكن تعذّر حفظ المستند المرافق لها على السحابة. متعيدش العملية — بلّغ المسؤول يراجع السجل.";
+export const MIRROR_FAILED_MESSAGE =
+  "العملية اتسجلت بنجاح. تعذّر بس تحديث رقم المخزون المؤقت على السحابة — الرصيد الصحيح محفوظ في الدفتر، متعيدش العملية.";
+
+export interface WriteContext {
+  /**
+   * The business operation this row documents is ALREADY committed (its ledger
+   * event was accepted). A failure must not claim nothing was saved.
+   */
+  afterCommit?: boolean;
+}
+
+/**
  * Write one row, tell the user if it fails, and hand back what was stored.
  *
  * The single entry point every store mutation uses, so the failure behaviour is
  * identical everywhere instead of being re-invented per store. Rethrows: the
  * caller must not commit anything when this loses.
  */
-export async function writeThrough(table: string, row: any): Promise<any> {
+export async function writeThrough(table: string, row: any, ctx: WriteContext = {}): Promise<any> {
   try {
     return await cloudUpsert(table, row);
   } catch (e) {
-    await announce(e, table);
+    await announce(e, table, ctx);
     throw e;
+  }
+}
+
+/**
+ * Push a CACHE column of an existing row — the `products.quantity` stock
+ * mirror. Not a business write: stock is the ledger's SUM, and the ledger event
+ * that moved it has already been accepted by the time this runs.
+ *
+ * An UPDATE of only the columns given, never an upsert. That is what the
+ * database grants a cashier: `update_products` admits POS_ECOMMERCE and
+ * ECOMMERCE_ONLY, `products_guard_definition_columns` lets them touch only the
+ * non-definition columns — while `write_products` (INSERT) admits ADMIN and
+ * ACCOUNTANT only, and Postgres checks the INSERT policy on an upsert even when
+ * it resolves to an update. Pushing the full row as an upsert was refused with
+ * 403 on every cashier sale and announced «لم يتم حفظ أي شيء» after the sale
+ * had been saved. Sending only the cache columns also stops a stale till from
+ * writing its old copy of a price or a name over an edit made elsewhere.
+ *
+ * The value is absolute, so sending it twice can never move stock twice. It is
+ * not retried, never throws, and never claims nothing was saved: it reports
+ * whether it landed and the caller says what is true.
+ */
+export async function updateMirror(table: string, id: string, patch: Record<string, unknown>): Promise<boolean> {
+  const sb = getSupabaseClient();
+  // No cloud configured, no cloud copy to keep in step.
+  if (!sb) return true;
+  try {
+    const { error } = await sb.from(table).update(toRemoteRow(table, patch)).eq("id", id);
+    if (error) throw new Error(error.message);
+    return true;
+  } catch (e) {
+    console.warn(`[CloudData] stock mirror not updated on ${table}/${id}:`, e instanceof Error ? e.message : String(e));
+    return false;
+  }
+}
+
+/** One truthful, non-financial warning for a mirror push that did not land. */
+export async function announceMirrorFailure(): Promise<void> {
+  try {
+    const { toast } = await import("sonner");
+    toast.warning(MIRROR_FAILED_MESSAGE);
+  } catch {
+    /* toast unavailable in tests */
   }
 }
 
@@ -157,15 +224,17 @@ export async function deleteThrough(table: string, id: string): Promise<void> {
   }
 }
 
-async function announce(e: unknown, table: string): Promise<void> {
+async function announce(e: unknown, table: string, ctx: WriteContext = {}): Promise<void> {
   const detail = e instanceof Error ? e.message : String(e);
   console.error(`[CloudData] write failed on ${table}:`, detail);
   try {
     const { toast } = await import("sonner");
     toast.error(
-      e instanceof CloudUnavailable
-        ? detail
-        : "تعذّر حفظ التعديل على السحابة. لم يتم حفظ أي شيء — حاول مرة أخرى.",
+      ctx.afterCommit
+        ? AFTER_COMMIT_MESSAGE
+        : e instanceof CloudUnavailable
+          ? detail
+          : NOTHING_SAVED_MESSAGE,
     );
   } catch {
     /* toast unavailable in tests */

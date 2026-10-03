@@ -150,9 +150,14 @@ test("ADMIN customer: summary title and system section unchanged", () => {
 test("no new permission, no write: the gate is the existing canViewCost, and the screens only read", () => {
   for (const f of ["src/mobile/screens/MobileOrderDetails.tsx", "src/mobile/screens/MobileCustomerDetails.tsx"]) {
     const src = read(f);
-    assert.match(src, /canViewCost\(useAuthStore\(\(s\) => s\.userRole\)\)/, `${f}: existing role gate`);
+    assert.match(src, /= useMobileVisibility\(\);/, `${f}: the existing role gate, via the one Mobile policy`);
+    assert.doesNotMatch(src, /userRole/, `${f}: no role logic of its own`);
     assert.doesNotMatch(src, /\.insert\(|\.update\(|\.upsert\(|\.delete\(|\.rpc\(|appendEvent|writeThrough/, `${f}: no write path`);
   }
+  // The one Mobile visibility policy — and it is exactly the existing gate.
+  const policy = read("src/mobile/navigation/mobileVisibility.ts");
+  assert.match(policy, /const cost = canViewCost\(role\);\n\s*visibility = Object\.freeze\(\{ cost, internal: cost \}\);/);
+  assert.match(policy, /return mobileVisibilityFor\(useAuthStore\(\(s\) => s\.userRole\)\);/);
   assert.match(read("src/lib/roles.ts"), /export function canViewCost\(role: string \| null \| undefined\): boolean \{\s*return toAppRole\(role\) !== "MODERATOR";/);
   // Cost stays withheld by the database for the Moderator too (047/048).
   assert.match(read("src/mobile/data/mobileReaders.ts"), /return viewerSeesCost\(\) \? `\$\{ORDER_COLUMNS\},courierFee` : ORDER_COLUMNS;/);

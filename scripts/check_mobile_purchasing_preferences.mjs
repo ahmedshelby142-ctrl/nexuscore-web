@@ -40,7 +40,8 @@ const readers = read("../src/mobile/data/mobileReaders.ts");
 
 test("neither route lands on the قريباً placeholder any more", () => {
   assert.doesNotMatch(code(router), /MobileDeferredScreen/);
-  assert.match(router, /<Route path="purchasing" element=\{<MobilePurchasingScreen \/>\} \/>/);
+  assert.match(router, /<Route path="purchasing" element=\{onDemand\(<MobilePurchasingScreen \/>\)\} \/>/);
+  assert.match(router, /import\("\.\/screens\/MobilePurchasingScreen"\)\.then\(\(m\) => \(\{ default: m\.MobilePurchasingScreen \}\)\)/, "the real screen, loaded on demand");
   assert.match(router, /<Route path="preferences" element=\{<MobilePreferencesScreen \/>\} \/>/);
 });
 

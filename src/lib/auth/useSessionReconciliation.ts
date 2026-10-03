@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { toAppRole } from "@/lib/roles";
 import { getSupabaseClient, isCloudSyncMode } from "@/lib/supabase";
 import { useAuthStore } from "@/store/useAuthStore";
+import { primeActiveStoreId } from "@/services/api/storeContext";
 
 export type SessionReconciliationState = "authenticated" | "unauthenticated" | "unavailable";
 
@@ -100,6 +101,10 @@ export async function reconcileSupabaseSession(): Promise<SessionReconciliationS
     useAuthStore.getState().logout();
     return "unauthenticated";
   }
+
+  // The same row carries the store: hand it to `storeContext` so the first
+  // `getActiveStoreId()` does not ask `auth/user` and `store_members` again.
+  if (!membershipError) primeActiveStoreId(membership?.store_id);
 
   // Written unconditionally, from the server's answer. `setSession` refreshes
   // `username`, `userRole` and `isAuthenticated` together, so the persisted

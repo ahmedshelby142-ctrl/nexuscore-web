@@ -30,7 +30,8 @@ const STUBS = {
   "@/lib/supabase": stub(`export const getSupabaseClient = () => null;`),
   "@/services/api/storeContext": stub(`export const getActiveStoreId = async () => null;`),
   "./mobileReaders": stub(`export const readMobileOrders = () => { throw new Error("not read here"); };
-    export const readMobileShipments = readMobileOrders;`),
+    export const readMobileShipments = readMobileOrders;
+    export const countMobileOrders = readMobileOrders;`),
 };
 registerHooks({
   resolve(specifier, context, next) {

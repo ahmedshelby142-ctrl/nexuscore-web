@@ -2,7 +2,7 @@ import { getSupabaseClient } from "@/lib/supabase";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
 import { balanceOf } from "@/lib/ledger";
 import { buildableFromRecipe, variantStockFrom } from "@/lib/product";
-import { canViewCost } from "@/lib/roles";
+import { mobileVisibilityFor } from "@/mobile/navigation/mobileVisibility";
 import { useAuthStore } from "@/store/useAuthStore";
 import { formatArabicCurrency } from "@/mobile/viewmodels/formatters";
 
@@ -116,7 +116,7 @@ async function stockOf(productId: string): Promise<{ qty: number; amount?: numbe
 }
 
 function viewerSeesCost(): boolean {
-  return canViewCost(useAuthStore.getState().userRole);
+  return mobileVisibilityFor(useAuthStore.getState().userRole).cost;
 }
 
 function orderColumns(): string {
@@ -138,9 +138,10 @@ export function toViewerOrder(row: any): any {
   return { ...row, items: withoutLineCost(row.items), stockItems: withoutLineCost(row.stockItems) };
 }
 
-export function readMobileOrders(query: MobileListQuery = {}) {
+/** The Orders filters, ONE definition — the list and its count-only twin both apply it. */
+function ordersFilter(query: MobileListQuery) {
   const search = escapeLike(query.search ?? "");
-  return readPage("orders", query, (builder) => {
+  return (builder: any) => {
     let next = builder.order("createdAt", { ascending: false }).order("id", { ascending: false });
     if (query.id) next = next.eq("id", query.id);
     if (query.status && query.status !== "all") next = next.eq("status", query.status);
@@ -154,7 +155,28 @@ export function readMobileOrders(query: MobileListQuery = {}) {
     if (query.createdBefore) next = next.lt("createdAt", query.createdBefore);
     if (search) next = next.or(`orderNumber.ilike.%${search}%,customerName.ilike.%${search}%,customerPhone.ilike.%${search}%`);
     return next;
-  }, toViewerOrder, orderColumns(), ORDERS_SOURCE);
+  };
+}
+
+export function readMobileOrders(query: MobileListQuery = {}) {
+  return readPage("orders", query, ordersFilter(query), toViewerOrder, orderColumns(), ORDERS_SOURCE);
+}
+
+/**
+ * How many orders match — the same filters as `readMobileOrders`, no rows.
+ *
+ * Home's counters used `readMobileOrders({ pageSize: 1 })` and kept only
+ * `.total`, so each one downloaded a full order (36 columns, line items
+ * included) to read one number. A HEAD request with an exact count returns
+ * the number alone. Same source, same soft-delete rule, same RLS.
+ */
+export async function countMobileOrders(query: MobileListQuery = {}): Promise<number | null> {
+  const builder = ordersFilter(query)(
+    clientOrThrow().from(ORDERS_SOURCE).select("id", { count: "exact", head: true }).is("deleted_at", null),
+  );
+  const { count, error } = await builder;
+  if (error) throw new Error(`[orders] ${error.message}`);
+  return count ?? null;
 }
 
 export async function readMobileCustomers(query: MobileListQuery = {}) {

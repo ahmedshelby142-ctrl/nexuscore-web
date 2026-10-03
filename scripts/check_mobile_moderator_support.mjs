@@ -67,7 +67,8 @@ test("Order Details shows the state to every role, from the ledger timeline", ()
 
 test("Product Details hides «معلومات النظام» with the Order Details gate", () => {
   const screen = read("src/mobile/screens/MobileProductDetails.tsx");
-  assert.match(screen, /const showInternal = showCost;/);
+  assert.match(screen, /const \{ cost: showCost, internal: showInternal \} = useMobileVisibility\(\);/);
+  assert.match(read("src/mobile/screens/MobileOrderDetails.tsx"), /const \{ cost: showCost, internal: showInternal \} = useMobileVisibility\(\);/, "the same policy as Order Details");
   assert.match(screen, /\{showInternal && <MobileSection titleAr="معلومات النظام">/);
   assert.equal((screen.match(/معرف المنتج/g) ?? []).length, 1);
 });

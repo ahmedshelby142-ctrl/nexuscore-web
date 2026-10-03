@@ -59,6 +59,23 @@ export function resolveOrderDateFilter(selection: OrderDateSelection, now: Date 
   };
 }
 
+/**
+ * The ONE reading of a persisted (URL) date filter — what both the trigger's
+ * label and the query use.
+ *
+ * A custom range is kept only if `resolveOrderDateFilter` applies it; anything
+ * else — a missing end, an impossible or malformed day, a reversed pair, an
+ * unknown preset — is "no date filter". It used to reach the label as typed
+ * while the query silently dropped it: `?date=custom&from=2026-99-99&to=x`
+ * listed every order under «٧/٦/٢٠٣٤ – Invalid Date». A preset carries no days.
+ */
+export function parseOrderDateSelection(raw: { date?: string | null; from?: string | null; to?: string | null }): OrderDateSelection {
+  const preset = ORDER_DATE_PRESETS.find((p) => p.id === raw.date)?.id ?? "all";
+  if (preset !== "custom") return { preset };
+  const selection: OrderDateSelection = { preset, from: raw.from || undefined, to: raw.to || undefined };
+  return resolveOrderDateFilter(selection).status === "ok" ? selection : { preset: "all" };
+}
+
 /** «١/٩/٢٠٢٦ – ٣٠/٩/٢٠٢٦» for the trigger, or the preset's label. */
 export function orderDateFilterLabel(selection: OrderDateSelection): string {
   if (selection.preset === "custom" && selection.from && selection.to) {

@@ -9,8 +9,7 @@ import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/co
 import { deriveStockStatusKey } from "@/mobile/viewmodels/stockViewModel";
 import { resolveOrderStatus, resolveStockStatus } from "@/mobile/viewmodels/statusTaxonomies";
 import { averageCost } from "@/lib/ledger/purchases";
-import { canViewCost } from "@/lib/roles";
-import { useAuthStore } from "@/store/useAuthStore";
+import { useMobileVisibility } from "@/mobile/navigation/mobileVisibility";
 import { formatArabicCurrency, formatArabicDate, formatArabicQuantity } from "@/mobile/viewmodels/formatters";
 import { readMobileProduct, readMobileProductWaitingOrders } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
@@ -19,9 +18,8 @@ import { useIsOffline } from "@/mobile/data/useIsOffline";
 export function MobileProductDetails() {
   const navigate = useNavigate();
   const { productId } = useParams();
-  const showCost = canViewCost(useAuthStore((s) => s.userRole));
-  // Same gate as Order Details: hidden from the Moderator (support) only.
-  const showInternal = showCost;
+  // Same policy as Order Details (`mobileVisibility.ts`): hidden from the Moderator only.
+  const { cost: showCost, internal: showInternal } = useMobileVisibility();
   const loadProduct = useCallback(() => readMobileProduct(productId ?? ""), [productId]);
   const { data: product, loading, error, reload } = useMobileEntity(loadProduct);
   const offline = useIsOffline();

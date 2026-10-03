@@ -10,8 +10,7 @@ import { formatArabicCount, formatArabicCurrency, formatArabicDate, formatArabic
 import { readMobileOrder, readMobileOrderTimeline, readMobileCouriers } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
-import { canViewCost } from "@/lib/roles";
-import { useAuthStore } from "@/store/useAuthStore";
+import { useMobileVisibility } from "@/mobile/navigation/mobileVisibility";
 import { useStoreName } from "@/mobile/data/useStoreName";
 import { WhatsAppIconLink } from "@/mobile/components/WhatsAppAction";
 import { customerMessage } from "@/lib/whatsapp";
@@ -23,12 +22,12 @@ export function MobileOrderDetails() {
   const { orderId } = useParams();
   // «عمولة المندوب» is what delivery COSTS the store. The Moderator's reader
   // does not select it; this keeps the line off the screen regardless.
-  const showCost = canViewCost(useAuthStore((s) => s.userRole));
+  // Both from the one Mobile visibility policy (`mobileVisibility.ts`).
+  const { cost: showCost, internal: showInternal } = useMobileVisibility();
   // The same gate, for what is internal to running the shop rather than to
   // answering the customer: record ids, revenue/remittance flags and the
   // books' own reconciliation check. Shown to every role but the Moderator,
   // exactly as before; the Moderator (support) sees the customer's figures.
-  const showInternal = showCost;
   const storeName = useStoreName();
   const loadOrder = useCallback(() => readMobileOrder(orderId ?? ""), [orderId]);
   const { data: order, loading, error, reload } = useMobileEntity(loadOrder);

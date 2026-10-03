@@ -6,7 +6,7 @@ import { formatArabicCount, formatArabicCurrency, formatArabicQuantity } from "@
 import { resolveOrderStatus, resolveShipmentStatus } from "@/mobile/viewmodels/statusTaxonomies";
 import type { MobileCapability } from "@/mobile/navigation/mobileCapabilities";
 import type { MobileAlert, MobileMetric, MobileQueueItem } from "@/mobile/viewmodels/types";
-import { readMobileOrders, readMobileShipments } from "./mobileReaders";
+import { countMobileOrders, readMobileOrders, readMobileShipments } from "./mobileReaders";
 
 export interface MobileShortageRow {
   product_id: string;
@@ -73,22 +73,24 @@ export async function readMobileHomeSnapshot(
   // a client-side list (deleted in e1e8753), asked of the server so it counts
   // every pending order, not the ones a page happened to hold.
   const agingCutoff = new Date(now.getTime() - AGING_ORDER_THRESHOLD_HOURS * 60 * 60 * 1000).toISOString();
-  const [today, pending, orders, shipments, shortages, aging] = await Promise.all([
-    capabilities.has("orders") ? readMobileOrders({ queue: "today", pageSize: 1 }) : Promise.resolve({ total: 0, rows: [], hasMore: false }),
-    capabilities.has("orders") ? readMobileOrders({ status: "pending", pageSize: 1 }) : Promise.resolve({ total: 0, rows: [], hasMore: false }),
+  // Counters are count-only reads (no rows). «قيد الانتظار» needs no read of
+  // its own: the «تحتاج إجراء» preview below IS `status = pending`, same
+  // order, so its exact count is that number — it used to be asked twice.
+  const [today, orders, shipments, shortages, aging] = await Promise.all([
+    capabilities.has("orders") ? countMobileOrders({ queue: "today" }) : Promise.resolve(0),
     capabilities.has("orders") ? readMobileOrders({ queue: "action", pageSize: 3 }) : Promise.resolve({ total: 0, rows: [], hasMore: false }),
     capabilities.has("shipments") ? readMobileShipments({ status: "shipped", pageSize: 3 }) : Promise.resolve({ total: 0, rows: [], hasMore: false }),
     capabilities.has("stock") ? readMobileShortages() : Promise.resolve([]),
-    capabilities.has("orders") ? readMobileOrders({ status: "pending", createdBefore: agingCutoff, pageSize: 1 }) : Promise.resolve(null),
+    capabilities.has("orders") ? countMobileOrders({ status: "pending", createdBefore: agingCutoff }) : Promise.resolve(null),
   ]);
   return {
-    todayOrders: today.total ?? 0,
-    pendingOrders: pending.total ?? 0,
+    todayOrders: today ?? 0,
+    pendingOrders: orders.total ?? 0,
     orders: orders.rows,
     shipments: shipments.rows,
     shipmentsTotal: shipments.total ?? shipments.rows.length,
     shortages,
-    agingPendingOrders: aging && typeof aging.total === "number" ? aging.total : undefined,
+    agingPendingOrders: typeof aging === "number" ? aging : undefined,
   };
 }
 

@@ -1,3 +1,4 @@
+import { lazy, Suspense, type ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import type { SessionReconciliationState } from "@/lib/auth/useSessionReconciliation";
 import { MobileLogin } from "./auth/MobileLogin";
@@ -5,7 +6,6 @@ import { MobileSetPassword } from "./auth/MobileSetPassword";
 import { MobileLicenseExpired } from "./screens/LicenseExpired";
 import { MobileHomeScreen } from "./screens/MobileHomeScreen";
 import { MobileRouteGuard } from "./navigation/MobileRouteGuard";
-import { MobilePurchasingScreen } from "./screens/MobilePurchasingScreen";
 import { MobilePreferencesScreen } from "./screens/MobilePreferencesScreen";
 import { MobileStockScreen } from "./screens/MobileStockScreen";
 import { MobileShortagesScreen } from "./screens/MobileShortagesScreen";
@@ -15,10 +15,26 @@ import { MobileCustomersScreen } from "./screens/MobileCustomersScreen";
 import { MobileProductDetails } from "./screens/MobileProductDetails";
 import { MobileOrderDetails } from "./screens/MobileOrderDetails";
 import { MobileCustomerDetails } from "./screens/MobileCustomerDetails";
-import { MobileQuickRestock } from "./screens/MobileQuickRestock";
 import { MobileOwnerScreen } from "./screens/MobileOwnerScreen";
 import { MobileSessionGate } from "./shell/MobileSessionGate";
 import { MobileShell } from "./shell/MobileShell";
+import { SkeletonState } from "./components/States";
+
+/**
+ * Loaded on demand: the purchasing screens are for ADMIN/ACCOUNTANT, rarely
+ * opened, and Quick Restock alone pulled the Radix dialog/select stack
+ * (~44 KB with floating-ui and remove-scroll) into every role's first load —
+ * including the Moderator, who cannot open either. Everything a first paint or
+ * a support question needs stays in the main bundle. A chunk missing after a
+ * deploy is recovered by `staleChunkRecovery` (one reload).
+ */
+const MobilePurchasingScreen = lazy(() =>
+  import("./screens/MobilePurchasingScreen").then((m) => ({ default: m.MobilePurchasingScreen })),
+);
+const MobileQuickRestock = lazy(() =>
+  import("./screens/MobileQuickRestock").then((m) => ({ default: m.MobileQuickRestock })),
+);
+const onDemand = (screen: ReactNode) => <Suspense fallback={<SkeletonState />}>{screen}</Suspense>;
 
 export function MobileRouter({
   sessionState,
@@ -41,7 +57,7 @@ export function MobileRouter({
           <Route element={<MobileRouteGuard capability="shipments" />}><Route path="shipments" element={<MobileShipmentsScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="customers" />}><Route path="customers" element={<MobileCustomersScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="customers" />}><Route path="customers/:customerId" element={<MobileCustomerDetails />} /></Route>
-          <Route element={<MobileRouteGuard capability="purchasing" />}><Route path="purchasing" element={<MobilePurchasingScreen />} /><Route path="restock" element={<MobileQuickRestock />} /></Route>
+          <Route element={<MobileRouteGuard capability="purchasing" />}><Route path="purchasing" element={onDemand(<MobilePurchasingScreen />)} /><Route path="restock" element={onDemand(<MobileQuickRestock />)} /></Route>
           <Route element={<MobileRouteGuard capability="owner" />}><Route path="owner" element={<MobileOwnerScreen />} /></Route>
           <Route element={<MobileRouteGuard capability="preferences" />}><Route path="preferences" element={<MobilePreferencesScreen />} /></Route>
         </Route>

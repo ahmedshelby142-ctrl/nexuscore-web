@@ -13,15 +13,14 @@ import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { useStoreName } from "@/mobile/data/useStoreName";
 import { WhatsAppAction } from "@/mobile/components/WhatsAppAction";
 import { customerMessage } from "@/lib/whatsapp";
-import { canViewCost } from "@/lib/roles";
-import { useAuthStore } from "@/store/useAuthStore";
+import { useMobileVisibility } from "@/mobile/navigation/mobileVisibility";
 
 export function MobileCustomerDetails() {
   const navigate = useNavigate();
   const storeName = useStoreName();
   // As on Order Details: record ids and audit dates are for the roles that
   // run the shop; the Moderator (support) gets the customer and the orders.
-  const showInternal = canViewCost(useAuthStore((s) => s.userRole));
+  const { internal: showInternal } = useMobileVisibility();
   const { customerId } = useParams();
   const loadCustomer = useCallback(() => readMobileCustomer(customerId ?? ""), [customerId]);
   const { data: customer, loading, error, reload } = useMobileEntity(loadCustomer);

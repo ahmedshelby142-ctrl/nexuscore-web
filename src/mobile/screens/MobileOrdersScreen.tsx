@@ -5,7 +5,7 @@ import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
 import { OrderDateFilter } from "@/mobile/components/OrderDateFilter";
-import { resolveOrderDateFilter, ORDER_DATE_PRESETS, type OrderDatePreset, type OrderDateSelection } from "@/mobile/viewmodels/orderDateFilter";
+import { parseOrderDateSelection, resolveOrderDateFilter, ORDER_DATE_PRESETS, type OrderDatePreset, type OrderDateSelection } from "@/mobile/viewmodels/orderDateFilter";
 import { useUrlFilters } from "@/mobile/data/useUrlFilters";
 import { QueueRow } from "@/mobile/components/QueueRow";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
@@ -17,6 +17,12 @@ import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
 const SEGMENTS = [{ id: "action", label: "تحتاج إجراء" }, { id: "today", label: "اليوم" }, { id: "all", label: "الكل" }] as const;
 const STATUSES = [{ id: "all", label: "كل الحالات" }, { id: "pending", label: "معلّق" }, { id: "shipped", label: "مع المندوب" }, { id: "delivered", label: "تم التسليم" }, { id: "returned", label: "مرتجع" }, { id: "cancelled", label: "ملغي" }] as const;
 
+/** The URL's date keys, through the one parser — a range that does not resolve is no range. */
+function canonicalDateFilters<T extends { date: string; from: string; to: string }>(values: T): T {
+  const selection = parseOrderDateSelection(values);
+  return { ...values, date: selection.preset, from: selection.from ?? "", to: selection.to ?? "" };
+}
+
 export function MobileOrdersScreen() {
   const offline = useIsOffline();
   const navigate = useNavigate();
@@ -24,6 +30,7 @@ export function MobileOrdersScreen() {
   const [filters, setFilters] = useUrlFilters(
     { q: "", seg: "action", status: "all", date: "all", from: "", to: "" },
     { seg: SEGMENTS.map((s) => s.id), status: STATUSES.map((s) => s.id), date: ORDER_DATE_PRESETS.map((p) => p.id) },
+    canonicalDateFilters,
   );
   const query = filters.q;
   const setQuery = (q: string) => setFilters({ q });
@@ -37,8 +44,9 @@ export function MobileOrdersScreen() {
   );
   const setDateFilter = (d: OrderDateSelection) => setFilters({ date: d.preset, from: d.from ?? "", to: d.to ?? "" });
   // Resolved once per selection, so a preset's start does not drift on every
-  // render (which would re-key the query). Only a complete, ordered range is
-  // ever applied by the sheet; anything else falls back to no bound.
+  // render (which would re-key the query). `dateFilter` is already canonical
+  // (`canonicalDateFilters`), so the label above and these bounds can never
+  // disagree; the `{}` fallback is unreachable and kept only as a floor.
   const dateBounds = useMemo(() => {
     const resolved = resolveOrderDateFilter(dateFilter);
     return resolved.status === "ok" ? resolved.bounds : {};

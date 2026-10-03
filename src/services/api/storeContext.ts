@@ -130,6 +130,22 @@ async function resolve(): Promise<SyncIdentity | null> {
 }
 
 /**
+ * Seed the cache with the membership the session has JUST read.
+ *
+ * Every boot already asks `store_members` for this user (session
+ * reconciliation, for the role) and gets `store_id` in the same row. Resolving
+ * it again here cost two more round-trips — `auth.getUser()`, then the same
+ * `store_members` row — and on Mobile they sat in front of Home's
+ * `mobile_shortages`, its slowest read. Same query, same row, same checks; an
+ * id is never replaced, only an empty cache filled, and `clearStoreIdCache` on
+ * login/logout still empties it.
+ */
+export function primeActiveStoreId(storeId: unknown): void {
+  if (cached || inflight || typeof storeId !== "string" || !isUuid(storeId)) return;
+  cached = { storeId, deviceId: getDeviceId() };
+}
+
+/**
  * Drop the cached id.
  *
  * Called on login and logout — both change which store this browser belongs to,

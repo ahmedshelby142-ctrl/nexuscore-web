@@ -73,7 +73,7 @@ test("every nav destination is a real mobile route, not a hash link", () => {
   // This used to assert `MobileDeferredScreen` was routed, back when المشتريات
   // and الإعدادات were قريباً cards. Both are real screens now, so the thing
   // worth pinning is that they have routes — not that a placeholder still does.
-  assert.match(router, /path="purchasing" element=\{<MobilePurchasingScreen/);
+  assert.match(router, /path="purchasing" element=\{onDemand\(<MobilePurchasingScreen/);
   assert.match(router, /path="preferences" element=\{<MobilePreferencesScreen/);
   assert.match(router, /path="inventory"/);
   assert.match(router, /path="shipments"/);

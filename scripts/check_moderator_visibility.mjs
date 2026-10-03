@@ -218,7 +218,8 @@ test("a Moderator's customer summary carries no lifetime revenue — null, not 0
 
 test("Product Details shows no cost, stock value or margin to a Moderator", () => {
   const src = read("src/mobile/screens/MobileProductDetails.tsx");
-  assert.match(src, /const showCost = canViewCost\(useAuthStore\(\(s\) => s\.userRole\)\);/);
+  assert.match(src, /const \{ cost: showCost, internal: showInternal \} = useMobileVisibility\(\);/);
+  assert.match(read("src/mobile/navigation/mobileVisibility.ts"), /const cost = canViewCost\(role\);/, "the policy is the existing gate");
   assert.match(src, /\{showCost && \(\n\s*<>\n\s*<div>\n\s*<span>متوسط التكلفة \(المرجح\)<\/span>/);
   assert.match(src, /showCost && avgCost > 0 && retailPrice > 0/, "retail margin");
   assert.match(src, /showCost && avgCost > 0 && wholesalePrice > 0/, "wholesale margin");
@@ -320,5 +321,5 @@ test("a typed URL cannot put a Moderator on a Desktop screen", () => {
 test("a typed URL cannot put a Moderator on a Mobile finance screen", () => {
   const router = read("src/mobile/router.tsx");
   assert.match(router, /<MobileRouteGuard capability="owner" \/>\}><Route path="owner"/);
-  assert.match(router, /<MobileRouteGuard capability="purchasing" \/>\}><Route path="purchasing" element=\{<MobilePurchasingScreen \/>\} \/><Route path="restock"/);
+  assert.match(router, /<MobileRouteGuard capability="purchasing" \/>\}><Route path="purchasing" element=\{onDemand\(<MobilePurchasingScreen \/>\)\} \/><Route path="restock"/);
 });

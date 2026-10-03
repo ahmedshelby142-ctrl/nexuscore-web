@@ -42,3 +42,40 @@ export function WhatsAppAction({
     </a>
   );
 }
+
+/**
+ * The compact form: a WhatsApp icon beside a phone number, for lists and
+ * detail headers. Same number rules as `WhatsAppAction` (`whatsAppTarget`):
+ * no number, or one WhatsApp cannot open, renders NOTHING — never a dead or
+ * wrong link. The full button on the customer's own page is where an invalid
+ * number is explained.
+ *
+ * A plain external link. It reads nothing and writes nothing, so it grants no
+ * role anything; it stops propagation so a row it sits beside never also
+ * navigates.
+ */
+export function WhatsAppIconLink({
+  phone,
+  message,
+  label = "فتح واتساب",
+}: {
+  phone: string | null | undefined;
+  message: string;
+  label?: string;
+}) {
+  const target = whatsAppTarget(phone);
+  if (target.status !== "ok") return null;
+  return (
+    <a
+      className="mobile-whatsapp-icon"
+      href={whatsAppUrl(target.number, message)}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={label}
+      title={label}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <MessageCircle aria-hidden="true" />
+    </a>
+  );
+}

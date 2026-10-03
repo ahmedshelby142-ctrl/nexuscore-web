@@ -8,6 +8,9 @@ import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { toMobileCustomerQueue } from "@/mobile/viewmodels/customerViewModel";
 import { readMobileCustomers } from "@/mobile/data/mobileReaders";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
+import { useStoreName } from "@/mobile/data/useStoreName";
+import { WhatsAppIconLink } from "@/mobile/components/WhatsAppAction";
+import { customerMessage } from "@/lib/whatsapp";
 
 export function MobileCustomersScreen() {
   const navigate = useNavigate();
@@ -15,12 +18,13 @@ export function MobileCustomersScreen() {
   const [query, setQuery] = useState("");
   const page = useMobilePagedQuery(readMobileCustomers, { search: query }, { watch: ["customers", "orders"] });
   const rows = useMemo(() => toMobileCustomerQueue(page.rows), [page.rows]);
+  const storeName = useStoreName();
 
   return <section className="mobile-screen">
     <MobileAppBar title="العملاء" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} trailingAction={<button type="button" className="mobile-icon-button" onClick={() => void page.refresh()} disabled={page.refreshing} aria-label="تحديث" aria-busy={page.refreshing}><RefreshCw aria-hidden="true" className={page.refreshing ? "mobile-spin" : undefined} /></button>} />
     <div className="mobile-screen-body">
       <MobileSearch value={query} onChange={setQuery} placeholder="ابحث بالاسم أو الهاتف" />
-      {offline ? <OfflineState /> : page.loading ? <SkeletonState /> : page.error ? <ErrorState messageAr="تعذّر تحميل العملاء." onRetry={page.reload} /> : rows.length === 0 ? <EmptyState titleAr="لا يوجد عملاء" messageAr="لا توجد نتائج مطابقة." /> : <><div className="mobile-entity-list">{rows.map((row) => <button type="button" className="mobile-customer-card" key={row.id} onClick={() => navigate(`/customers/${row.id}`)}><div className="mobile-customer-avatar"><UserRound aria-hidden="true" /></div><div className="mobile-customer-main"><strong>{row.name}</strong>{row.phone && <span dir="ltr"><Phone aria-hidden="true" /> {row.phone}</span>}<small>{row.lastOrderAr ?? "لا يوجد طلب سابق"}</small></div><span className="mobile-chevron" aria-hidden="true">‹</span></button>)}</div>{page.hasMore && <button type="button" className="mobile-primary-button mobile-load-more" onClick={page.loadMore} disabled={page.loadingMore}>{page.loadingMore ? "جارٍ التحميل…" : "تحميل المزيد"}</button>}</>}
+      {offline ? <OfflineState /> : page.loading ? <SkeletonState /> : page.error ? <ErrorState messageAr="تعذّر تحميل العملاء." onRetry={page.reload} /> : rows.length === 0 ? <EmptyState titleAr="لا يوجد عملاء" messageAr="لا توجد نتائج مطابقة." /> : <><div className="mobile-entity-list">{rows.map((row) => <div className="mobile-customer-row" key={row.id}><button type="button" className="mobile-customer-card" onClick={() => navigate(`/customers/${row.id}`)}><div className="mobile-customer-avatar"><UserRound aria-hidden="true" /></div><div className="mobile-customer-main"><strong>{row.name}</strong>{row.phone && <span dir="ltr"><Phone aria-hidden="true" /> {row.phone}</span>}<small>{row.lastOrderAr ?? "لا يوجد طلب سابق"}</small></div><span className="mobile-chevron" aria-hidden="true">‹</span></button><WhatsAppIconLink phone={row.phone} message={customerMessage({ customerName: row.name, storeName })} /></div>)}</div>{page.hasMore && <button type="button" className="mobile-primary-button mobile-load-more" onClick={page.loadMore} disabled={page.loadingMore}>{page.loadingMore ? "جارٍ التحميل…" : "تحميل المزيد"}</button>}</>}
     </div>
   </section>;
 }

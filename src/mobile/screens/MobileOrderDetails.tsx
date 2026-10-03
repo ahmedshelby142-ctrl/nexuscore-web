@@ -12,6 +12,9 @@ import { useMobileEntity } from "@/mobile/data/useMobileEntity";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { canViewCost } from "@/lib/roles";
 import { useAuthStore } from "@/store/useAuthStore";
+import { useStoreName } from "@/mobile/data/useStoreName";
+import { WhatsAppIconLink } from "@/mobile/components/WhatsAppAction";
+import { customerMessage } from "@/lib/whatsapp";
 
 export function MobileOrderDetails() {
   const navigate = useNavigate();
@@ -19,6 +22,7 @@ export function MobileOrderDetails() {
   // «عمولة المندوب» is what delivery COSTS the store. The Moderator's reader
   // does not select it; this keeps the line off the screen regardless.
   const showCost = canViewCost(useAuthStore((s) => s.userRole));
+  const storeName = useStoreName();
   const loadOrder = useCallback(() => readMobileOrder(orderId ?? ""), [orderId]);
   const { data: order, loading, error, reload } = useMobileEntity(loadOrder);
   const offline = useIsOffline();
@@ -123,7 +127,10 @@ export function MobileOrderDetails() {
       <MobileSection titleAr="العميل">
         <div className="mobile-detail-line">
           <span>{customerName}</span>
-          <a className="mobile-tel-link" href={`tel:${customerPhone}`} dir="ltr">{customerPhone}</a>
+          <span className="mobile-contact-actions">
+            <a className="mobile-tel-link" href={`tel:${customerPhone}`} dir="ltr">{customerPhone}</a>
+            <WhatsAppIconLink phone={order.customerPhone} message={customerMessage({ customerName: order.customerName, storeName })} />
+          </span>
         </div>
         <p className="mobile-muted">{address}</p>
         <div className="mobile-detail-line">

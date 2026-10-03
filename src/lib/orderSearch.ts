@@ -99,9 +99,10 @@ export function ordersInPeriod<T extends { createdAt: Date | string }>(
   from: string,
   to: string,
 ): T[] {
-  const start = from ? new Date(`${from}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
-  const end = to ? new Date(`${to}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY;
-  if (Number.isNaN(start) || Number.isNaN(end)) return orders;
+  const bounds = dayRangeBounds(from, to);
+  if (bounds.status === "invalid") return orders;
+  const start = bounds.start?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const end = bounds.end?.getTime() ?? Number.POSITIVE_INFINITY;
   if (start === Number.NEGATIVE_INFINITY && end === Number.POSITIVE_INFINITY) return orders;
 
   return orders.filter((order) => {
@@ -109,6 +110,40 @@ export function ordersInPeriod<T extends { createdAt: Date | string }>(
     // An unparseable date is shown rather than hidden: dropping a row on a
     // filter it cannot be judged against is how an order disappears silently.
     if (Number.isNaN(at)) return true;
-    return at >= start && at <= end;
+    return at >= start && at < end;
   });
+}
+
+/** A `YYYY-MM-DD` value (what `<input type="date">` produces). */
+const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function localMidnight(day: string, plusDays = 0): Date | null {
+  const m = DAY_RE.exec(day);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(y, mo - 1, d + plusDays);
+  // `new Date(2026, 1, 31)` rolls over to March; a day that rolls was never a day.
+  const check = new Date(y, mo - 1, d);
+  return check.getFullYear() === y && check.getMonth() === mo - 1 && check.getDate() === d ? date : null;
+}
+
+/**
+ * An inclusive day range as the instants a query compares against:
+ * `start` = local midnight opening `from`, `end` = local midnight AFTER `to`
+ * (exclusive). Half-open, so the whole `to` day is in — 23:59:59.999 and all —
+ * with no gap at the last millisecond, and built from the calendar (not "+24h"),
+ * so a daylight-saving change on either end cannot shift a day.
+ *
+ * Local time, the operator's day, as `ordersInPeriod` always did. An empty
+ * bound is "no bound" (`null`). `reversed` when `from` is after `to`.
+ */
+export function dayRangeBounds(
+  from: string,
+  to: string,
+): { status: "ok" | "reversed"; start: Date | null; end: Date | null } | { status: "invalid" } {
+  const start = from ? localMidnight(from) : null;
+  const end = to ? localMidnight(to, 1) : null;
+  if ((from && !start) || (to && !end)) return { status: "invalid" };
+  const reversed = start !== null && end !== null && start.getTime() >= end.getTime();
+  return { status: reversed ? "reversed" : "ok", start, end };
 }

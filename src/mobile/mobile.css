@@ -1151,3 +1151,18 @@ main.mobile-state {
   .mobile-sticky-actions { inset-block-end: calc(52px + env(safe-area-inset-bottom)); }
   .mobile-app-bar { min-block-size: 56px; }
 }
+
+/* Orders: the status and date filters side by side. */
+.mobile-filter-row { flex-wrap: wrap; gap: 0.5rem; }
+.mobile-filter-trigger.is-active { border-color: var(--primary); color: var(--primary); }
+.mobile-date-range { margin-block-start: 0.75rem; }
+
+/* WhatsApp beside a phone: a list row's sibling (never inside its button) or
+   next to the tel link. 44px target; the icon alone is labelled by aria-label. */
+.mobile-customer-row { display: flex; align-items: center; gap: 0.5rem; }
+.mobile-customer-row > .mobile-customer-card { flex: 1; min-inline-size: 0; }
+.mobile-contact-actions { display: inline-flex; align-items: center; gap: 0.25rem; }
+.mobile-whatsapp-icon { display: inline-grid; place-items: center; flex: none; inline-size: 44px; block-size: 44px; border-radius: 999px; color: var(--success); background: color-mix(in oklab, var(--success) 12%, transparent); -webkit-tap-highlight-color: transparent; }
+.mobile-whatsapp-icon svg { inline-size: 1.25rem; block-size: 1.25rem; }
+.mobile-whatsapp-icon:active { background: color-mix(in oklab, var(--success) 22%, transparent); }
+.mobile-whatsapp-icon:focus-visible { outline: 3px solid color-mix(in oklab, var(--ring) 55%, transparent); outline-offset: 2px; }

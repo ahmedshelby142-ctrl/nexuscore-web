@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
+import { OrderDateFilter } from "@/mobile/components/OrderDateFilter";
+import { resolveOrderDateFilter, type OrderDateSelection } from "@/mobile/viewmodels/orderDateFilter";
 import { QueueRow } from "@/mobile/components/QueueRow";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
@@ -20,7 +22,15 @@ export function MobileOrdersScreen() {
   const [query, setQuery] = useState("");
   const [segment, setSegment] = useState("action");
   const [status, setStatus] = useState("all");
-  const page = useMobilePagedQuery(readMobileOrders, { search: query, queue: segment as "action" | "today" | "all", status }, { watch: ["orders"] });
+  const [dateFilter, setDateFilter] = useState<OrderDateSelection>({ preset: "all" });
+  // Resolved once per selection, so a preset's start does not drift on every
+  // render (which would re-key the query). Only a complete, ordered range is
+  // ever applied by the sheet; anything else falls back to no bound.
+  const dateBounds = useMemo(() => {
+    const resolved = resolveOrderDateFilter(dateFilter);
+    return resolved.status === "ok" ? resolved.bounds : {};
+  }, [dateFilter]);
+  const page = useMobilePagedQuery(readMobileOrders, { search: query, queue: segment as "action" | "today" | "all", status, ...dateBounds }, { watch: ["orders"] });
   const rows = useMemo(() => toMobileOrderQueue(page.rows), [page.rows]);
 
   return <section className="mobile-screen">
@@ -28,7 +38,7 @@ export function MobileOrdersScreen() {
     <div className="mobile-screen-body">
       <MobileSearch value={query} onChange={setQuery} placeholder="ابحث برقم الطلب أو العميل" />
       <div className="mobile-segmented-control" role="tablist">{SEGMENTS.map((item) => <button key={item.id} type="button" role="tab" aria-selected={segment === item.id} className={segment === item.id ? "is-active" : ""} onClick={() => setSegment(item.id)}>{item.label}</button>)}</div>
-      <div className="mobile-filter-row"><FilterSheet label="حالة الطلب" options={STATUSES as readonly { id: string; label: string }[]} value={status} onChange={setStatus} /></div>
+      <div className="mobile-filter-row"><FilterSheet label="حالة الطلب" options={STATUSES as readonly { id: string; label: string }[]} value={status} onChange={setStatus} /><OrderDateFilter value={dateFilter} onChange={setDateFilter} /></div>
       {offline ? <OfflineState /> : page.loading ? <SkeletonState /> : page.error ? <ErrorState messageAr="تعذّر تحميل الطلبات." onRetry={page.reload} /> : rows.length === 0 ? <EmptyState titleAr="لا توجد طلبات" messageAr="ستظهر الطلبات هنا عند توفرها." /> : <><div className="mobile-queue-list">{rows.map((row) => <QueueRow key={row.id} item={row} />)}</div>{page.hasMore && <button type="button" className="mobile-primary-button mobile-load-more" onClick={page.loadMore} disabled={page.loadingMore}>{page.loadingMore ? "جارٍ التحميل…" : "تحميل المزيد"}</button>}</>}
     </div>
   </section>;

@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "@/lib/supabase";
 import { getActiveStoreId } from "@/services/api/storeContext";
-import { deriveAlerts } from "@/mobile/viewmodels/alertModel";
+import { AGING_ORDER_THRESHOLD_HOURS, deriveAlerts } from "@/mobile/viewmodels/alertModel";
 import { getMetricDefinition } from "@/mobile/viewmodels/metricDefinitions";
 import { formatArabicCount, formatArabicCurrency, formatArabicQuantity } from "@/mobile/viewmodels/formatters";
 import { resolveOrderStatus, resolveShipmentStatus } from "@/mobile/viewmodels/statusTaxonomies";
@@ -27,6 +27,12 @@ export interface MobileHomeSnapshot {
   /** The server's count of in-transit orders; `shipments` is only the first 3. */
   shipmentsTotal: number;
   shortages: MobileShortageRow[];
+  /**
+   * Pending orders created more than `AGING_ORDER_THRESHOLD_HOURS` ago — the
+   * server's exact count. `undefined` when this viewer has no `orders`
+   * capability or the server returned no count: "not asked", never "none".
+   */
+  agingPendingOrders?: number;
 }
 
 export interface ComposedMobileHomeSnapshot {
@@ -58,15 +64,32 @@ export async function readMobileShortages(): Promise<MobileShortageRow[]> {
   return (data ?? []) as MobileShortageRow[];
 }
 
-export async function readMobileHomeSnapshot(capabilities: ReadonlySet<MobileCapability>): Promise<MobileHomeSnapshot> {
-  const [today, pending, orders, shipments, shortages] = await Promise.all([
+export async function readMobileHomeSnapshot(
+  capabilities: ReadonlySet<MobileCapability>,
+  now: Date = new Date(),
+): Promise<MobileHomeSnapshot> {
+  // The «الطلبات المتأخرة» cutoff — the same rule (pending, older than the
+  // threshold) the never-wired `viewmodels/home/homeComposer.ts` computed over
+  // a client-side list (deleted in e1e8753), asked of the server so it counts
+  // every pending order, not the ones a page happened to hold.
+  const agingCutoff = new Date(now.getTime() - AGING_ORDER_THRESHOLD_HOURS * 60 * 60 * 1000).toISOString();
+  const [today, pending, orders, shipments, shortages, aging] = await Promise.all([
     capabilities.has("orders") ? readMobileOrders({ queue: "today", pageSize: 1 }) : Promise.resolve({ total: 0, rows: [], hasMore: false }),
     capabilities.has("orders") ? readMobileOrders({ status: "pending", pageSize: 1 }) : Promise.resolve({ total: 0, rows: [], hasMore: false }),
     capabilities.has("orders") ? readMobileOrders({ queue: "action", pageSize: 3 }) : Promise.resolve({ total: 0, rows: [], hasMore: false }),
     capabilities.has("shipments") ? readMobileShipments({ status: "shipped", pageSize: 3 }) : Promise.resolve({ total: 0, rows: [], hasMore: false }),
     capabilities.has("stock") ? readMobileShortages() : Promise.resolve([]),
+    capabilities.has("orders") ? readMobileOrders({ status: "pending", createdBefore: agingCutoff, pageSize: 1 }) : Promise.resolve(null),
   ]);
-  return { todayOrders: today.total ?? 0, pendingOrders: pending.total ?? 0, orders: orders.rows, shipments: shipments.rows, shipmentsTotal: shipments.total ?? shipments.rows.length, shortages };
+  return {
+    todayOrders: today.total ?? 0,
+    pendingOrders: pending.total ?? 0,
+    orders: orders.rows,
+    shipments: shipments.rows,
+    shipmentsTotal: shipments.total ?? shipments.rows.length,
+    shortages,
+    agingPendingOrders: aging && typeof aging.total === "number" ? aging.total : undefined,
+  };
 }
 
 export function composeMobileHomeSnapshot(
@@ -75,11 +98,11 @@ export function composeMobileHomeSnapshot(
   licenseAtRisk: boolean,
 ): ComposedMobileHomeSnapshot {
   const shortageOrderCount = snapshot.shortages.reduce((sum, row) => sum + Number(row.order_count || 0), 0);
-  // `agingPendingOrders`, `longInTransitOrders` and `unsettledCodOrders` are
-  // NOT passed. They were hardcoded `0`, which is not "no aging orders" — it is
-  // "nobody looked", rendered as an all-clear. No authoritative reader exists
-  // for them yet, so the categories are omitted rather than faked; they come
-  // back when something real can answer them.
+  // `longInTransitOrders` and `unsettledCodOrders` are NOT passed. They were
+  // hardcoded `0`, which is not "none" — it is "nobody looked", rendered as an
+  // all-clear. No authoritative reader exists for them, so the categories are
+  // omitted rather than faked. `agingPendingOrders` is passed as the server
+  // count from `readMobileHomeSnapshot` — undefined (omitted) when not asked.
   // PRODUCTS that are short with orders waiting on them. This was handed the
   // ORDER count, so the card read «٩ منتجات» for three products.
   const shortProductsWithOrders = snapshot.shortages.filter((row) => Number(row.order_count || 0) > 0).length;
@@ -89,6 +112,7 @@ export function composeMobileHomeSnapshot(
   const alerts = deriveAlerts({
     ordersWithStockout: shortageOrderCount,
     stockoutWithWaitingOrders: shortProductsWithOrders,
+    agingPendingOrders: snapshot.agingPendingOrders,
     licenseAtRisk,
   }, capabilities);
   const metric = (id: string, value: number): MobileMetric => {

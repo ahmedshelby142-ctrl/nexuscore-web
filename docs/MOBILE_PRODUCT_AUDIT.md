@@ -10,6 +10,42 @@ created, and no business behaviour was changed.
 
 ---
 
+## Current status — Home composer forensics (2026-10-03)
+
+Reports of a "modified `homeComposer.ts`" and a "deleted `composeHomeSections.ts`"
+were resolved from git, not from the reports:
+
+- There was ONE file, `src/mobile/viewmodels/home/homeComposer.ts` (note the
+  `home/` folder), exporting a function `composeHomeSections`. No file named
+  `composeHomeSections.ts` ever existed in any commit or ref.
+- Added in **b354055** (2026-09-14) in the same commit as `data/mobileHomeReader.ts`,
+  edited in **e1025a3** (status vocabulary), deleted on purpose in **e1e8753**
+  (D1 below). From creation to deletion it was imported by no source file —
+  only by a text-matching test. Home has always rendered
+  `composeMobileHomeSnapshot` (`mobileHomeReader.ts`).
+- Responsibility map, old → current:
+
+| Old (`composeHomeSections`) | Current | Status |
+|---|---|---|
+| metrics `today_orders`, `pending_orders` (client filter over a list) | server exact counts | preserved, more correct |
+| metric `low_stock_products` from the `products.quantity` mirror | `shortage_products` (ledger shortages, `mobile_shortages`) | changed intentionally (f002c04) |
+| queues orders / stock / shipments, 3 rows, capability-gated, same order | same, server totals | preserved with refactor |
+| alerts via `deriveAlerts`; stockout counts | same; stockout counts products, not orders | preserved, corrected |
+| `agingPendingOrders` = pending older than 24h | **was never live** (live composer passed `0`, later omitted it) | **rebuilt** — server count |
+| `longInTransitOrders: 0`, `unsettledCodOrders: 0` | omitted (no authoritative reader) | hardcoded zeros, nothing to recover |
+| `hasOperationalData` | unused anywhere | not needed |
+
+- **Rebuilt:** «الطلبات المتأخرة» — `readMobileHomeSnapshot` asks the server for
+  pending orders created before now − `AGING_ORDER_THRESHOLD_HOURS`
+  (`readMobileOrders({ status: "pending", createdBefore })`, deleted rows
+  excluded) and passes the count to `deriveAlerts`; omitted, never 0, when the
+  viewer has no `orders` capability. The dead file is NOT restored — Home keeps
+  one composer.
+- Proof: `scripts/check_mobile_home_composition.mjs` (11), run against the real
+  readers, composer, capabilities and alert model. Against the pre-fix tree the
+  three aging tests fail and the other eight pass. Original source preserved
+  outside the repo for comparison (`git show e1e8753^:src/mobile/viewmodels/home/homeComposer.ts`).
+
 ## Current status — Mobile UX/UI polish (2026-09-27)
 
 Every mobile screen was rendered against a **stubbed backend** (a fake Supabase

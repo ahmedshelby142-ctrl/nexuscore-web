@@ -22,6 +22,8 @@ export interface MobileListQuery {
   queue?: "action" | "today" | "all";
   customerId?: string;
   id?: string;
+  /** ISO timestamp: only orders created strictly before it. */
+  createdBefore?: string;
 }
 
 function escapeLike(value: string): string {
@@ -144,6 +146,7 @@ export function readMobileOrders(query: MobileListQuery = {}) {
       const start = new Date(); start.setHours(0, 0, 0, 0);
       next = next.gte("createdAt", start.toISOString());
     }
+    if (query.createdBefore) next = next.lt("createdAt", query.createdBefore);
     if (search) next = next.or(`orderNumber.ilike.%${search}%,customerName.ilike.%${search}%,customerPhone.ilike.%${search}%`);
     return next;
   }, toViewerOrder, orderColumns(), ORDERS_SOURCE);

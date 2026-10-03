@@ -15,6 +15,7 @@ import { useAuthStore } from "@/store/useAuthStore";
 import { useStoreName } from "@/mobile/data/useStoreName";
 import { WhatsAppIconLink } from "@/mobile/components/WhatsAppAction";
 import { customerMessage } from "@/lib/whatsapp";
+import { causeLabelsFor, type ReturnCause } from "@/lib/shippingRates";
 
 export function MobileOrderDetails() {
   const navigate = useNavigate();
@@ -22,6 +23,11 @@ export function MobileOrderDetails() {
   // «عمولة المندوب» is what delivery COSTS the store. The Moderator's reader
   // does not select it; this keeps the line off the screen regardless.
   const showCost = canViewCost(useAuthStore((s) => s.userRole));
+  // The same gate, for what is internal to running the shop rather than to
+  // answering the customer: record ids, revenue/remittance flags and the
+  // books' own reconciliation check. Shown to every role but the Moderator,
+  // exactly as before; the Moderator (support) sees the customer's figures.
+  const showInternal = showCost;
   const storeName = useStoreName();
   const loadOrder = useCallback(() => readMobileOrder(orderId ?? ""), [orderId]);
   const { data: order, loading, error, reload } = useMobileEntity(loadOrder);
@@ -106,6 +112,14 @@ export function MobileOrderDetails() {
   const courierName = registryCourier?.name ?? order.courierName ?? "غير محدد";
   const courierIsLegacy = Boolean(order.courierName || courierId) && !registryCourier;
 
+  // What happened to this order, for «where is my order / my refund».
+  // `return_cause` carries the cause for returns, exchanges AND
+  // cancellations (`cancel_order`); its labels are the operator's own.
+  const isExchange = Boolean(order.isExchange);
+  const caseTitle = order.status === "cancelled" ? "الإلغاء" : isExchange ? "الاستبدال" : order.status === "returned" || order.returnConfirmedAt ? "المرتجع" : null;
+  const cause = String(order.return_cause ?? "") as ReturnCause;
+  const causeAr = caseTitle && cause && cause !== "unknown" ? causeLabelsFor(isExchange ? "exchange" : "return")[cause] : null;
+
   return <section className="mobile-screen">
     <MobileAppBar title="تفاصيل الطلب" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} />
     <div className="mobile-screen-body">
@@ -123,6 +137,18 @@ export function MobileOrderDetails() {
         <span>إجمالي الطلب</span>
         <strong>{formatArabicCurrency(totalAmount)}</strong>
       </div>
+
+      {caseTitle && (
+        <MobileSection titleAr={caseTitle}>
+          {isExchange && <div className="mobile-detail-line"><span>نوع الطلب</span><strong style={{ color: "var(--primary)" }}>طلب استبدال</strong></div>}
+          {causeAr && <div className="mobile-detail-line"><span>السبب</span><strong>{causeAr}</strong></div>}
+          {order.returnConfirmedAt ? (
+            <div className="mobile-detail-line"><span>تأكيد المرتجع</span><strong style={{ color: "var(--success)" }}>مؤكد — {formatArabicDate(order.returnConfirmedAt)}</strong></div>
+          ) : order.status === "returned" ? (
+            <div className="mobile-detail-line"><span>حالة المرتجع</span><strong style={{ color: "var(--warning)" }}>بانتظار التأكيد في المخزن</strong></div>
+          ) : null}
+        </MobileSection>
+      )}
 
       <MobileSection titleAr="العميل">
         <div className="mobile-detail-line">
@@ -177,8 +203,8 @@ export function MobileOrderDetails() {
       </MobileSection>
 
       <MobileSection titleAr="التفصيل المالي">
-        <div className="mobile-detail-line"><span>إجمالي البضاعة</span><strong>{formatArabicCurrency(goodsTotal)}</strong></div>
-        {discountAmount > 0 && <div className="mobile-detail-line"><span>الخصم</span><strong>− {formatArabicCurrency(discountAmount)}</strong></div>}
+        {showInternal && <div className="mobile-detail-line"><span>إجمالي البضاعة</span><strong>{formatArabicCurrency(goodsTotal)}</strong></div>}
+        {showInternal && discountAmount > 0 && <div className="mobile-detail-line"><span>الخصم</span><strong>− {formatArabicCurrency(discountAmount)}</strong></div>}
         <div className="mobile-detail-line"><span>صافي البضاعة</span><strong>{formatArabicCurrency(netGoods)}</strong></div>
         <div className="mobile-detail-line"><span>رسوم التوصيل</span><strong>{formatArabicCurrency(shippingFee)}</strong></div>
         <div className="mobile-detail-line"><span>المجموع المستحق</span><strong>{formatArabicCurrency(collected)}</strong></div>
@@ -190,30 +216,35 @@ export function MobileOrderDetails() {
           <span>المتبقي على المندوب (COD)</span>
           <strong>{formatArabicCurrency(expectedCod)}</strong>
         </div>
-        <div className="mobile-detail-line" style={{ borderTop: "1px solid var(--border)", paddingBlockStart: "0.5rem" }}>
-          <span>مجموع المدفوع + المتبقي</span>
-          <strong>{formatArabicCurrency(depositPlusCod)}</strong>
-        </div>
-        <div className="mobile-detail-line" style={{ color: financialsMatch ? "var(--success)" : "var(--destructive)" }}>
-          <span>مطابقة الحساب</span>
-          <strong>{financialsMatch ? "✓ متطابق" : "✗ اختلاف"}</strong>
-        </div>
+        {/* The books' own consistency check — the shop's, not the customer's. */}
+        {showInternal && (
+          <>
+            <div className="mobile-detail-line" style={{ borderTop: "1px solid var(--border)", paddingBlockStart: "0.5rem" }}>
+              <span>مجموع المدفوع + المتبقي</span>
+              <strong>{formatArabicCurrency(depositPlusCod)}</strong>
+            </div>
+            <div className="mobile-detail-line" style={{ color: financialsMatch ? "var(--success)" : "var(--destructive)" }}>
+              <span>مطابقة الحساب</span>
+              <strong>{financialsMatch ? "✓ متطابق" : "✗ اختلاف"}</strong>
+            </div>
+          </>
+        )}
         {showCost && courierFee > 0 && <div className="mobile-detail-line"><span>عمولة المندوب</span><strong>{formatArabicCurrency(courierFee)}</strong></div>}
       </MobileSection>
 
       <MobileSection titleAr="الشحن والمندوب">
         <div className="mobile-detail-line"><span>المندوب</span><strong>{courierName}</strong></div>
         {registryCourier?.phone && <div className="mobile-detail-line"><span>تليفون المندوب</span><strong dir="ltr">{registryCourier.phone}</strong></div>}
-        {courierId && <div className="mobile-detail-line"><span>معرف المندوب</span><strong dir="ltr">{courierId}</strong></div>}
-        {courierIsLegacy && (
+        {showInternal && courierId && <div className="mobile-detail-line"><span>معرف المندوب</span><strong dir="ltr">{courierId}</strong></div>}
+        {showInternal && courierIsLegacy && (
           <p className="mobile-detail-note">
             المندوب ده مش مسجّل في سجل شركات الشحن — الاسم متسجّل على الطلب نفسه من قبل ما السجل يتعمل.
           </p>
         )}
         <div className="mobile-detail-line"><span>حالة الشحنة</span><StatusPill labelAr={resolveShipmentStatus(order.status).labelAr} tone={resolveShipmentStatus(order.status).tone} /></div>
         {order.trackingNumber && <div className="mobile-detail-line"><span>رقم التتبع</span><strong dir="ltr">{order.trackingNumber}</strong></div>}
-        {expectedCod > 0 && <div className="mobile-detail-line"><span>المبلغ المستحق تحصيله (COD)</span><strong>{formatArabicCurrency(expectedCod)}</strong></div>}
-        {order.codSettledAt && <div className="mobile-detail-line"><span>تم التوريد في</span><strong>{formatArabicDate(order.codSettledAt)}</strong></div>}
+        {showInternal && expectedCod > 0 && <div className="mobile-detail-line"><span>المبلغ المستحق تحصيله (COD)</span><strong>{formatArabicCurrency(expectedCod)}</strong></div>}
+        {showInternal && order.codSettledAt && <div className="mobile-detail-line"><span>تم التوريد في</span><strong>{formatArabicDate(order.codSettledAt)}</strong></div>}
       </MobileSection>
 
       <MobileSection titleAr="الخط الزمني">
@@ -244,7 +275,7 @@ export function MobileOrderDetails() {
         )}
       </MobileSection>
 
-      <MobileSection titleAr="معلومات النظام">
+      {showInternal && <MobileSection titleAr="معلومات النظام">
         <div className="mobile-detail-line"><span>معرف الطلب</span><strong dir="ltr">{order.id}</strong></div>
         <div className="mobile-detail-line"><span>تاريخ الإنشاء</span><strong>{formatArabicDate(order.createdAt ?? order.created_at)}</strong></div>
         {order.updatedAt && <div className="mobile-detail-line"><span>آخر تحديث</span><strong>{formatArabicDate(order.updatedAt)}</strong></div>}
@@ -260,15 +291,7 @@ export function MobileOrderDetails() {
         ) : (
           <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--muted-foreground)" }}>غير مطلوب (مدفوع بالكامل)</strong></div>
         )}
-        {order.returnConfirmedAt ? (
-          <div className="mobile-detail-line"><span>تأكيد المرتجع</span><strong style={{ color: "var(--success)" }}>مؤكد — {formatArabicDate(order.returnConfirmedAt)}</strong></div>
-        ) : order.returnedAt ? (
-          <div className="mobile-detail-line"><span>حالة المرتجع</span><strong style={{ color: "var(--warning)" }}>بانتظار التأكيد في المخزن</strong></div>
-        ) : (
-          <div className="mobile-detail-line"><span>مرتجع</span><strong style={{ color: "var(--muted-foreground)" }}>لا يوجد</strong></div>
-        )}
-        {order.isExchange && <div className="mobile-detail-line"><span>نوع الطلب</span><strong style={{ color: "var(--primary)" }}>طلب استبدال</strong></div>}
-      </MobileSection>
+      </MobileSection>}
 
       <MobileSection titleAr="إجراءات مرتبطة" action={
         <button type="button" className="mobile-text-button" onClick={() => navigate(`/customers/${order.customerId ?? order.customer_id}`)}>

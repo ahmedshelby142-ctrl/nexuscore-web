@@ -13,10 +13,15 @@ import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { useStoreName } from "@/mobile/data/useStoreName";
 import { WhatsAppAction } from "@/mobile/components/WhatsAppAction";
 import { customerMessage } from "@/lib/whatsapp";
+import { canViewCost } from "@/lib/roles";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export function MobileCustomerDetails() {
   const navigate = useNavigate();
   const storeName = useStoreName();
+  // As on Order Details: record ids and audit dates are for the roles that
+  // run the shop; the Moderator (support) gets the customer and the orders.
+  const showInternal = canViewCost(useAuthStore((s) => s.userRole));
   const { customerId } = useParams();
   const loadCustomer = useCallback(() => readMobileCustomer(customerId ?? ""), [customerId]);
   const { data: customer, loading, error, reload } = useMobileEntity(loadCustomer);
@@ -147,7 +152,7 @@ export function MobileCustomerDetails() {
         {customer.email && <div className="mobile-detail-line"><span>البريد الإلكتروني</span><strong dir="ltr">{customer.email}</strong></div>}
       </MobileSection>
 
-      <MobileSection titleAr="الملخص المالي">
+      <MobileSection titleAr={showInternal ? "الملخص المالي" : "ملخص الطلبات"}>
         {financialsLoading ? (
           <SkeletonState count={3} />
         ) : financialsError ? (
@@ -229,13 +234,13 @@ export function MobileCustomerDetails() {
         )}
       </MobileSection>
 
-      <MobileSection titleAr="معلومات النظام">
+      {showInternal && <MobileSection titleAr="معلومات النظام">
         <div className="mobile-detail-line"><span>معرف العميل</span><strong dir="ltr">{customer.id}</strong></div>
         {customer.createdAt && <div className="mobile-detail-line"><span>تاريخ الإنشاء</span><strong>{formatArabicDate(customer.createdAt)}</strong></div>}
         {customer.updatedAt && <div className="mobile-detail-line"><span>آخر تحديث</span><strong>{formatArabicDate(customer.updatedAt)}</strong></div>}
         {customer.lastOrderAt && <div className="mobile-detail-line"><span>آخر طلب</span><strong>{formatArabicDate(customer.lastOrderAt)} · {formatArabicRelativeTime(customer.lastOrderAt)}</strong></div>}
         <div className="mobile-detail-line"><span>إجمالي الطلبات</span><strong>{formatArabicCount(ordersPage.total ?? history.length)}</strong></div>
-      </MobileSection>
+      </MobileSection>}
     </div>
   </section>;
 }

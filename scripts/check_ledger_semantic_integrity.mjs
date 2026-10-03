@@ -57,7 +57,8 @@ const ALLOWED = {
   order_placed: ["stock", "wallet"],
   order_edited: ["stock"],
   order_cancelled: ["stock", "wallet", "revenue", "customer_ltv"],
-  order_delivered: ["cogs", "receivable_courier", "revenue", "payable_courier", "customer_ltv"],
+  // 054: a courier override above the base fee is the shop's shipping cost.
+  order_delivered: ["cogs", "receivable_courier", "revenue", "payable_courier", "customer_ltv", "expense"],
   return_confirmed: ["stock", "cogs", "wallet", "receivable_client", "receivable_courier", "payable_courier", "revenue", "expense", "customer_ltv"],
   rto_confirmed: ["stock", "payable_courier", "expense", "receivable_courier", "wallet", "revenue", "customer_ltv"],
   purchase: ["stock", "wallet", "payable_supplier"],
@@ -101,9 +102,18 @@ function violations(kind, raw, ctx = {}) {
   switch (kind) {
     case "sale": if (w + rc !== r || !ltvOk || count((l) => l.account === "expense" && l.a < 0)) out.push("sale equation"); break;
     case "order_edited": break; // stock only — the allowed-account check above is the whole rule
-    case "order_placed": if (!stockOut || stockIn || walletOut) out.push("order_placed shape"); break;
+    case "order_placed":
+      if (!stockOut || stockIn || walletOut) out.push("order_placed shape");
+      // 046 + 054: the order row the placement reserves for must add up —
+      // deposit + COD = goods total + base shipping + wasted-trip compensation.
+      if (ctx.order && Math.abs(ctx.order.deposit + ctx.order.cod - ctx.order.total - ctx.order.ship - (ctx.order.comp ?? 0)) >= 0.005) out.push("placement equation");
+      break;
     case "order_cancelled": if (stockOut || walletIn || revNotDeposit || (w < 0 && r > 0) || !ltvOk) out.push("cancel shape"); break;
-    case "order_delivered": if ((ctx.priorDeposits ?? 0) + rco > r + pc || !ltvOk) out.push("COD exceeds owed"); break;
+    case "order_delivered":
+      // 054: an expense line is allowed, a negative one never (v_ex_neg).
+      if (count((l) => l.account === "expense" && l.a < 0)) out.push("delivered: negative expense");
+      if ((ctx.priorDeposits ?? 0) + rco > r + pc || !ltvOk) out.push("COD exceeds owed");
+      break;
     case "return_confirmed": if (w + rc + rco - pc + ex !== r || r > 0 || stockOut || !ltvOk) out.push("return equation"); break;
     case "rto_confirmed": if (rco - pc + ex !== 0 || walletIn || revNotDeposit || stockOut || !ltvOk) out.push("rto equation"); break;
     case "purchase": if (st + w - ps !== 0) out.push("purchase equation"); break;
@@ -196,6 +206,34 @@ test("the e-commerce lifecycle: place, top up, deliver, cancel, edit, return, RT
   ok("rto_confirmed", buildOrderRTOLines({ ...rto, returnFee: 40, feeBorneBy: "customer" }));
   ok("rto_confirmed", buildOrderRTOLines({ ...rto, refundedDeposit: 50, wallet: "vodafoneCash" }));
   ok("rto_confirmed", buildOrderRTOLines({ ...rto, forfeitedDeposit: 50 }));
+});
+
+test("054: wasted-trip compensation and courier overrides satisfy the post-054 rules", () => {
+  const goods = [item({ quantity: 5, unitPrice: 200, unitCost: 80 })];
+  // The frozen Cairo case: 1000 + 60 base + 60 compensation; deposit 300, COD 820.
+  ok("order_placed", buildOrderPlacedLines({ items: goods, depositAmount: 300, wallet: "vodafoneCash" }), { order: { total: 1000, ship: 60, comp: 60, deposit: 300, cod: 820 } });
+  for (const courierFee of [undefined, 60, 45, 75]) {
+    const lines = buildOrderDeliveredLines({ items: goods, goodsTotal: 1000, shippingFee: 60, wastedTripCompensation: 60, courierFee, depositAmount: 300, codAmount: 820, courierId: "k1", customerId: "c1" });
+    ok("order_delivered", lines, { priorDeposits: toPiastres(300) });
+    const owed = lines.filter((l) => l.account === "payable_courier").reduce((s, l) => s + l.amount, 0);
+    assert.equal(owed, courierFee ?? 60, "the courier is owed the base or the override — never the compensation");
+  }
+  // A legacy order (combined fee, no compensation) still satisfies the same rules.
+  ok("order_delivered", buildOrderDeliveredLines({ items: goods, goodsTotal: 1000, shippingFee: 120, courierFee: 120, depositAmount: 300, codAmount: 820, courierId: "k1", customerId: "c1" }), { priorDeposits: toPiastres(300) });
+});
+
+test("054: the new rules refuse what they must", () => {
+  const goods = [item({ quantity: 5, unitPrice: 200, unitCost: 80 })];
+  // A COD that ignores the compensation does not add up.
+  assert.ok(violations("order_placed", buildOrderPlacedLines({ items: goods, depositAmount: 300, wallet: "vodafoneCash" }), { order: { total: 1000, ship: 60, comp: 60, deposit: 300, cod: 760 } }).includes("placement equation"));
+  // A negative expense on a delivery is refused even though expense is allowed.
+  const lines = buildOrderDeliveredLines({ items: goods, goodsTotal: 1000, shippingFee: 60, depositAmount: 0, codAmount: 1060, courierId: "k1" });
+  assert.ok(violations("order_delivered", [...lines, { account: "expense", subjectId: "shipping", amount: -5 }], { priorDeposits: 0 }).includes("delivered: negative expense"));
+  // Booking the compensation to the courier instead of the shop over-collects.
+  const asCourier = buildOrderDeliveredLines({ items: goods, goodsTotal: 1000, shippingFee: 120, courierFee: 120, depositAmount: 300, codAmount: 820, courierId: "k1" });
+  ok("order_delivered", asCourier, { priorDeposits: toPiastres(300) }); // valid books, wrong representation — the CODE must not produce it:
+  const current = buildOrderDeliveredLines({ items: goods, goodsTotal: 1000, shippingFee: 60, wastedTripCompensation: 60, depositAmount: 300, codAmount: 820, courierId: "k1" });
+  assert.equal(current.filter((l) => l.account === "payable_courier").reduce((s, l) => s + l.amount, 0), 60);
 });
 
 test("courier settlements — single, batch with withheld fees, batch with a shortfall", () => {

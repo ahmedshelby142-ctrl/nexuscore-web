@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { ArrowRight, Phone, RefreshCw, UserRound } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
@@ -8,6 +8,7 @@ import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { toMobileCustomerQueue } from "@/mobile/viewmodels/customerViewModel";
 import { readMobileCustomers } from "@/mobile/data/mobileReaders";
 import { useMobilePagedQuery } from "@/mobile/data/useMobilePagedQuery";
+import { useUrlFilters } from "@/mobile/data/useUrlFilters";
 import { useStoreName } from "@/mobile/data/useStoreName";
 import { WhatsAppIconLink } from "@/mobile/components/WhatsAppAction";
 import { customerMessage } from "@/lib/whatsapp";
@@ -15,7 +16,10 @@ import { customerMessage } from "@/lib/whatsapp";
 export function MobileCustomersScreen() {
   const navigate = useNavigate();
   const offline = useIsOffline();
-  const [query, setQuery] = useState("");
+  // In the URL, so back from a customer keeps the search.
+  const [filters, setFilters] = useUrlFilters({ q: "" });
+  const query = filters.q;
+  const setQuery = (q: string) => setFilters({ q });
   const page = useMobilePagedQuery(readMobileCustomers, { search: query }, { watch: ["customers", "orders"] });
   const rows = useMemo(() => toMobileCustomerQueue(page.rows), [page.rows]);
   const storeName = useStoreName();

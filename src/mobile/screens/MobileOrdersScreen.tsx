@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { ArrowRight, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSearch } from "@/mobile/components/MobileSearch";
 import { FilterSheet } from "@/mobile/components/FilterSheet";
 import { OrderDateFilter } from "@/mobile/components/OrderDateFilter";
-import { resolveOrderDateFilter, type OrderDateSelection } from "@/mobile/viewmodels/orderDateFilter";
+import { resolveOrderDateFilter, ORDER_DATE_PRESETS, type OrderDatePreset, type OrderDateSelection } from "@/mobile/viewmodels/orderDateFilter";
+import { useUrlFilters } from "@/mobile/data/useUrlFilters";
 import { QueueRow } from "@/mobile/components/QueueRow";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
@@ -19,10 +20,22 @@ const STATUSES = [{ id: "all", label: "كل الحالات" }, { id: "pending", 
 export function MobileOrdersScreen() {
   const offline = useIsOffline();
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
-  const [segment, setSegment] = useState("action");
-  const [status, setStatus] = useState("all");
-  const [dateFilter, setDateFilter] = useState<OrderDateSelection>({ preset: "all" });
+  // In the URL, so back from an order (or a refresh) keeps the list as it was.
+  const [filters, setFilters] = useUrlFilters(
+    { q: "", seg: "action", status: "all", date: "all", from: "", to: "" },
+    { seg: SEGMENTS.map((s) => s.id), status: STATUSES.map((s) => s.id), date: ORDER_DATE_PRESETS.map((p) => p.id) },
+  );
+  const query = filters.q;
+  const setQuery = (q: string) => setFilters({ q });
+  const segment = filters.seg;
+  const setSegment = (seg: string) => setFilters({ seg });
+  const status = filters.status;
+  const setStatus = (value: string) => setFilters({ status: value });
+  const dateFilter = useMemo<OrderDateSelection>(
+    () => ({ preset: filters.date as OrderDatePreset, from: filters.from || undefined, to: filters.to || undefined }),
+    [filters.date, filters.from, filters.to],
+  );
+  const setDateFilter = (d: OrderDateSelection) => setFilters({ date: d.preset, from: d.from ?? "", to: d.to ?? "" });
   // Resolved once per selection, so a preset's start does not drift on every
   // render (which would re-key the query). Only a complete, ordered range is
   // ever applied by the sheet; anything else falls back to no bound.

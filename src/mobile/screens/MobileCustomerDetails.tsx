@@ -166,7 +166,11 @@ export function MobileCustomerDetails() {
             {/* Not read for a role without finance (048) — absent, never «٠». */}
             {financials.deliveredRevenue !== null && (
               <div>
-                <span>إيراد المسلم (مُسجل)</span>
+                {/* The reader's customer-value balance from the ledger — POS
+                    sales and kept deposits included — so not "delivered
+                    revenue": a customer with only returned orders can hold a
+                    forfeited deposit here. */}
+                <span>قيمة العميل (LTV)</span>
                 <strong style={{ color: "var(--success)" }}>{formatArabicCurrency(financials.deliveredRevenue)}</strong>
               </div>
             )}

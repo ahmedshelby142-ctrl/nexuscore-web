@@ -1,5 +1,6 @@
-import { Component, type ReactNode } from "react";
-import { BrowserRouter } from "react-router-dom";
+import { Component, useEffect, type ReactNode } from "react";
+import { BrowserRouter, useLocation } from "react-router-dom";
+import { notifyMobileNavigation } from "./pwa/registerMobileUpdates";
 import { Toaster } from "@/components/ui/sonner";
 import { useSessionReconciliation } from "@/lib/auth/useSessionReconciliation";
 import { useMobileRealtime } from "./data/useMobileRealtime";
@@ -28,6 +29,19 @@ class MobileAppBoundary extends Component<{ children: ReactNode }, { failed: boo
   }
 }
 
+/**
+ * A route change is where a waiting release may reload the app: the screen
+ * being left is gone, the new one holds nothing typed yet. Pathname only — a
+ * filter written to the query string is not a navigation away.
+ */
+function ReleaseCheckOnNavigation() {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    notifyMobileNavigation();
+  }, [pathname]);
+  return null;
+}
+
 /** Mobile-only root. It never imports the desktop `App` or desktop layout. */
 export function MobileApp() {
   const sessionState = useSessionReconciliation();
@@ -43,6 +57,7 @@ export function MobileApp() {
   return (
     <MobileAppBoundary>
       <BrowserRouter>
+        <ReleaseCheckOnNavigation />
         <Toaster position="top-center" dir="rtl" richColors closeButton />
         <MobileRouter sessionState={sessionState} />
       </BrowserRouter>

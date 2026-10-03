@@ -81,6 +81,10 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      // Registered by `src/mobile/pwa/registerMobileUpdates.ts`, which also
+      // checks for releases while the app is open and reloads at a safe moment.
+      // The injected `registerSW.js` only registered.
+      injectRegister: false,
       includeAssets: ["favicon.ico", "apple-touch-icon.png"],
       manifest: {
         name: "NexusCore عمليات",

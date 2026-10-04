@@ -36,6 +36,11 @@
 export function unsafeReloadReason(
   doc: Pick<Document, "activeElement" | "querySelector" | "querySelectorAll">,
 ): string | null {
+  // Forms own the meaning of their draft, including selections held only in
+  // React state and writes in flight. Commit this marker with the form render
+  // so it cannot lag behind the visible draft or leak after unmount/reset.
+  // Read-only filters/navigation must not opt in: this is unsaved user work.
+  if (doc.querySelector('[data-pwa-unsaved="true"]')) return "unsaved-work";
   const active = doc.activeElement as (Element & { isContentEditable?: boolean }) | null;
   if (active && (isTextEntry(active) || active.isContentEditable)) return "typing";
   // A sheet or dialog is an action in progress — a filter being chosen, a

@@ -52,6 +52,13 @@ export function MobileQuickRestock() {
   const [newSupplierPhone, setNewSupplierPhone] = useState("");
   const [saving, setSaving] = useState(false);
   const [showProductPicker, setShowProductPicker] = useState(false);
+  // Product/supplier/variant/wallet selections are work even before a number
+  // is typed. The update guard cannot infer this from input elements alone.
+  // Exclude search and fetched records: they are read-only view state.
+  const hasUnsavedDraft = saving || selectedProductIds.length > 0 ||
+    Object.values(lines).some((line) => line.quantity !== "" || line.unitCost !== "" || Boolean(line.variantName)) ||
+    supplierId !== "" || wallet !== "inStoreSafe" || paidInput !== "" ||
+    newSupplierName !== "" || newSupplierPhone !== "";
   const gate = useSubmitGate();
   const storeName = useStoreName();
   // The deficit نواقص read, per product — only for the WhatsApp request.
@@ -219,6 +226,9 @@ export function MobileQuickRestock() {
   const canSave = received.length > 0 && supplierReady && variantsResolved && !saving && !offline && !suppliersError;
 
   function reset() {
+    setQuery("");
+    setShowProductPicker(false);
+    setWallet("inStoreSafe");
     setLines({});
     setPicked({});
     setSelectedProductIds([]);
@@ -284,7 +294,7 @@ export function MobileQuickRestock() {
   const pickerRows = page.rows.filter((p: any) => !selectedProductIds.includes(String(p.id)));
 
   return (
-    <section className="mobile-screen">
+    <section className="mobile-screen" data-pwa-unsaved={hasUnsavedDraft}>
       <MobileAppBar
         title="توريد سريع"
         leadingAction={

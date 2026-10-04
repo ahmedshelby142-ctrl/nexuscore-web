@@ -14,7 +14,7 @@ export function MobileSearch({
   return (
     <label className="mobile-search">
       <Search aria-hidden="true" />
-      <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-label={placeholder} />
+      <input data-pwa-reload-safe="true" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-label={placeholder} />
       {value && <button type="button" onClick={onClear ?? (() => onChange(""))} aria-label="مسح البحث"><X aria-hidden="true" /></button>}
     </label>
   );

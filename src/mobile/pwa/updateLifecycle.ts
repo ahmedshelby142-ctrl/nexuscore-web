@@ -66,6 +66,9 @@ const NON_TEXT_INPUTS = new Set([
 ]);
 
 function isTextEntry(el: Element): boolean {
+  // Opt-out for read-only search/filter controls, not draft fields. Their
+  // values do not represent uncommitted business work.
+  if (el.getAttribute?.("data-pwa-reload-safe") === "true") return false;
   const tag = el.tagName;
   if (tag === "TEXTAREA")
     return !(el as HTMLTextAreaElement).readOnly && !(el as HTMLTextAreaElement).disabled;

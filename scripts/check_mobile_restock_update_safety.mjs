@@ -89,6 +89,7 @@ function screen() {
     querySelectorAll() {
       return nodes(h.tree).filter(n => n.type === "input" || n.type === "Input" || n.type === "MobileSearch").map(n => ({
         tagName:"INPUT", type:n.props.type ?? "text", value:n.props.value ?? "", readOnly:false, disabled:false,
+        getAttribute: name => name === "data-pwa-reload-safe" && n.type === "MobileSearch" ? "true" : null,
       }));
     },
   };
@@ -98,6 +99,13 @@ function screen() {
 
 test("untouched Quick Restock is safe", () => {
   assert.equal(unsafeReloadReason(screen().doc), null);
+});
+
+test("search is read-only filter state, not an uncommitted restock draft", () => {
+  const h = screen();
+  h.find(n => n.type === "MobileSearch").onChange("Fixture"); h.render();
+  assert.equal(unsafeReloadReason(h.doc), null);
+  assert.match(readFileSync(new URL("../src/mobile/components/MobileSearch.tsx", import.meta.url), "utf8"), /<input data-pwa-reload-safe="true"/);
 });
 
 test("regression: selecting a product with every text input empty blocks reload", () => {

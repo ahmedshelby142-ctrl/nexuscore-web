@@ -43,6 +43,13 @@ test("not work: checkboxes, hidden and disabled/read-only fields, selects", () =
   assert.equal(unsafeReloadReason(doc({ fields })), null);
 });
 
+test("explicit read-only search fields do not indefinitely hold a pending release", () => {
+  const search = el("INPUT", { value: "query", getAttribute: name => name === "data-pwa-reload-safe" ? "true" : null });
+  assert.equal(unsafeReloadReason(doc({ active: search, fields: [search] })), null);
+  assert.equal(unsafeReloadReason(doc({ fields: [search, el("INPUT", {value: "draft"})] })), "unsaved-input", "ordinary form input still protects work");
+  assert.equal(unsafeReloadReason(doc({ fields: [search], dialog: true })), "dialog-open", "an open form remains protected");
+});
+
 // ── The lifecycle, with a fake clock ────────────────────────────────────────
 function harness({ safe = true, visible = true } = {}) {
   const h = { t: 0, checks: 0, reloads: 0, safe, visible, intervals: [], timeouts: [] };

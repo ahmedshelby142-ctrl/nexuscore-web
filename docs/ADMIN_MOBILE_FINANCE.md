@@ -28,7 +28,7 @@ are unchanged. Mobile supports ADMIN only; ACCOUNTANT remains a Desktop role.
 
 ## Shared personal budget
 
-Migration `20261005173704_shared_owner_budget.sql` creates `owner_budgets`:
+Migration `20261005223409_shared_owner_budget.sql` creates `owner_budgets`:
 one primary-key row per `store_id`, positive finite two-decimal EGP limit,
 `monthly`/`open` period, finite `started_at`, and server-created timestamps.
 RLS grants ADMIN and ACCOUNTANT read/insert/update/delete in their own store.

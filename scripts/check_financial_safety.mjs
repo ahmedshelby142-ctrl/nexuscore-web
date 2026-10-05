@@ -85,7 +85,7 @@ before(async () => {
   await admin.query(read("supabase/migrations/20261005115027_financial_write_safety.sql"));
   await admin.query("CREATE TABLE stores(id uuid PRIMARY KEY)");
   await admin.query("INSERT INTO stores VALUES($1)", [STORE]);
-  await admin.query(read("supabase/migrations/20261005173704_shared_owner_budget.sql"));
+  await admin.query(read("supabase/migrations/20261005223409_shared_owner_budget.sql"));
   await admin.query(read("scripts/fixtures/mobile-finance-schema.sql"));
   for (const [file, name] of [
     ["052_atomic_expense.sql", "record_expense"],

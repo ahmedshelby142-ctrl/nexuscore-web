@@ -22,6 +22,7 @@ import { WALLET_LABELS, type WalletType } from "@/types";
 import { formatMoney } from "@/lib/math";
 import { useRealtimeTables } from "@/mobile/data/useMobileRealtime";
 import { toast } from "sonner";
+import { localDateInput } from "@/lib/localDateInput";
 
 const ACTIONS = {
   expense: "مصروف تشغيل",
@@ -53,7 +54,7 @@ const initial = () => ({
   drawCategory: "",
   cashNow: false,
   periodType: "monthly" as "monthly" | "open",
-  date: new Date().toISOString().slice(0, 10),
+  date: localDateInput(),
   startedAt: Date.now(),
 });
 type Form = ReturnType<typeof initial>;
@@ -633,7 +634,6 @@ function FinanceActions({
                     {new Date(row.occurredAt).toLocaleDateString("ar-EG")}
                     <br />
                     {String(row.payload.note ?? row.payload.description ?? row.refId ?? "")}
-                    <small> {row.id}</small>
                   </li>
                 ))}
               </ul>

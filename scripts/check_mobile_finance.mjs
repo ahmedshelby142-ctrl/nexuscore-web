@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { localDateInput } from "../src/lib/localDateInput.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -63,6 +65,7 @@ function formHost({
   };
   const modules = {
     react,
+    "@/lib/localDateInput": { localDateInput },
     "react/jsx-runtime": {
       jsx: (type, props) => ({ type, props }),
       jsxs: (type, props) => ({ type, props }),
@@ -439,4 +442,12 @@ test("shared budget service ignores browser settings, distinguishes absent/error
   const storeSource = read("src/store/useFinancialStore.ts");
   assert.doesNotMatch(storeSource, /setOwnerBudget:|ownerBudget: null/);
   assert.match(read("src/components/finance/OwnerBudgetCard.tsx"), /useOwnerBudget\(\)/);
+});
+
+
+test("finance date defaults to the local day across Cairo midnight", () => {
+  const url = new URL("../src/lib/localDateInput.ts", import.meta.url).href;
+  const code = `import {localDateInput} from ${JSON.stringify(url)}; console.log(localDateInput(new Date('2026-10-05T22:30:00Z')));`;
+  const result = execFileSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", env: { ...process.env, TZ: "Africa/Cairo" }, windowsHide: true });
+  assert.equal(result.trim(), "2026-10-06");
 });

@@ -55,7 +55,8 @@ export { fromPiastres, toPiastres } from "./driver";
  * piastres, so callers only describe what happened.
  *
  * Throws if the database rejects the event (unknown account, unknown kind,
- * duplicate id). A throw means nothing was written.
+ * duplicate id). A transport error can occur after a commit; it does not prove
+ * that nothing was written. Financial commands use a stable retry envelope.
  */
 export async function appendEvent(event: NewEvent): Promise<string> {
   const row = await prepareEvent(event);

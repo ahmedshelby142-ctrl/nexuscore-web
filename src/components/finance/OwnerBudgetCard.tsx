@@ -1,3 +1,4 @@
+import { appendFinancialEvent } from "@/lib/financialCommand";
 /**
  * ميزانية صاحبة العمل — the ceiling, live, and the draws that consume it.
  *
@@ -20,7 +21,7 @@ import { useEffect, useState } from "react";
 import { figureOr, moneyFigure, statusOf } from "@/lib/figure";
 import { LoadError } from "@/components/ui/load-error";
 import { PiggyBank, AlertTriangle, HandCoins, RotateCcw } from "lucide-react";
-import { balances, appendEvent } from "@/lib/ledger";
+import { balances } from "@/lib/ledger";
 import {
   buildOwnerDrawLines,
   budgetStatus,
@@ -139,7 +140,7 @@ export function OwnerBudgetCard() {
     try {
       // ONE event, the same builder for the owner and for a شريك — only the
       // subject differs, which is what keeps the two budgets apart.
-      await appendEvent({
+      await appendFinancialEvent({
         kind: "owner_draw",
         actor: drawForm.who === OWNER_SUBJECT ? "صاحبة العمل" : "شريك",
         refType: "owner_draw",
@@ -162,7 +163,7 @@ export function OwnerBudgetCard() {
       setIsDrawOpen(false);
     } catch (e) {
       setDrawError(
-        `المسحوب متسجّلش، ومفيش فلوس اتحركت. ${e instanceof Error ? e.message : String(e)}`,
+        `${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       setSaving(false);

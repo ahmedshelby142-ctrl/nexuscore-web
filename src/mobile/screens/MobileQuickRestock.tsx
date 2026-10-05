@@ -274,15 +274,12 @@ export function MobileQuickRestock() {
             : paidAmount <= 0
               ? "توريد سريع من تطبيق الموبايل (آجل بالكامل)"
               : "توريد سريع من تطبيق الموبايل (آجل جزئي)",
-        idempotencyKey: crypto.randomUUID(),
       });
 
       toast.success(formatQuickRestockSuccess(result));
       close();
     } catch (e) {
-      // `commitReceipt` writes the document first and takes it back if the
-      // ledger refuses, so a throw means the receipt does not exist and nothing
-      // moved. Its message already names which failure shape happened.
+      // An uncertain response keeps its operation identity for a safe retry.
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);

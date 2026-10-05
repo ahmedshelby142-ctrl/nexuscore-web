@@ -1,6 +1,6 @@
+import { appendFinancialEvent } from "@/lib/financialCommand";
 import { useMemo, useState } from "react";
 import { Landmark, Plus, HandCoins } from "lucide-react";
-import { appendEvent } from "@/lib/ledger";
 import type { EquityView } from "@/lib/ledger/useEquityStatement";
 import { buildOwnerCapitalLines, buildOwnerContributionLines } from "@/lib/ledger/equity";
 import { OWNER_SUBJECT } from "@/lib/ledger/ownerDraw";
@@ -79,7 +79,7 @@ export function OwnerEquityCard({ equity }: { equity: EquityView }) {
     setActionError(null);
     try {
       const withCash = mode === "contribution" || form.cashNow;
-      await appendEvent({
+      await appendFinancialEvent({
         kind: mode === "capital" ? "owner_capital" : "owner_contribution",
         occurredAt: new Date(`${form.date}T00:00:00`),
         actor: useAuthStore.getState().username || "ADMIN",
@@ -104,7 +104,7 @@ export function OwnerEquityCard({ equity }: { equity: EquityView }) {
       );
       setMode(null);
     } catch (e) {
-      setActionError(`متسجّلش، ومفيش فلوس اتحركت. ${e instanceof Error ? e.message : String(e)}`);
+      setActionError(`${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSaving(false);
       gate.exit();

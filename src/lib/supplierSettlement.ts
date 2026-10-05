@@ -1,42 +1,6 @@
-/**
- * Paying a supplier down — تسوية المورد.
- *
- * ## Why this exists
- *
- * شاشة المشتريات could put a debt ON the ledger: a فاتورة آجل writes
- * `payable_supplier +`, and `buildSupplierPaymentLines` has always known how to
- * take one off. **Nothing ever called it.** `recordSupplierPayment` on the
- * store — which updates the invoice document — had no caller either. So the
- * supplier balance could only ever grow, and a shop that actually paid its
- * supplier had no way to say so: the debt on screen drifted further from
- * reality with every settlement made in cash.
- *
- * This is the missing half. It is deliberately thin — the money rule already
- * exists in `buildSupplierPaymentLines`, and this does not duplicate it.
- *
- * ## Which comes first, and why it is the opposite of a receipt
- *
- * `commitReceipt` writes the DOCUMENT first, because `purchase_invoices` holds
- * a UNIQUE constraint that can refuse a receipt, and a refusal after the ledger
- * had moved would leave stock and a payable with no receipt behind them.
- *
- * A settlement has no such constraint, and the two writes are not equal:
- *
- *   * the LEDGER is the balance. `payable_supplier` is what the supplier is
- *     owed, on every screen that shows it.
- *   * the invoice `remainingAmount` is a DOCUMENT MIRROR — the per-invoice
- *     breakdown of that same balance.
- *
- * So the ledger goes first. If an invoice update then fails, the money and the
- * balance are still exactly right and only the breakdown is stale — visible,
- * and fixable by re-reading. The other order would mark invoices paid while no
- * money had moved, which is a lie about a supplier's account.
- *
- * The allocator is pure and lives here so "which invoices did this payment
- * settle" is testable without a database. The write itself — which needs the
- * ledger, the store and the document counter — is `commitSupplierPayment` in
- * `./supplierPaymentCommand.ts`, kept apart for exactly that reason.
- */
+/** Supplier settlement preview arithmetic. The authoritative write locks and
+ * allocates invoices inside record_financial_command, committing allocations
+ * and ledger lines together. This pure allocator only previews the payment. */
 
 import { round } from "./math.ts";
 

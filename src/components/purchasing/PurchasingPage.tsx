@@ -517,11 +517,7 @@ export function PurchasingPage() {
       // `supplier.id` was `undefined` and the invoice below belonged to nobody.
       // `Supplier` is `any` (see src/types/index.ts), so nothing caught it.
       const supplier = registeringNew
-        ? await addSupplier({
-            companyName: newSupplierName.trim(),
-            contactPerson: "",
-            phone: newSupplierPhone.trim(),
-          })
+        ? { id: "__new__", companyName: newSupplierName.trim() }
         : suppliers.find((s) => s.id === supplierId);
       if (!supplier?.id) throw new Error("المورد مش موجود");
 
@@ -562,6 +558,8 @@ export function PurchasingPage() {
       await commitReceipt({
         supplierId: supplier.id,
         supplierName: supplier.companyName,
+        newSupplierName: registeringNew ? newSupplierName.trim() : undefined,
+        newSupplierPhone: registeringNew ? newSupplierPhone.trim() : undefined,
         items: ledgerItems,
         wallet,
         paidAmount,

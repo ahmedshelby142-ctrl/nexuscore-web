@@ -1,3 +1,4 @@
+import { appendFinancialEvent } from "@/lib/financialCommand";
 /**
  * The ONE opening-balance write path.
  *
@@ -13,7 +14,6 @@
  * repeat: change the event here and both screens change with it.
  */
 
-import { appendEvent } from "./index";
 import { buildOpeningBalanceLines } from "./audit";
 
 export interface OpeningBalanceEntry {
@@ -36,7 +36,7 @@ export interface OpeningBalanceEntry {
 export async function appendOpeningBalance(entry: OpeningBalanceEntry): Promise<string | null> {
   if (!(entry.quantity > 0)) return null;
 
-  return appendEvent({
+  return appendFinancialEvent({
     kind: "stock_adjustment",
     actor: "رصيد افتتاحي",
     refType: "opening_balance",

@@ -132,22 +132,19 @@ test("the money moves exactly once, in both directions", () => {
 
 // ── the command's shape ─────────────────────────────────────────────────────
 
-test("the ledger is written before the invoice documents", () => {
-  // The balance is `payable_supplier`; `remainingAmount` is its per-invoice
-  // breakdown. A failure after the money moved is stale, not wrong. The other
-  // order would mark invoices paid with no money behind them.
-  const src = read("../src/lib/supplierPaymentCommand.ts");
-  const ledgerAt = src.indexOf("const eventId = await appendEvent");
-  const docsAt = src.indexOf("recordSupplierPayment(");
-  assert.ok(ledgerAt > 0 && docsAt > 0);
-  assert.ok(ledgerAt < docsAt, "the money must be recorded first");
-  assert.match(src, /staleInvoices\.push/, "a failed document update must be reported");
+test("the payment uses one authoritative allocation transaction", () => {
+ const src=read("../src/lib/supplierPaymentCommand.ts");
+ assert.match(src,/runFinancialCommand[\s\S]*?\("supplier_payment", request\)/);
+ assert.doesNotMatch(src,/appendEvent|recordSupplierPayment\(|staleInvoices/);
+ const sql=read("../supabase/migrations/20261005015827_financial_write_safety.sql");
+ assert.match(sql,/FOR UPDATE LOOP/);
+ assert.match(sql,/UPDATE public.purchase_invoices SET/);
 });
 
-test("the payment carries an auditable reference allocated by Postgres", () => {
-  const src = read("../src/lib/supplierPaymentCommand.ts");
-  assert.match(src, /nextDocumentNumber\("supplier_payment", "SP-"\)/);
-  assert.match(src, /refId: paymentRef/, "so the movement can be pointed at");
+test("the payment carries a server-allocated auditable reference", () => {
+ const sql=read("../supabase/migrations/20261005015827_financial_write_safety.sql");
+ assert.match(sql,/next_document_number\(p_store,'supplier_payment','SP-'\)/);
+ assert.match(sql,/'ref_id',v_ref/);
 });
 
 test("the settlement is behind a submit gate", () => {

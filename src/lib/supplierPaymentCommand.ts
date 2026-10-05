@@ -1,26 +1,8 @@
-/**
- * Writing one supplier settlement.
- *
- * The rule — which invoices a payment settles, and in what order — is pure and
- * lives in `./supplierSettlement.ts`. This is only the write, and it is split
- * out so that rule stays testable without a ledger, a store or a browser.
- *
- * See the header of `./supplierSettlement.ts` for why the LEDGER is written
- * before the invoice documents here, which is the opposite of `commitReceipt`.
- */
-
-import { appendEvent } from "@/lib/ledger";
-import { buildSupplierPaymentLines } from "@/lib/ledger/purchases";
-import { round } from "@/lib/math";
-import { nextDocumentNumber } from "@/services/documentNumber";
+/** Supplier payment and server-derived allocations commit together. */
+import { runFinancialCommand } from "@/lib/financialCommand";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import type { WalletType } from "@/types";
-import {
-  allocateSupplierPayment,
-  openInvoicesFor,
-  type PaymentAllocation,
-  type SettleableInvoice,
-} from "./supplierSettlement";
+import type { PaymentAllocation, SettleableInvoice } from "./supplierSettlement";
 
 export interface SupplierPaymentInput {
   supplierId: string;
@@ -43,82 +25,19 @@ export interface SupplierPaymentResult {
   applied: number;
   unapplied: number;
   allocations: PaymentAllocation[];
-  /**
-   * Invoices whose DOCUMENT could not be updated after the money moved.
-   *
-   * Not a failure of the payment — the ledger has it and the balance is right.
-   * Surfaced so the operator is told the per-invoice breakdown is behind, which
-   * is the honest thing to say and is fixed by a refresh.
-   */
-  staleInvoices: string[];
+  replayed: boolean;
 }
 
-/**
- * Record one supplier settlement: cash out, debt down, invoices marked.
- *
- * Throws with a user-facing Arabic message. A throw before the ledger write
- * means nothing happened at all; the ledger write itself is the point of no
- * return, and everything after it is reported rather than rolled back — see the
- * header for why that is the safe direction here.
- */
-export async function commitSupplierPayment(
-  input: SupplierPaymentInput,
-): Promise<SupplierPaymentResult> {
-  if (!input.supplierId) throw new Error("اختر المورد الأول");
-  if (!input.wallet) throw new Error("اختر الخزينة اللي الفلوس هتطلع منها");
-
-  const open = openInvoicesFor(input.invoices, input.supplierId);
-  const plan = allocateSupplierPayment(open, input.amount);
-  const amount = round(Number(input.amount));
-
-  // An auditable reference, allocated by Postgres like every other document
-  // number. `payable_supplier` aggregates by supplier, so without this a
-  // settlement would be a movement nobody could point at.
-  const paymentRef = await nextDocumentNumber("supplier_payment", "SP-");
-
-  // ── The MONEY. Everything below this line is bookkeeping. ────────────────
-  const eventId = await appendEvent({
-    kind: "supplier_payment",
-    actor: input.actor ?? "الكاشير",
-    refType: "supplier_payment",
-    refId: paymentRef,
-    payload: {
-      paymentRef,
-      supplierId: input.supplierId,
-      supplierName: input.supplierName,
-      wallet: input.wallet,
-      amount,
-      note: input.note ?? "",
-      // The breakdown, so the settlement can be read back invoice by invoice.
-      allocations: plan.allocations,
-      unapplied: plan.unapplied,
-    },
-    lines: buildSupplierPaymentLines({
-      supplierId: input.supplierId,
-      wallet: input.wallet,
-      amount,
-    }),
-  });
-
-  // ── The invoice documents. A failure here is stale, not wrong. ────────────
-  const staleInvoices: string[] = [];
-  for (const allocation of plan.allocations) {
-    try {
-      await useBusinessStore.getState().recordSupplierPayment(allocation.invoiceId, allocation.applied);
-    } catch {
-      staleInvoices.push(allocation.invoiceNumber);
-    }
-  }
-
-  return {
-    eventId,
-    paymentRef,
-    amount,
-    applied: plan.applied,
-    unapplied: plan.unapplied,
-    allocations: plan.allocations,
-    staleInvoices,
-  };
+export async function commitSupplierPayment(input: SupplierPaymentInput): Promise<SupplierPaymentResult> {
+  const { invoices: _previewOnly, supplierName: _displayOnly, ...request } = input;
+  const result = await runFinancialCommand<SupplierPaymentResult>("supplier_payment", request);
+  try {
+    const { cloudList } = await import("@/services/cloudData");
+    const purchaseInvoices = await cloudList("purchase_invoices");
+    useBusinessStore.setState({ purchaseInvoices });
+  } catch { console.warn("تم تسجيل الدفعة؛ أعد تحميل الفواتير لتحديث العرض."); }
+  try { window.dispatchEvent(new CustomEvent("ledger-sync-pulled", { detail: { table: "purchase_invoices" } })); } catch { /* committed */ }
+  return result;
 }
 
 /** What to tell the operator after a settlement lands. */
@@ -129,9 +48,6 @@ export function formatSupplierPaymentSuccess(result: SupplierPaymentResult): str
   }
   if (result.unapplied > 0) {
     parts.push(`و${result.unapplied.toLocaleString("ar-EG")} ج.م رصيد مقدَّم للمورد`);
-  }
-  if (result.staleInvoices.length > 0) {
-    parts.push(`(تحديث الفواتير ${result.staleInvoices.join("، ")} لم يكتمل — اعمل تحديث للصفحة)`);
   }
   return parts.join(" — ");
 }

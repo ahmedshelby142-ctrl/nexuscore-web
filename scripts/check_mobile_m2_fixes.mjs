@@ -263,13 +263,10 @@ test("the ledger attempts no delete it is not allowed to make", () => {
   );
 });
 
-test("a failed receipt takes its DOCUMENT back, which is the part that can be taken back", () => {
-  // `purchase_invoices` has no such prohibition, so `removePurchaseInvoice`
-  // genuinely undoes it — verified: after the forced failure the invoice count
-  // was unchanged and no payable was left standing.
-  const commit = readFileSync(new URL("../src/lib/receiving/commitReceipt.ts", import.meta.url), "utf8");
-  assert.match(commit, /removePurchaseInvoice\(invoice\.id\)/);
-  assert.match(commit, /لم يُسجَّل التوريد ولم يتغيّر أي رصيد/, "and says so in the user's language");
+test("a transport failure never deletes a potentially committed receipt", () => {
+ const commit=readFileSync(new URL("../src/lib/receiving/commitReceipt.ts",import.meta.url),"utf8");
+ assert.doesNotMatch(commit,/removePurchaseInvoice|\.delete\(/);
+ assert.match(commit,/runFinancialCommand/);
 });
 
 // ── The primary action must not sit under the bottom navigation ─────────────

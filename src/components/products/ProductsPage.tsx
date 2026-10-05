@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { appendOpeningBalance } from "@/lib/ledger/openingBalance";
+import { resolvePendingOpeningBalance } from "@/lib/financialCommand";
 import { appendEvent } from "@/lib/ledger";
 import { useStock } from "@/lib/ledger/useStock";
 import {
@@ -298,6 +299,7 @@ export function ProductsPage() {
       // event below. Every selling screen reads the record through
       // `sellableStock`, so a product created with 40 on the shelf and no
       // `totalQuantity` would show up as نفد المخزون the moment it was saved.
+      await resolvePendingOpeningBalance();
       const product = await addProduct({ ...data, totalQuantity: qty });
 
       if (qty <= 0) {
@@ -324,7 +326,7 @@ export function ProductsPage() {
       setIsDialogOpen(false);
     } catch (e) {
       toast.error(
-        `المنتج اتسجّل، لكن الكمية الموجودة حالياً متسجلتش. سجّلها من شاشة الجرد. ${e instanceof Error ? e.message : String(e)}`,
+        `تعذّر تأكيد الحفظ. ${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       setIsSubmitting(false);

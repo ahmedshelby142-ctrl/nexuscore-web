@@ -146,7 +146,6 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
         },
         wallet,
         notes: "توريد سريع من شاشة المنتجات",
-        idempotencyKey: crypto.randomUUID(),
       });
 
       toast.success(formatQuickRestockSuccess(result));
@@ -154,10 +153,7 @@ export function QuickRestockDialog({ products, onClose, onReceived }: QuickResto
       onReceived();
       close();
     } catch (e) {
-      // `commitReceipt` writes the DOCUMENT before the ledger and takes the
-      // document back if the ledger refuses, so a throw means the receipt does
-      // not exist and the stock has not moved. The message it carries already
-      // says which of the two failure shapes happened.
+      // An uncertain response keeps its operation identity for a safe retry.
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);

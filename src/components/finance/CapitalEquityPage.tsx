@@ -1,3 +1,4 @@
+import { appendFinancialEvent } from "@/lib/financialCommand";
 import { toast } from "sonner";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useMemo, useEffect, useRef } from "react";
@@ -21,7 +22,7 @@ import { useFinancialStore } from "@/store/useFinancialStore";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { distributionFor } from "@/lib/partners";
 import { PARTNER_KIND_LABELS } from "@/types";
-import { appendEvent, balances } from "@/lib/ledger";
+import { balances } from "@/lib/ledger";
 import { customWindow, fetchPnl } from "@/lib/ledger/reports";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { useEquityStatement } from "@/lib/ledger/useEquityStatement";
@@ -147,7 +148,7 @@ export function CapitalEquityPage() {
     setWalletBusy(true);
     setWalletActionError(null);
     try {
-      await appendEvent({
+      await appendFinancialEvent({
         kind: "stock_adjustment",
         actor: "رصيد افتتاحي",
         refType: "opening_balance",
@@ -160,7 +161,7 @@ export function CapitalEquityPage() {
       setIsOpeningOpen(false);
     } catch (e) {
       setWalletActionError(
-        `الرصيد الافتتاحي متسجّلش. ${e instanceof Error ? e.message : String(e)}`,
+        `تعذّر تأكيد الرصيد الافتتاحي. ${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       setWalletBusy(false);

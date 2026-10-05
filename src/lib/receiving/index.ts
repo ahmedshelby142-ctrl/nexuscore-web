@@ -7,7 +7,7 @@
  * document-before-ledger ordering exist in a single place.
  */
 
-export { commitReceipt, nextFreePurchaseInvoiceNumber, type ReceiptItem, type ReceiptCommitInput, type ReceiptCommitResult } from "./commitReceipt";
+export { commitReceipt, type ReceiptItem, type ReceiptCommitInput, type ReceiptCommitResult } from "./commitReceipt";
 export { readSuppliers, readSupplierById, type SupplierOption } from "./suppliers";
 
 export {

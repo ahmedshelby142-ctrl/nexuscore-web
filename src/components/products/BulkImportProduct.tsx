@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import { resolvePendingOpeningBalance } from "@/lib/financialCommand";
 import { appendOpeningBalance } from "@/lib/ledger/openingBalance";
 import { appendEvent } from "@/lib/ledger";
 import { useStock } from "@/lib/ledger/useStock";
@@ -142,6 +143,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
     let skipped = 0;
 
     try {
+      await resolvePendingOpeningBalance();
       for (const row of rows) {
         const generatedSku = row.sku || autoSku();
         const price = Math.max(0, row.retail_price || 0);

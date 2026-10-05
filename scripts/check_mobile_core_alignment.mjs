@@ -38,26 +38,16 @@ test("there is exactly ONE place that writes a supplier receipt", () => {
   assert.doesNotMatch(command, /purchaseInvoices\.length \+ 1/);
 });
 
-test("the shared commit draws a number Postgres allocated", () => {
-  const src = read("../src/lib/receiving/commitReceipt.ts");
-  assert.match(src, /nextDocumentNumber\("purchase_invoice", "FM-"\)/);
-  // And skips any the store already holds, because every installed database
-  // carries FM-0001… from the old scheme while the counter starts at zero.
-  assert.match(src, /taken\.has\(candidate\)/);
+test("the transaction allocates a unique invoice number", () => {
+ const sql=read("../supabase/migrations/20261005015827_financial_write_safety.sql");
+ assert.match(sql,/next_document_number\(p_store,'purchase_invoice','FM-'\)/);
+ assert.match(sql,/EXIT WHEN NOT EXISTS\(SELECT 1 FROM public.purchase_invoices/);
 });
 
-test("the document is written BEFORE the ledger, and taken back on failure", () => {
-  // Measured inside the function, not the file: `appendEvent` is also an
-  // import at the top, which would make any whole-file ordering test pass.
-  const body = read("../src/lib/receiving/commitReceipt.ts").slice(
-    read("../src/lib/receiving/commitReceipt.ts").indexOf("export async function commitReceipt"),
-  );
-  const src = body;
-  const docAt = src.indexOf("addPurchaseInvoice");
-  const ledgerAt = src.indexOf("appendEvent");
-  assert.ok(docAt > 0 && ledgerAt > 0);
-  assert.ok(docAt < ledgerAt, "the invoice document must be written before the ledger event");
-  assert.match(src, /removePurchaseInvoice\(invoice\.id\)/, "a refused ledger must undo the document");
+test("the receipt uses one transaction without compensating deletion", () => {
+ const src=read("../src/lib/receiving/commitReceipt.ts");
+ assert.match(src,/runFinancialCommand[\s\S]*?\("receipt",/);
+ assert.doesNotMatch(src,/removePurchaseInvoice|appendEvent|addPurchaseInvoice/);
 });
 
 test("every receipt path goes through the shared commit", () => {
@@ -80,19 +70,17 @@ test("suppliers are resolved from the server, not from the unhydrated store", ()
   // permanently []. Resolving against it made every existing supplier look
   // missing and minted a duplicate on every mobile receipt.
   const command = read("../src/lib/receiving/command.ts");
-  assert.match(command, /readSupplierById/);
+  assert.match(read("../supabase/migrations/20261005015827_financial_write_safety.sql"), /FROM public.suppliers WHERE id=p_input->>'supplierId' AND store_id=p_store/);
   assert.doesNotMatch(command, /suppliers\.find\(/, "must not resolve from the local store array");
 
   const screen = read("../src/mobile/screens/MobileQuickRestock.tsx");
   assert.match(screen, /readSuppliers\(/, "the picker must load suppliers from the server");
 });
 
-test("a new supplier is only created when explicitly requested", () => {
-  const src = read("../src/lib/receiving/command.ts");
-  assert.match(src, /supplierId === NEW_SUPPLIER/);
-  const created = src.indexOf("addSupplier");
-  const guard = src.indexOf("supplierId === NEW_SUPPLIER");
-  assert.ok(guard < created, "supplier creation must sit behind the explicit sentinel");
+test("new supplier creation is guarded inside the receipt transaction", () => {
+ const sql=read("../supabase/migrations/20261005015827_financial_write_safety.sql");
+ assert.match(sql,/IF p_input->>'supplierId'='__new__' THEN/);
+ assert.ok(sql.indexOf("IF p_input->>'supplierId'='__new__'") < sql.indexOf('INSERT INTO public.suppliers'));
 });
 
 // ── M2: customer financials come from the Core authorities ──────────────────

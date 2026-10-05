@@ -1166,3 +1166,18 @@ main.mobile-state {
 .mobile-whatsapp-icon svg { inline-size: 1.25rem; block-size: 1.25rem; }
 .mobile-whatsapp-icon:active { background: color-mix(in oklab, var(--success) 22%, transparent); }
 .mobile-whatsapp-icon:focus-visible { outline: 3px solid color-mix(in oklab, var(--ring) 55%, transparent); outline-offset: 2px; }
+.mobile-finance { display: grid; gap: 1rem; margin-block: 1rem; }
+.mobile-finance h2, .mobile-finance h3 { font-weight: 700; }
+.mobile-finance-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.mobile-finance button { min-height: 46px; border: 1px solid var(--border); border-radius: 12px; padding: .65rem; background: var(--card); font-weight: 600; }
+.mobile-finance button:disabled { opacity: .5; }
+.mobile-finance button[type=submit] { background: var(--primary); color: var(--primary-foreground); }
+.mobile-finance-form { display: grid; gap: 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--card); }
+.mobile-finance fieldset { display: grid; gap: 1rem; min-width: 0; }
+.mobile-finance label { display: grid; gap: .4rem; font-size: .9rem; }
+.mobile-finance :is(input:not([type=checkbox]), select) { width: 100%; min-width: 0; min-height: 46px; border: 1px solid var(--border); border-radius: 10px; background: var(--background); color: var(--foreground); padding: .6rem; font-size: 16px; }
+.mobile-finance input[type=checkbox] { width: 22px; height: 22px; }
+.mobile-finance p { font-size: .875rem; line-height: 1.7; }
+.mobile-finance-error { color: var(--destructive); }
+.mobile-finance li { padding-block: .65rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; font-size: .875rem; }
+.mobile-finance small { display: block; direction: ltr; color: var(--muted-foreground); font-size: .65rem; }

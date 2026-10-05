@@ -35,7 +35,7 @@ import {
   DRAW_CATEGORY_SUGGESTIONS,
   type BudgetPeriod,
 } from "@/lib/ledger/ownerDraw";
-import { useFinancialStore } from "@/store/useFinancialStore";
+import { useOwnerBudget } from "@/hooks/useOwnerBudget";
 import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { activePartners } from "@/lib/partners";
@@ -67,7 +67,15 @@ import type { WalletType } from "@/types";
 import { cn } from "@/lib/utils";
 
 export function OwnerBudgetCard() {
-  const { ownerBudget, setOwnerBudget, resetOwnerBudget } = useFinancialStore();
+  const {
+    ownerBudget,
+    setOwnerBudget,
+    loading: budgetLoading,
+    error: budgetError,
+    reload: reloadBudget,
+  } = useOwnerBudget();
+  const [budgetSaving, setBudgetSaving] = useState(false);
+  const [budgetActionError, setBudgetActionError] = useState<string | null>(null);
   const partners = useBusinessStore((s) => s.partners);
   const { refresh: refreshWallets } = useBalances("wallet");
 
@@ -150,9 +158,7 @@ export function OwnerBudgetCard() {
         payload: { wallet: drawForm.wallet, category: drawForm.category.trim() || undefined },
         lines: buildOwnerDrawLines({
           subjectId:
-            drawForm.who === OWNER_SUBJECT
-              ? ownerSubjectFor(drawForm.category)
-              : drawForm.who,
+            drawForm.who === OWNER_SUBJECT ? ownerSubjectFor(drawForm.category) : drawForm.who,
           amount,
           wallet: drawForm.wallet,
         }),
@@ -162,9 +168,7 @@ export function OwnerBudgetCard() {
       setDrawForm({ amount: "", wallet: drawForm.wallet, who: drawForm.who, category: "" });
       setIsDrawOpen(false);
     } catch (e) {
-      setDrawError(
-        `${e instanceof Error ? e.message : String(e)}`,
-      );
+      setDrawError(`${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSaving(false);
       gate.exit();
@@ -180,19 +184,37 @@ export function OwnerBudgetCard() {
     setIsSetupOpen(true);
   }
 
-  function saveSetup() {
+  async function saveSetup() {
     const limit = parseFloat(setupForm.limit);
-    if (!(limit > 0)) return;
-    setOwnerBudget({
-      limit,
-      periodType: setupForm.periodType,
-      // Editing the ceiling must NOT restart the period — that would wipe the
-      // running total by accident. The period only moves when she resets it,
-      // or when the calendar does it for شهري. A brand-new budget starts now.
-      startedAt: ownerBudget?.startedAt ?? Date.now(),
-    });
-    setIsSetupOpen(false);
+    if (!(limit > 0) || budgetSaving) return;
+    setBudgetSaving(true);
+    setBudgetActionError(null);
+    try {
+      await setOwnerBudget({
+        limit,
+        periodType: setupForm.periodType,
+        // Editing the ceiling must NOT restart the period — that would wipe the
+        // running total by accident. The period only moves when she resets it,
+        // or when the calendar does it for شهري. A brand-new budget starts now.
+        startedAt: ownerBudget?.startedAt ?? Date.now(),
+      });
+      setIsSetupOpen(false);
+    } catch (e) {
+      setBudgetActionError(String(e instanceof Error ? e.message : e));
+    } finally {
+      setBudgetSaving(false);
+    }
   }
+
+  if (budgetLoading) return <p>جاري تحميل الميزانية المشتركة…</p>;
+  if (budgetError)
+    return (
+      <LoadError
+        message="تعذّر تحميل الميزانية المشتركة"
+        detail={budgetError}
+        onRetry={reloadBudget}
+      />
+    );
 
   // Not set up yet: one prompt, not an empty card pretending to be a number.
   if (!ownerBudget) {
@@ -206,8 +228,8 @@ export function OwnerBudgetCard() {
             <div>
               <h3 className="font-display text-xl font-bold">ميزانية صاحبة العمل</h3>
               <p className="text-sm text-muted-foreground mt-1 max-w-prose">
-                حدّدي مبلغ لنفسك، والنظام يقول لك كل جنيه راح منه. المسحوبات دي مش مصروفات
-                المحل — دي فلوس بتخرج لك إنتِ.
+                حدّدي مبلغ لنفسك، والنظام يقول لك كل جنيه راح منه. المسحوبات دي مش مصروفات المحل —
+                دي فلوس بتخرج لك إنتِ.
               </p>
             </div>
           </div>
@@ -220,7 +242,11 @@ export function OwnerBudgetCard() {
 
   const from = periodStart(ownerBudget);
   const barColor =
-    status.level === "over" ? "bg-destructive" : status.level === "warn" ? "bg-amber-500" : "bg-green-600";
+    status.level === "over"
+      ? "bg-destructive"
+      : status.level === "warn"
+        ? "bg-amber-500"
+        : "bg-green-600";
 
   return (
     <div className="rounded-2xl border border-border bg-card p-6 space-y-4">
@@ -359,7 +385,12 @@ export function OwnerBudgetCard() {
 
   function renderSetupDialog() {
     return (
-      <Dialog open={isSetupOpen} onOpenChange={setIsSetupOpen}>
+      <Dialog
+        open={isSetupOpen}
+        onOpenChange={(open) => {
+          if (!budgetSaving) setIsSetupOpen(open);
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>ميزانية صاحبة العمل</DialogTitle>
@@ -405,10 +436,14 @@ export function OwnerBudgetCard() {
             </div>
           </div>
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setIsSetupOpen(false)}>
+            <Button variant="outline" disabled={budgetSaving} onClick={() => setIsSetupOpen(false)}>
               إلغاء
             </Button>
-            <Button onClick={saveSetup} disabled={!(parseFloat(setupForm.limit) > 0)}>
+            {budgetActionError && <p role="alert">{budgetActionError}</p>}
+            <Button
+              onClick={() => void saveSetup()}
+              disabled={budgetSaving || !(parseFloat(setupForm.limit) > 0)}
+            >
               حفظ
             </Button>
           </DialogFooter>
@@ -492,7 +527,9 @@ export function OwnerBudgetCard() {
               <select
                 id="draw-wallet"
                 value={drawForm.wallet}
-                onChange={(e) => setDrawForm((f) => ({ ...f, wallet: e.target.value as WalletType }))}
+                onChange={(e) =>
+                  setDrawForm((f) => ({ ...f, wallet: e.target.value as WalletType }))
+                }
                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               >
                 {Object.entries(WALLET_LABELS).map(([key, label]) => (
@@ -539,16 +576,29 @@ export function OwnerBudgetCard() {
           <AlertDialogHeader>
             <AlertDialogTitle>تصفير الميزانية؟</AlertDialogTitle>
             <AlertDialogDescription>
-              هتبدأ فترة جديدة من دلوقتي، والعداد يرجع لصفر. المسحوبات القديمة مش هتتمسح — هي
-              متسجلة في الدفتر وهتفضل، بس مش هتتحسب في الفترة الجديدة.
+              هتبدأ فترة جديدة من دلوقتي، والعداد يرجع لصفر. المسحوبات القديمة مش هتتمسح — هي متسجلة
+              في الدفتر وهتفضل، بس مش هتتحسب في الفترة الجديدة.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {budgetActionError && <p role="alert">{budgetActionError}</p>}
           <AlertDialogFooter>
             <AlertDialogCancel>إلغاء</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                resetOwnerBudget();
-                setTick((t) => t + 1);
+              disabled={budgetSaving}
+              onClick={async (e) => {
+                e.preventDefault();
+                if (!ownerBudget || budgetSaving) return;
+                setBudgetSaving(true);
+                setBudgetActionError(null);
+                try {
+                  await setOwnerBudget({ ...ownerBudget, startedAt: Date.now() });
+                  setIsResetOpen(false);
+                  setTick((t) => t + 1);
+                } catch (e) {
+                  setBudgetActionError(String(e instanceof Error ? e.message : e));
+                } finally {
+                  setBudgetSaving(false);
+                }
               }}
             >
               تأكيد التصفير

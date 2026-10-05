@@ -1,3 +1,4 @@
+import { MobileFinanceActions } from "./MobileFinanceActions";
 /**
  * المالية — the Store Owner's cockpit.
  *
@@ -176,7 +177,7 @@ function EquitySection() {
             amount={s.capital}
             hint={
               s.capital === null
-                ? "رأس المال الافتتاحي غير مسجل — ده مش معناه إنه صفر. بيتسجل من الكمبيوتر."
+                ? "رأس المال الافتتاحي غير مسجل — ده مش معناه إنه صفر. يتسجل من إجراءات إدارة المال."
                 : "المبلغ اللي اتضخّ في المشروع كرأس مال."
             }
           />
@@ -222,12 +223,17 @@ export function MobileOwnerScreen() {
 
   // Derived from the DATE every time, not stored: an app left open past
   // midnight must report the period it is actually in.
-  const window = useMemo(() => periodWindow(preset), [preset]);
-  const { data, loading, error, denied, reload } = useOwnerFinancials(window);
+  const [refreshStamp, setRefreshStamp] = useState(0);
+  const window = useMemo(() => periodWindow(preset), [preset, refreshStamp]);
+  const { data, loading, error, denied, reload: reloadSummary } = useOwnerFinancials(window);
 
   // Only after the ledger answered: a refused or failed read has no balances to
   // label, and asking for registries the caller may not be able to read either
   // would just be two more failures behind a screen that already said why.
+  const reload = () => {
+    setRefreshStamp((x) => x + 1);
+    reloadSummary();
+  };
   const names = useSubjectNames(Boolean(data));
   const offline = useIsOffline();
 
@@ -238,7 +244,12 @@ export function MobileOwnerScreen() {
       <MobileAppBar
         title="المالية"
         leadingAction={
-          <button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع">
+          <button
+            type="button"
+            className="mobile-icon-button"
+            onClick={() => navigate(-1)}
+            aria-label="رجوع"
+          >
             <ArrowRight aria-hidden="true" />
           </button>
         }
@@ -263,15 +274,20 @@ export function MobileOwnerScreen() {
             the last figures it happens to be holding. */}
         {offline && <OfflineState />}
 
+        <MobileFinanceActions supplierPayable={data?.supplierPayable ?? null} onSaved={reload} offline={offline} />
+
         {!offline && loading && <SkeletonState count={6} />}
 
         {/* A refusal and a broken connection need different words, and neither
             may be rendered as a figure. */}
-        {!offline && !loading && error && (
-          denied
-            ? <EmptyState titleAr="غير مصرّح" messageAr={error} />
-            : <ErrorState messageAr={error} onRetry={reload} />
-        )}
+        {!offline &&
+          !loading &&
+          error &&
+          (denied ? (
+            <EmptyState titleAr="غير مصرّح" messageAr={error} />
+          ) : (
+            <ErrorState messageAr={error} onRetry={reload} />
+          ))}
 
         {!offline && !loading && !error && data && (
           <>
@@ -333,11 +349,7 @@ export function MobileOwnerScreen() {
             <EquitySection />
             <MobileSection titleAr="المراكز المالية — دلوقتي">
               <div className="mobile-owner-card">
-                <AmountRow
-                  label="قيمة المخزون"
-                  amount={data.stockValue}
-                  hint="مجموع حساب stock"
-                />
+                <AmountRow label="قيمة المخزون" amount={data.stockValue} hint="مجموع حساب stock" />
                 <AmountRow
                   label="مستحقات عملاء الجملة"
                   amount={data.receivableClient}

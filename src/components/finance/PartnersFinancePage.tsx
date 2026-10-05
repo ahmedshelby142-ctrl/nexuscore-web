@@ -1,3 +1,4 @@
+import { EXPENSE_CATEGORIES } from "@/lib/expenseCategories";
 import { toast } from "sonner";
 import { useSubmitGate, useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useMemo, useRef } from "react";
@@ -86,27 +87,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 // ── Constants ────────────────────────────────────────────────────
 
 /** Smart category labels per persona */
-const CATEGORIES: Record<BusinessPersona, { value: ExpenseCategory; label: string }[]> = {
-  retail: [
-    { value: "store_rent", label: "إيجار الفروع" },
-    { value: "shipping", label: "مصاريف شحن وتوصيل" },
-    { value: "marketing", label: "تسويق وإعلانات" },
-    { value: "office_supplies", label: "نثريات وضيافة" },
-    { value: "utilities", label: "فواتير" },
-    { value: "transport", label: "نقل" },
-    { value: "maintenance", label: "صيانة" },
-    { value: "other", label: "أخرى" },
-  ],
-  ecommerce: [
-    { value: "shipping", label: "مصاريف شحن وتوصيل" },
-    { value: "marketing", label: "تسويق وإعلانات" },
-    { value: "office_supplies", label: "نثريات وضيافة" },
-    { value: "utilities", label: "فواتير" },
-    { value: "transport", label: "نقل" },
-    { value: "maintenance", label: "صيانة" },
-    { value: "other", label: "أخرى" },
-  ],
-};
+const CATEGORIES = EXPENSE_CATEGORIES;
 
 const CATEGORY_ICONS: Record<string, React.ElementType> = {
   rent: Building2,

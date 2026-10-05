@@ -213,7 +213,7 @@ test("the screen renders one of offline / loading / error / denied / data — ne
   // figures at all, not the last ones it happens to be holding.
   assert.match(screenCode, /\{offline && <OfflineState \/>\}/);
   assert.match(screenCode, /\{!offline && loading && <SkeletonState/);
-  assert.match(screenCode, /\{!offline && !loading && error &&/);
+  assert.match(screenCode, /\{!offline\s*&&\s*!loading\s*&&\s*error\s*&&/);
   assert.match(screenCode, /\{!offline && !loading && !error && data &&/);
   assert.match(screenCode, /denied[\s\S]{0,120}EmptyState[\s\S]{0,120}ErrorState/, "different words for different failures");
   assert.match(screen, /onRetry=\{reload\}/, "a broken read is retryable");
@@ -360,6 +360,9 @@ test("Mobile equity is Desktop's hook — no mobile formula, reader or storage",
   assert.match(screen, /import \{ useEquityStatement \} from "@\/lib\/ledger\/useEquityStatement";/);
   for (const [name, code] of mobileCode()) {
     for (const forbidden of ["fetchEquity(", "equityStatement(", "ledger_balances", "owner_equity", "owner_capital", "owner_contribution", "owner_budget"]) {
+      // The ADMIN action form now invokes shared builders and reads the
+      // shared owner-draw account. It still must not implement equity maths.
+      if (name === "MobileFinanceActions.tsx" && ["owner_capital", "owner_contribution", "owner_budget"].includes(forbidden)) continue;
       assert.ok(!code.includes(forbidden), `${name} must not re-implement equity (${forbidden})`);
     }
     assert.ok(!/localStorage[\s\S]{0,120}(capital|equity)/i.test(code), `${name}: no browser-held capital`);

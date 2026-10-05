@@ -83,6 +83,21 @@ before(async () => {
     )[0],
   );
   await admin.query(read("supabase/migrations/20261005115027_financial_write_safety.sql"));
+  await admin.query("CREATE TABLE stores(id uuid PRIMARY KEY)");
+  await admin.query("INSERT INTO stores VALUES($1)", [STORE]);
+  await admin.query(read("supabase/migrations/20261005173704_shared_owner_budget.sql"));
+  await admin.query(read("scripts/fixtures/mobile-finance-schema.sql"));
+  for (const [file, name] of [
+    ["052_atomic_expense.sql", "record_expense"],
+    ["051_finance_records_and_atomic_cancel.sql", "record_payroll"],
+  ]) {
+    await admin.query(
+      read("docs/migrations/" + file).match(
+        new RegExp(`CREATE OR REPLACE FUNCTION public\\.${name}[\\s\\S]*?\\$function\\$;`),
+      )[0],
+    );
+  }
+
   await admin.query(
     "insert into store_members values ($1,$4,'ADMIN'),($2,$4,'MODERATOR'),($3,$4,'ACCOUNTANT')",
     [USER, MOD, ACCOUNTANT, STORE],
@@ -125,6 +140,161 @@ async function count(id) {
     (await admin.query("select count(*) as n from ledger_events where id=$1", [id])).rows[0].n,
   );
 }
+
+test("shared budget: ADMIN saves, ACCOUNTANT reads/updates, second ADMIN client sees identical settings", async () => {
+  const mobile = await client(),
+    desktop = await client(ACCOUNTANT),
+    second = await client();
+  assert.equal((await mobile.query("select * from owner_budgets")).rowCount, 0);
+  await mobile.query(
+    "insert into owner_budgets(store_id,budget_limit,period_type,started_at) values($1,20000,'open','2026-10-05T00:00:00Z')",
+    [STORE],
+  );
+  assert.equal(
+    (await desktop.query("select budget_limit from owner_budgets")).rows[0].budget_limit,
+    "20000",
+  );
+  await desktop.query("update owner_budgets set budget_limit=21000 where store_id=$1", [STORE]);
+  assert.equal(
+    (await second.query("select budget_limit from owner_budgets")).rows[0].budget_limit,
+    "21000",
+  );
+  assert.equal(
+    (await second.query("select started_at from owner_budgets")).rows[0].started_at.toISOString(),
+    "2026-10-05T00:00:00.000Z",
+  );
+});
+test("budget RLS denies MODERATOR read/write and cross-store access", async () => {
+  const mod = await client(MOD),
+    owner = await client();
+  assert.equal((await mod.query("select * from owner_budgets")).rowCount, 0);
+  assert.equal((await mod.query("update owner_budgets set budget_limit=1")).rowCount, 0);
+  await assert.rejects(
+    mod.query(
+      "insert into owner_budgets(store_id,budget_limit,period_type,started_at) values($1,1,'monthly',now())",
+      [STORE],
+    ),
+    /row-level security/,
+  );
+  await assert.rejects(
+    owner.query(
+      "insert into owner_budgets(store_id,budget_limit,period_type,started_at) values($1,1,'monthly',now())",
+      [crypto.randomUUID()],
+    ),
+    /row-level security/,
+  );
+});
+test("budget constraints reject invalid money, period and infinite reset", async () => {
+  const c = await client();
+  for (const value of ["0", "-1", "'NaN'", "'Infinity'", "1.001"]) {
+    await assert.rejects(
+      c.query(`update owner_budgets set budget_limit=${value} where store_id=$1`, [STORE]),
+      /check constraint/,
+    );
+  }
+  await assert.rejects(
+    c.query("update owner_budgets set period_type='weekly' where store_id=$1", [STORE]),
+    /check constraint/,
+  );
+  await assert.rejects(
+    c.query("update owner_budgets set started_at='infinity' where store_id=$1", [STORE]),
+    /check constraint/,
+  );
+});
+
+function documentInput(kind, amount = 0.01) {
+  const id = crypto.randomUUID(),
+    eventId = crypto.randomUUID();
+  const category = kind === "payroll" ? "salaries" : "other";
+  const doc = {
+    id,
+    store_id: STORE,
+    device_id: DEVICE,
+    category,
+    amount,
+    employeeName: "Local QA",
+    type: "salary",
+    wallet: "inStoreSafe",
+    date: new Date().toISOString(),
+    description: "Local cross-surface fixture",
+  };
+  const event = {
+    id: eventId,
+    store_id: STORE,
+    device_id: DEVICE,
+    kind,
+    ref_type: kind,
+    ref_id: id,
+    payload: "{}",
+    occurred_at: doc.date,
+    created_at: doc.date,
+    lines: [
+      {
+        id: crypto.randomUUID(),
+        account: "expense",
+        subject_id: category,
+        amount_delta: Math.round(amount * 100),
+        qty_delta: 0,
+      },
+      {
+        id: crypto.randomUUID(),
+        account: "wallet",
+        subject_id: "inStoreSafe",
+        amount_delta: -Math.round(amount * 100),
+        qty_delta: 0,
+      },
+    ],
+  };
+  return { doc, event };
+}
+test("Mobile expense is the Desktop record; Desktop payroll is the Mobile ledger result; retry has one monetary effect", async () => {
+  const mobile = await client(),
+    desktop = await client(ACCOUNTANT);
+  for (const kind of ["expense", "payroll"]) {
+    const { doc, event } = documentInput(kind);
+    const writer = kind === "expense" ? mobile : desktop,
+      reader = kind === "expense" ? desktop : mobile;
+    const sql = `select record_${kind}($1,$2) as result`;
+    assert.equal((await writer.query(sql, [doc, event])).rows[0].result.replayed, false);
+    assert.equal((await writer.query(sql, [doc, event])).rows[0].result.replayed, true);
+    assert.equal(
+      (
+        await reader.query(
+          `select * from ${kind === "expense" ? "expenses" : "payroll"} where id=$1`,
+          [doc.id],
+        )
+      ).rowCount,
+      1,
+    );
+    const lines = (
+      await reader.query(
+        "select account,amount_delta from ledger_lines where event_id=$1 order by account",
+        [event.id],
+      )
+    ).rows;
+    assert.deepEqual(lines, [
+      { account: "expense", amount_delta: 1 },
+      { account: "wallet", amount_delta: -1 },
+    ]);
+  }
+});
+test("document writes are denied for MODERATOR and expense cap failure leaves no document/event", async () => {
+  const mod = await client(MOD),
+    c = await client();
+  for (const kind of ["expense", "payroll"]) {
+    const { doc, event } = documentInput(kind);
+    await assert.rejects(
+      mod.query(`select record_${kind}($1,$2)`, [doc, event]),
+      /row-level security/,
+    );
+    assert.equal(await count(event.id), 0);
+  }
+  await admin.query("insert into budget_caps values('cap',$1,'other',.01,null)", [STORE]);
+  const { doc, event } = documentInput("expense", 1);
+  await assert.rejects(c.query("select record_expense($1,$2)", [doc, event]), /NEXUS_OVER_BUDGET/);
+  assert.equal(await count(event.id), 0);
+  assert.equal((await admin.query("select * from expenses where id=$1", [doc.id])).rowCount, 0);
+});
 const draw = (kind = "owner_draw") => ({
   kind,
   refType: kind,

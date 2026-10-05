@@ -139,7 +139,7 @@ test("P2-3 · a money screen with no connection shows no figures at all", () => 
   // never tell — every render branch is gated on the connection.
   assert.match(owner, /\{offline && <OfflineState \/>\}/);
   assert.match(owner, /\{!offline && loading &&/);
-  assert.match(owner, /\{!offline && !loading && error &&/);
+  assert.match(owner, /\{!offline\s*&&\s*!loading\s*&&\s*error\s*&&/);
   assert.match(owner, /\{!offline && !loading && !error && data &&/);
 });
 

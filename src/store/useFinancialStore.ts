@@ -2,7 +2,6 @@ import { create } from "zustand";
 import { useSyncStatus } from "./useSyncStatus";
 import { persist } from "zustand/middleware";
 import { add, multiply, divide } from "@/lib/math";
-import type { OwnerBudget } from "@/lib/ledger/ownerDraw";
 import type {
   ExpenseRecord,
   PayrollRecord,
@@ -202,11 +201,7 @@ interface FinancialState {
   // ── Owner budget (ميزانية صاحبة العمل) ──────────────────────────
   // A SETTING, not a total: the limit and the period are typed by the owner.
   // What she has spent is SUM(owner_budget) over the period — never stored.
-  ownerBudget: OwnerBudget | null;
-  setOwnerBudget: (budget: OwnerBudget) => void;
-  /** «تصفير الميزانية» — starts a new open period from now. */
-  resetOwnerBudget: () => void;
-  clearOwnerBudget: () => void;
+
 
   // ── Stock Log Actions ───────────────────────────────────────────
   logStockChange: (entry: Omit<StockLog, "id" | "timestamp">) => void;
@@ -502,15 +497,7 @@ export const useFinancialStore = create<FinancialState>()(
       },
 
       // ── Owner budget ─────────────────────────────────────────────
-      ownerBudget: null,
-      setOwnerBudget: (budget) => set({ ownerBudget: budget }),
-      resetOwnerBudget: () =>
-        set((state) =>
-          state.ownerBudget
-            ? { ownerBudget: { ...state.ownerBudget, startedAt: Date.now() } }
-            : state,
-        ),
-      clearOwnerBudget: () => set({ ownerBudget: null }),
+
 
       // ── Stock Log Actions ────────────────────────────────────────
       logStockChange: (entry) => {
@@ -624,8 +611,12 @@ export const useFinancialStore = create<FinancialState>()(
        *
        * Payroll, fixed assets and budget caps joined it in 051. What is still
        * kept here has no table — courier receivables, wallet transfers, the
-       * owner's personal budget setting — so this stays a deny-list.
+       * other non-financial preferences — so this stays a deny-list.
        */
+      merge: (persisted: any, current) => {
+        const { ownerBudget: _retiredBudget, ...rest } = persisted ?? {};
+        return { ...current, ...rest };
+      },
       partialize: (state: any) => {
         const {
           expenses: _cloudOwned,
@@ -646,7 +637,7 @@ export const useFinancialStore = create<FinancialState>()(
       // v2: the transfer history left this blob (053) — it is read from the
       // ledger, which already holds every transfer, so the old local copy is
       // simply dropped: it was never the record of anything.
-      version: 2,
+      version: 3,
       migrate: (persisted: any, version: number) => {
         if (version < 1 && persisted) {
           const legacy = {
@@ -662,7 +653,7 @@ export const useFinancialStore = create<FinancialState>()(
             }
           }
         }
-        const { assets: _a, payroll: _p, budgetCaps: _b, walletTransfers: _t, ...rest } = persisted ?? {};
+        const { ownerBudget: _retiredBudget, assets: _a, payroll: _p, budgetCaps: _b, walletTransfers: _t, ...rest } = persisted ?? {};
         return rest;
       },
     },

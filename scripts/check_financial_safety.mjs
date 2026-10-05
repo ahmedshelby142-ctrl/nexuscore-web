@@ -82,7 +82,7 @@ before(async () => {
       /CREATE OR REPLACE FUNCTION public\.ledger_validate_event[\s\S]*?\$function\$;/,
     )[0],
   );
-  await admin.query(read("supabase/migrations/20261005015827_financial_write_safety.sql"));
+  await admin.query(read("supabase/migrations/20261005115027_financial_write_safety.sql"));
   await admin.query(
     "insert into store_members values ($1,$4,'ADMIN'),($2,$4,'MODERATOR'),($3,$4,'ACCOUNTANT')",
     [USER, MOD, ACCOUNTANT, STORE],

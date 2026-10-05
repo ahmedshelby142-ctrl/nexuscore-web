@@ -1,6 +1,6 @@
 # Financial write safety foundation
 
-The forward-only migration `supabase/migrations/20261005015827_financial_write_safety.sql`
+The forward-only migration `supabase/migrations/20261005115027_financial_write_safety.sql`
 adds `ledger_events.command_request` and `command_result`, extends `ledger_append`
 to insert them atomically, and adds `record_financial_command`. It does not update
 or delete historical records. The existing event primary key is the command identity;

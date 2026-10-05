@@ -39,7 +39,7 @@ test("there is exactly ONE place that writes a supplier receipt", () => {
 });
 
 test("the transaction allocates a unique invoice number", () => {
- const sql=read("../supabase/migrations/20261005015827_financial_write_safety.sql");
+ const sql=read("../supabase/migrations/20261005115027_financial_write_safety.sql");
  assert.match(sql,/next_document_number\(p_store,'purchase_invoice','FM-'\)/);
  assert.match(sql,/EXIT WHEN NOT EXISTS\(SELECT 1 FROM public.purchase_invoices/);
 });
@@ -70,7 +70,7 @@ test("suppliers are resolved from the server, not from the unhydrated store", ()
   // permanently []. Resolving against it made every existing supplier look
   // missing and minted a duplicate on every mobile receipt.
   const command = read("../src/lib/receiving/command.ts");
-  assert.match(read("../supabase/migrations/20261005015827_financial_write_safety.sql"), /FROM public.suppliers WHERE id=p_input->>'supplierId' AND store_id=p_store/);
+  assert.match(read("../supabase/migrations/20261005115027_financial_write_safety.sql"), /FROM public.suppliers WHERE id=p_input->>'supplierId' AND store_id=p_store/);
   assert.doesNotMatch(command, /suppliers\.find\(/, "must not resolve from the local store array");
 
   const screen = read("../src/mobile/screens/MobileQuickRestock.tsx");
@@ -78,7 +78,7 @@ test("suppliers are resolved from the server, not from the unhydrated store", ()
 });
 
 test("new supplier creation is guarded inside the receipt transaction", () => {
- const sql=read("../supabase/migrations/20261005015827_financial_write_safety.sql");
+ const sql=read("../supabase/migrations/20261005115027_financial_write_safety.sql");
  assert.match(sql,/IF p_input->>'supplierId'='__new__' THEN/);
  assert.ok(sql.indexOf("IF p_input->>'supplierId'='__new__'") < sql.indexOf('INSERT INTO public.suppliers'));
 });

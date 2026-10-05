@@ -136,13 +136,13 @@ test("the payment uses one authoritative allocation transaction", () => {
  const src=read("../src/lib/supplierPaymentCommand.ts");
  assert.match(src,/runFinancialCommand[\s\S]*?\("supplier_payment", request\)/);
  assert.doesNotMatch(src,/appendEvent|recordSupplierPayment\(|staleInvoices/);
- const sql=read("../supabase/migrations/20261005015827_financial_write_safety.sql");
+ const sql=read("../supabase/migrations/20261005115027_financial_write_safety.sql");
  assert.match(sql,/FOR UPDATE LOOP/);
  assert.match(sql,/UPDATE public.purchase_invoices SET/);
 });
 
 test("the payment carries a server-allocated auditable reference", () => {
- const sql=read("../supabase/migrations/20261005015827_financial_write_safety.sql");
+ const sql=read("../supabase/migrations/20261005115027_financial_write_safety.sql");
  assert.match(sql,/next_document_number\(p_store,'supplier_payment','SP-'\)/);
  assert.match(sql,/'ref_id',v_ref/);
 });

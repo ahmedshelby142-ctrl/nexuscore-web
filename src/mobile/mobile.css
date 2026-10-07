@@ -1195,8 +1195,9 @@ main.mobile-state {
 }
 .mobile-finance button.mobile-finance-common {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--foreground);
 }
+.mobile-finance button[type=submit] { background: #0e7490; color: #fff; }
 .mobile-finance button.mobile-finance-budget-edit {
   background: transparent;
   margin-block-start: 0.25rem;

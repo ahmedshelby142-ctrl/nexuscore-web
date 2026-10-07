@@ -1181,3 +1181,79 @@ main.mobile-state {
 .mobile-finance-error { color: var(--destructive); }
 .mobile-finance li { padding-block: .65rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; font-size: .875rem; }
 .mobile-finance small { display: block; direction: ltr; color: var(--muted-foreground); font-size: .65rem; }
+
+/* Finance presentation only: preserve the shared forms and reload lifecycle. */
+.mobile-finance > .mobile-owner-card {
+  padding: 0.875rem;
+  gap: 0.6rem;
+}
+.mobile-finance h2 {
+  font-size: 1.1rem;
+}
+.mobile-finance h3 {
+  font-size: 1rem;
+}
+.mobile-finance button.mobile-finance-common {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.mobile-finance button.mobile-finance-budget-edit {
+  background: transparent;
+  margin-block-start: 0.25rem;
+}
+.mobile-finance button.mobile-finance-remove {
+  color: var(--destructive);
+  background: transparent;
+  border-color: var(--destructive);
+  margin-block-start: 0.5rem;
+}
+.mobile-finance :is(button, input, select):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+.mobile-finance label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 44px;
+}
+.mobile-finance input[type="checkbox"] {
+  flex-shrink: 0;
+}
+.mobile-finance-hint,
+.mobile-finance-activity-heading time {
+  color: var(--muted-foreground);
+}
+.mobile-finance-budget-summary {
+  display: grid;
+  gap: 0.4rem;
+}
+.mobile-finance-budget-summary p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+.mobile-finance-budget-summary strong {
+  font-size: 1.1rem;
+  font-variant-numeric: tabular-nums;
+  unicode-bidi: isolate;
+}
+.mobile-finance-activity-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+.mobile-finance li:last-child {
+  border-bottom: 0;
+  padding-block-end: 0;
+}
+.mobile-finance li p {
+  margin-block-start: 0.25rem;
+}
+.mobile-owner-row-main {
+  flex-wrap: wrap;
+}

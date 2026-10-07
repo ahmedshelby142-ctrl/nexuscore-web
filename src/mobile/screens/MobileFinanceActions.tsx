@@ -19,7 +19,7 @@ import { recordFinanceDocument, type FinanceDocumentDraft } from "@/lib/financeD
 import { readSuppliers, type SupplierOption } from "@/lib/receiving/suppliers";
 import { EXPENSE_CATEGORIES } from "@/lib/expenseCategories";
 import { WALLET_LABELS, type WalletType } from "@/types";
-import { formatMoney } from "@/lib/math";
+import { formatArabicCurrency as formatMoney } from "@/mobile/viewmodels/formatters";
 import { useRealtimeTables } from "@/mobile/data/useMobileRealtime";
 import { toast } from "sonner";
 import { localDateInput } from "@/lib/localDateInput";
@@ -100,6 +100,7 @@ function FinanceActions({
   const [spent, setSpent] = useState<number | null>(null);
   const [activity, setActivity] = useState<LedgerEvent[]>([]);
   const [readError, setReadError] = useState<string | null>(null);
+  const [readLoading, setReadLoading] = useState(true);
   const [tick, setTick] = useState(0);
   const refresh = () => {
     setTick((x) => x + 1);
@@ -134,6 +135,7 @@ function FinanceActions({
   useEffect(() => {
     let alive = true;
     setReadError(null);
+    setReadLoading(true);
     setSpent(null);
     const b = budget.ownerBudget;
     void Promise.all([
@@ -153,6 +155,9 @@ function FinanceActions({
           setActivity([]);
           setReadError(String(e.message ?? e));
         }
+      })
+      .finally(() => {
+        if (alive) setReadLoading(false);
       });
     return () => {
       alive = false;
@@ -340,19 +345,24 @@ function FinanceActions({
       <h2>إدارة المال</h2>
       {!action && (
         <div className="mobile-finance-actions">
-          {Object.entries(ACTIONS).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => open(key as Action)}
-              disabled={!draftKey || (key === "budget" && (budget.loading || !!budget.error))}
-            >
-              {label}
-            </button>
-          ))}
+          {Object.entries(ACTIONS)
+            .filter(([key]) => key !== "budget")
+            .map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={
+                  key === "expense" || key === "supplier" ? "mobile-finance-common" : undefined
+                }
+                onClick={() => open(key as Action)}
+                disabled={!draftKey || (key === "budget" && (budget.loading || !!budget.error))}
+              >
+                {label}
+              </button>
+            ))}
         </div>
       )}
-      {error && (
+      {error && !action && (
         <p role="alert" className="mobile-finance-error">
           {error}
         </p>
@@ -364,24 +374,13 @@ function FinanceActions({
             void submit();
           }}
           className="mobile-finance-form"
+          aria-labelledby="mobile-finance-form-title"
         >
-          <h3>{ACTIONS[action]}</h3>
+          <h3 id="mobile-finance-form-title">{ACTIONS[action]}</h3>
           {uncertain && (
             <p>البيانات مقفولة لحد تأكيد نفس العملية. إعادة المحاولة لا تنشئ دفعة جديدة.</p>
           )}
           <fieldset disabled={saving || uncertain}>
-            {action === "expense" && (
-              <label>
-                التصنيف
-                <select value={form.category} onChange={(e) => change("category", e.target.value)}>
-                  {EXPENSE_CATEGORIES.retail.map((c) => (
-                    <option key={c.value} value={c.value}>
-                      {c.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
             {action === "payroll" && (
               <>
                 <label>
@@ -519,6 +518,21 @@ function FinanceActions({
                     </select>
                   </label>
                 )}
+                {action === "expense" && (
+                  <label>
+                    التصنيف
+                    <select
+                      value={form.category}
+                      onChange={(e) => change("category", e.target.value)}
+                    >
+                      {EXPENSE_CATEGORIES.retail.map((c) => (
+                        <option key={c.value} value={c.value}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 {action === "draw" && (
                   <>
                     <label>
@@ -549,6 +563,11 @@ function FinanceActions({
               </>
             )}
           </fieldset>
+          {error && (
+            <p role="alert" className="mobile-finance-error">
+              {error}
+            </p>
+          )}
           <div className="mobile-finance-actions">
             <button
               type="submit"
@@ -568,6 +587,7 @@ function FinanceActions({
           {action === "budget" && budget.ownerBudget && (
             <button
               type="button"
+              className="mobile-finance-remove"
               disabled={saving || offline}
               onClick={async () => {
                 if (!window.confirm("إلغاء حد الميزانية المشتركة؟ المسحوبات تظل في الدفتر."))
@@ -578,6 +598,7 @@ function FinanceActions({
                 setError(null);
                 try {
                   await budget.clearOwnerBudget();
+                  toast.success("تم إلغاء حد الميزانية — سجل المسحوبات محفوظ");
                   setAction(null);
                   refresh();
                 } catch (e) {
@@ -602,7 +623,9 @@ function FinanceActions({
             ) : budget.error ? (
               <p role="alert">تعذّر قراءة الميزانية: {budget.error}</p>
             ) : !budget.ownerBudget ? (
-              <p>غير محددة — احفظ ميزانية مشتركة من «ضبط الميزانية الشخصية».</p>
+              <p className="mobile-finance-hint">
+                غير محددة — حد اختياري لمسحوباتك الشخصية، منفصل عن مصروفات التشغيل.
+              </p>
             ) : (
               <>
                 <p>
@@ -610,13 +633,28 @@ function FinanceActions({
                   {budget.ownerBudget.periodType === "monthly" ? "شهري" : "بدون مدة"}
                 </p>
                 {status && (
-                  <p>
-                    المسحوبات: {formatMoney(status.spent)} · المتبقي:{" "}
-                    {formatMoney(status.remaining)}
-                  </p>
+                  <div className="mobile-finance-budget-summary">
+                    <p>
+                      المسحوبات: <strong>{formatMoney(status.spent)}</strong>
+                    </p>
+                    <p className={status.remaining < 0 ? "mobile-finance-error" : undefined}>
+                      {status.remaining < 0 ? "تجاوز الميزانية: " : "المتبقي: "}
+                      <strong>{formatMoney(Math.abs(status.remaining))}</strong>
+                    </p>
+                  </div>
                 )}
                 {!status && !readError && <p>جاري حساب المسحوبات…</p>}
               </>
+            )}
+            {!action && (
+              <button
+                type="button"
+                className="mobile-finance-budget-edit"
+                disabled={!draftKey || budget.loading || !!budget.error}
+                onClick={() => open("budget")}
+              >
+                {ACTIONS.budget}
+              </button>
             )}
           </div>
           <div className="mobile-owner-card">
@@ -626,14 +664,27 @@ function FinanceActions({
                 تعذّر تحميل الحركات: {readError}
                 <button onClick={refresh}>إعادة المحاولة</button>
               </p>
+            ) : readLoading ? (
+              <p role="status">جاري تحميل الحركات…</p>
             ) : activity.length ? (
               <ul>
                 {activity.map((row) => (
                   <li key={row.id}>
-                    <strong>{KINDS[row.kind]}</strong> ·{" "}
-                    {new Date(row.occurredAt).toLocaleDateString("ar-EG")}
-                    <br />
-                    {String(row.payload.note ?? row.payload.description ?? row.refId ?? "")}
+                    <div className="mobile-finance-activity-heading">
+                      <strong>{KINDS[row.kind]}</strong>
+                      <time dateTime={row.occurredAt}>
+                        {new Date(row.occurredAt).toLocaleDateString("ar-EG")}
+                      </time>
+                    </div>
+                    <p dir="auto">
+                      {String(
+                        row.payload.note ??
+                          row.payload.description ??
+                          (row.refId && !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(row.refId)
+                            ? row.refId
+                            : ""),
+                      )}
+                    </p>
                   </li>
                 ))}
               </ul>

@@ -68,3 +68,10 @@ Production acceptance also requires a legitimate ADMIN-created Mobile record,
 read-only Supabase confirmation and the same record in Desktop. Local/mocked
 checks alone do not establish Production acceptance. Run evidence and final
 deployment identifiers are recorded in `logs/ADMIN_MOBILE_FINANCE_VALIDATION.md`.
+
+The presentation pass puts current wallets before the command grid, keeps the
+budget settings beside their summary, and uses the Mobile EGP formatter across
+both. Common payments, secondary controls, budget overruns and removal are
+visually distinct and retain text labels. Expense fields follow amount, wallet,
+category and date; activity has a loading state and hides UUID fallback references.
+These changes do not alter financial commands, readers or accounting semantics.

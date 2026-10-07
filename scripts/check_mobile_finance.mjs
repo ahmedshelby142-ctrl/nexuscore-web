@@ -110,7 +110,7 @@ function formHost({
       EXPENSE_CATEGORIES: { retail: [{ value: "other", label: "أخرى" }] },
     },
     "@/types": { WALLET_LABELS: { inStoreSafe: "الخزنة", bank: "بنك" } },
-    "@/lib/math": { formatMoney: String },
+    "@/mobile/viewmodels/formatters": { formatArabicCurrency: String },
     "@/mobile/data/useMobileRealtime": { useRealtimeTables() {} },
     sonner: { toast: { success() {} } },
   };
@@ -444,10 +444,13 @@ test("shared budget service ignores browser settings, distinguishes absent/error
   assert.match(read("src/components/finance/OwnerBudgetCard.tsx"), /useOwnerBudget\(\)/);
 });
 
-
 test("finance date defaults to the local day across Cairo midnight", () => {
   const url = new URL("../src/lib/localDateInput.ts", import.meta.url).href;
   const code = `import {localDateInput} from ${JSON.stringify(url)}; console.log(localDateInput(new Date('2026-10-05T22:30:00Z')));`;
-  const result = execFileSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", env: { ...process.env, TZ: "Africa/Cairo" }, windowsHide: true });
+  const result = execFileSync(process.execPath, ["--input-type=module", "-e", code], {
+    encoding: "utf8",
+    env: { ...process.env, TZ: "Africa/Cairo" },
+    windowsHide: true,
+  });
   assert.equal(result.trim(), "2026-10-06");
 });

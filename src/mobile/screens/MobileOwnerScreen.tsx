@@ -274,7 +274,21 @@ export function MobileOwnerScreen() {
             the last figures it happens to be holding. */}
         {offline && <OfflineState />}
 
-        <MobileFinanceActions supplierPayable={data?.supplierPayable ?? null} onSaved={reload} offline={offline} />
+        {!offline && !loading && !error && data && (
+          <MobileSection titleAr="الخزن والمحافظ — دلوقتي">
+            <SubjectList
+              rows={data.walletBalances}
+              emptyAr="لا توجد حركة على أي خزنة."
+              labelOf={walletLabel}
+            />
+          </MobileSection>
+        )}
+
+        <MobileFinanceActions
+          supplierPayable={data?.supplierPayable ?? null}
+          onSaved={reload}
+          offline={offline}
+        />
 
         {!offline && loading && <SkeletonState count={6} />}
 
@@ -296,12 +310,12 @@ export function MobileOwnerScreen() {
                 <AmountRow
                   label="صافي المبيعات"
                   amount={data.revenue}
-                  hint="حساب revenue في دفتر الحسابات — بعد خصم المرتجعات"
+                  hint="المبيعات بعد خصم المرتجعات"
                 />
                 <AmountRow
                   label="تكلفة البضاعة المباعة"
                   amount={data.cogs}
-                  hint="حساب cogs — بعد خصم المرتجعات كمان"
+                  hint="تكلفة المنتجات المباعة بعد خصم المرتجعات"
                   tone="muted"
                 />
                 <AmountRow
@@ -313,7 +327,7 @@ export function MobileOwnerScreen() {
                 <AmountRow
                   label="المصروفات"
                   amount={data.expenses}
-                  hint="حساب expense — إيجار ورواتب وعجز الجرد ورسوم مرتجع الشحن"
+                  hint="تشغيل ورواتب وعجز جرد ورسوم مرتجع الشحن — بدون المسحوبات الشخصية"
                   tone="muted"
                 />
                 <AmountRow
@@ -338,7 +352,7 @@ export function MobileOwnerScreen() {
                 <AmountRow
                   label="قيمة المرتجعات"
                   amount={data.returnsValue}
-                  hint="سطور return_confirmed — متخصومة بالفعل من صافي المبيعات أعلاه، معروضة للعلم فقط"
+                  hint="متخصومة بالفعل من صافي المبيعات أعلاه — معروضة للعلم فقط"
                   tone="muted"
                 />
               </div>
@@ -349,22 +363,18 @@ export function MobileOwnerScreen() {
             <EquitySection />
             <MobileSection titleAr="المراكز المالية — دلوقتي">
               <div className="mobile-owner-card">
-                <AmountRow label="قيمة المخزون" amount={data.stockValue} hint="مجموع حساب stock" />
+                <AmountRow
+                  label="قيمة المخزون"
+                  amount={data.stockValue}
+                  hint="قيمة المنتجات الموجودة بالتكلفة"
+                />
                 <AmountRow
                   label="مستحقات عملاء الجملة"
                   amount={data.receivableClient}
-                  hint="حساب receivable_client"
+                  hint="مبالغ لم تُحصّل بعد من عملاء الجملة"
                   tone={data.receivableClient < 0 ? "negative" : undefined}
                 />
               </div>
-            </MobileSection>
-
-            <MobileSection titleAr="الخزن والمحافظ — دلوقتي" headingLevel={3}>
-              <SubjectList
-                rows={data.walletBalances}
-                emptyAr="لا توجد حركة على أي خزنة."
-                labelOf={walletLabel}
-              />
             </MobileSection>
 
             <MobileSection titleAr="مستحقات الموردين — دلوقتي" headingLevel={3}>

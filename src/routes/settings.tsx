@@ -6,6 +6,7 @@ import { toAppRole } from "@/lib/roles";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { ShippingRateMatrix } from "@/components/shipping/ShippingRateMatrix";
 import { GeneralSettingsPanel } from "@/components/settings/GeneralSettingsPanel";
+import { WholesaleFeatureSetting } from "@/components/settings/WholesaleFeatureSetting";
 import { BranchesPage } from "@/routes/branches";
 import { BackupsPage } from "@/routes/backups";
 import { UserManagementPanel } from "@/components/auth/UserManagementPanel";
@@ -225,6 +226,7 @@ export function Settings() {
 
           <SettingsCard title="ميزات النظام" badge="Features">
             <div className="divide-y divide-border">
+              <WholesaleFeatureSetting />
               <SettingRow
                 label="تفعيل نظام الشراكة"
                 description="تفعيل هذا الخيار يسمح بإدارة الشركاء وتوزيع الأرباح بينهم"

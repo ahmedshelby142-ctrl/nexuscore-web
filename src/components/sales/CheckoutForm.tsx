@@ -21,6 +21,7 @@ import {
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useAuthStore } from "@/store/useAuthStore";
 import { canSellWholesale } from "@/lib/roles";
+import { useWholesaleEnabled } from "@/hooks/useWholesaleEnabled";
 import { useSettingsStore } from "@/store/useSettingsStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
 import { activeCustomers } from "@/lib/customers";
@@ -201,7 +202,9 @@ export default function CheckoutForm() {
   const [saleMode, setSaleMode] = useState<"retail" | "wholesale">("retail");
   // The database refuses a `wholesale_invoices` row from anyone but ADMIN and
   // ACCOUNTANT. Asked here so the refusal lands BEFORE the ledger event.
-  const maySellWholesale = canSellWholesale(useAuthStore((s) => s.userRole));
+  const wholesaleEnabled = useWholesaleEnabled();
+  const wholesaleRoleAllowed = canSellWholesale(useAuthStore((s) => s.userRole));
+  const maySellWholesale = wholesaleEnabled && wholesaleRoleAllowed;
   const [paidAmountInput, setPaidAmountInput] = useState<string>("");
 
   // Optional — a walk-in sale writes no LTV line (brief §3.13), unless we link a customer.
@@ -284,6 +287,7 @@ export default function CheckoutForm() {
   };
 
   const handleModeChange = (mode: "retail" | "wholesale") => {
+    if (mode === "wholesale" && !maySellWholesale) return;
     if (cart.length > 0) {
       if (!confirm("تغيير نظام البيع سيمسح السلة الحالية. هل أنت متأكد؟")) return;
     }
@@ -553,6 +557,10 @@ export default function CheckoutForm() {
     reconcileWholesaleReturn(wholesaleReturnValue, wholesaleDebt, settlePaidInput);
 
   const handleCompleteSale = async () => {
+    if (saleMode === "wholesale" && !maySellWholesale) {
+      setResult({ success: false, message: "مبيعات الجملة غير متاحة حاليًا لهذا المحل." });
+      return;
+    }
     // A مرتجع جملة has no cart by design — it is picked off invoices. Every
     // other movement still needs one.
     if (cart.length === 0 && !isWholesaleReturn) {
@@ -1040,6 +1048,13 @@ export default function CheckoutForm() {
       gate.exit();
     }
   };
+
+  if (saleMode === "wholesale" && !maySellWholesale) return (
+    <div dir="rtl" className="rounded-xl border p-6 space-y-3" role="status">
+      <p>مبيعات الجملة غير متاحة حاليًا لهذا المحل. يمكنك العودة للبيع القطاعي بعد إفراغ السلة.</p>
+      <Button onClick={() => handleModeChange("retail")}>العودة للبيع القطاعي</Button>
+    </div>
+  );
 
   return (
     <div className="space-y-4">

@@ -108,6 +108,7 @@ export async function hydrateAll(): Promise<HydrationResult> {
     .getState()
     .pullSettings()
     .catch((e) => console.error("[Hydrate] store settings failed:", e));
+  void useSettingsStore.getState().pullWholesaleFeature();
 
   // Every table is emptied above, so every table is loading until its own read
   // lands — including the ones at the end of the serial loop below, which

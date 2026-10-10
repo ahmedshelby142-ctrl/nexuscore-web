@@ -2,6 +2,9 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { getSupabaseClient } from "@/lib/supabase";
 import { getActiveStoreId } from "@/services/api/storeContext";
+import { createWholesaleFeatureActions, wholesaleFeatureDefaults } from "@/lib/wholesaleFeature";
+import { useAuthStore } from "@/store/useAuthStore";
+import { toAppRole } from "@/lib/roles";
 
 export interface StoreSettings {
   storeName: string;
@@ -23,6 +26,13 @@ export interface StoreSettings {
 export type SettingsStatus = "idle" | "loading" | "ready" | "failed";
 
 interface SettingsState extends StoreSettings {
+  wholesaleEnabled: boolean;
+  wholesaleStatus: typeof wholesaleFeatureDefaults.wholesaleStatus;
+  wholesaleError: string | null;
+  wholesaleStoreId: string | null;
+  resetWholesaleFeature: () => void;
+  pullWholesaleFeature: () => Promise<void>;
+  saveWholesaleFeature: (enabled: boolean) => Promise<void>;
   settingsStatus: SettingsStatus;
   settingsError: string | null;
   updateSettings: (settings: Partial<StoreSettings>) => void;
@@ -43,6 +53,12 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       ...defaultSettings,
+      ...wholesaleFeatureDefaults,
+      ...createWholesaleFeatureActions(get, set, {
+        client: getSupabaseClient,
+        storeId: getActiveStoreId,
+        isAdmin: () => useAuthStore.getState().isAuthenticated && toAppRole(useAuthStore.getState().userRole) === "ADMIN",
+      }),
       settingsStatus: "idle" as SettingsStatus,
       settingsError: null,
 
@@ -147,6 +163,21 @@ export const useSettingsStore = create<SettingsState>()(
         taxNumber: s.taxNumber,
         vatRate: s.vatRate,
       }),
+      // Rehydrate only the legacy editable fields. Even a blob left by an
+      // older browser cannot vouch for wholesale availability this session.
+      merge: (persisted, current) => {
+        const cached = (persisted ?? {}) as Partial<StoreSettings>;
+        const fields = Object.keys(defaultSettings) as (keyof StoreSettings)[];
+        return { ...current, ...Object.fromEntries(fields.filter((key) => Object.prototype.hasOwnProperty.call(cached, key)).map((key) => [key, cached[key]])) };
+      },
     }
   )
 );
+
+// Invalidate synchronously on identity changes, including a logout while a
+// read/save is in flight. Old responses cannot enable another shop's UI.
+useAuthStore.subscribe((state, previous) => {
+  if (state.isAuthenticated !== previous.isAuthenticated || state.session?.user.id !== previous.session?.user.id) {
+    useSettingsStore.getState().resetWholesaleFeature();
+  }
+});

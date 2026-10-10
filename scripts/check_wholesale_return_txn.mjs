@@ -353,7 +353,7 @@ test("G-14 · the command asks the permission, at the one choke point", () => {
 
 test("G-14 · /orders tells an unauthorized role up front and will not submit", () => {
   const s = code(read("../src/components/ecommerce/OrdersPage.tsx"));
-  assert.match(s, /const mayReturnWholesale = canReturnWholesale\(useAuthStore\(\(s\) => s\.userRole\)\);/);
+  assert.match(s, /const mayReturnWholesale = wholesaleEnabled && canReturnWholesale\(wholesaleRole\);/);
   assert.match(s, /\{returnClientId && !mayReturnWholesale && \(/, "the permission state must be shown");
   assert.match(s, /\(Boolean\(returnClientId\) && !mayReturnWholesale\)/, "and the confirm button disabled");
   assert.match(s, /\{returnClientId && mayReturnWholesale && resolvedOrderReturn\.ok && \(/,

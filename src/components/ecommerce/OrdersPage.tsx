@@ -85,6 +85,7 @@ import { formatMoney, discountAmountFor, subtract, round } from "@/lib/math";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useAuthStore } from "@/store/useAuthStore";
 import { canReturnWholesale, canSellWholesale } from "@/lib/roles";
+import { useWholesaleEnabled } from "@/hooks/useWholesaleEnabled";
 import { useBalances } from "@/lib/ledger/useBalances";
 import {
   buildWholesaleReturnLines,
@@ -202,10 +203,12 @@ export function OrdersPage() {
 
   const [saleMode, setSaleMode] = useState<"retail" | "wholesale">("retail");
   // The database refuses a wholesale invoice from anyone but ADMIN/ACCOUNTANT.
-  const maySellWholesale = canSellWholesale(useAuthStore((s) => s.userRole));
+  const wholesaleEnabled = useWholesaleEnabled();
+  const wholesaleRole = useAuthStore((s) => s.userRole);
+  const maySellWholesale = wholesaleEnabled && canSellWholesale(wholesaleRole);
   // A trader return needs ADMIN (audit §G-14). Asked up front so the dialog
   // says so instead of letting the operator fill it in to be refused.
-  const mayReturnWholesale = canReturnWholesale(useAuthStore((s) => s.userRole));
+  const mayReturnWholesale = wholesaleEnabled && canReturnWholesale(wholesaleRole);
   const [wholesaleClient, setWholesaleClient] = useState<string>("");
   const [wholesalePaidAmount, setWholesalePaidAmount] = useState<string>("");
 
@@ -945,6 +948,10 @@ export function OrdersPage() {
   const confirmReturn = async () => runOnce(async () => {
     const order = currentOrder(confirmDialog.orderId);
     if (!order) return;
+    if (soldOnWholesaleInvoice(order) && !mayReturnWholesale) {
+      setActionError("مبيعات الجملة غير متاحة حاليًا أو ليست لديك صلاحية إرجاع الجملة.");
+      return;
+    }
 
     // This handler had NO status check of ANY kind — the same shape as the two
     // handlers the lifecycle table was written for. It moves stock and refunds
@@ -1470,6 +1477,10 @@ export function OrdersPage() {
   const confirmDeliver = async () => runOnce(async () => {
     const order = currentOrder(reconcileDialog.orderId);
     if (!order) return;
+    if ((saleMode === "wholesale" || soldOnWholesaleInvoice(order)) && !maySellWholesale) {
+      setActionError("مبيعات الجملة غير متاحة حاليًا لهذا المحل.");
+      return;
+    }
     // Delivery is only legal once the goods are with the courier. Re-checked
     // here because this dialog can sit open while the order moves on elsewhere
     // — and CLAIMED here, because the status only becomes `delivered` after the
@@ -1908,7 +1919,7 @@ export function OrdersPage() {
                     // courierFee` — not the COD, and created even for a fully
                     // prepaid order where the courier carries nothing.
                     const hasCod = order.expectedCod > 0;
-                    const actions = actionsFor(order.status);
+                    const actions = !wholesaleEnabled && (order.wholesaleClientId || soldOnWholesaleInvoice(order)) ? [] : actionsFor(order.status);
                     // One answer for the button and for the explanation beside
                     // it, so a hidden action always has a reason on screen.
                     const exBlock = exchangeBlock(order, returnRecords, orders);
@@ -2291,7 +2302,7 @@ export function OrdersPage() {
               )}
             </div>
 
-            {saleMode === "wholesale" && (
+            {maySellWholesale && saleMode === "wholesale" && (
               <>
                 <div className="space-y-2">
                   <Label>عميل الجملة <span className="text-red-500">*</span></Label>

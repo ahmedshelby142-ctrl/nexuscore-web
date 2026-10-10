@@ -23,6 +23,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useWholesaleEnabled } from "@/hooks/useWholesaleEnabled";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useThemeStore } from "@/store/useThemeStore";
@@ -186,11 +187,13 @@ const allNavItems: NavItem[] = [
 export function useNavItems(): NavItem[] {
   const { userRole, activeBusinessProfile } = useAuthStore();
   const featureFlags = useFeatureStore();
+  const wholesaleEnabled = useWholesaleEnabled();
 
   return allNavItems
     .filter(
       (item) =>
         canAccess(userRole, item.path) &&
+        (item.path !== "/wholesale" || wholesaleEnabled) &&
         item.profiles.includes(activeBusinessProfile) &&
         (!item.featureKey || featureFlags[item.featureKey]),
     )

@@ -90,7 +90,7 @@ const STUBS = {
   "@/store/useBranchStore": STORE("useBranchStore"),
   "@/store/useOrderStore": STORE("useOrderStore"),
   "@/store/useFinancialStore": STORE("useFinancialStore"),
-  "@/store/useSettingsStore": STORE("useSettingsStore", "pullSettings: async () => {}"),
+  "@/store/useSettingsStore": STORE("useSettingsStore", "pullSettings: async () => {}, pullWholesaleFeature: async () => { globalThis.__wholesaleReads = (globalThis.__wholesaleReads ?? 0) + 1; }"),
   "@/store/useShippingRatesStore": STORE("useShippingRatesStore"),
 };
 registerHooks({
@@ -270,11 +270,13 @@ test("a Moderator's socket is not subscribed to supplier invoices", () => {
 
 test("a Moderator's Desktop reads no business table at all", async () => {
   as("MODERATOR");
+  globalThis.__wholesaleReads = 0;
   globalThis.__cloudList = [];
   await hydrate.hydrateAll();
   await hydrate.hydrateTable("expenses");
   await hydrate.hydrateTable("transactions");
   assert.deepEqual(globalThis.__cloudList, [], "no expenses, partners, purchases, orders or products");
+  assert.equal(globalThis.__wholesaleReads, 0);
 });
 
 test("nothing is read before the membership role is resolved", async () => {
@@ -288,7 +290,9 @@ test("ADMIN and ACCOUNTANT Desktop hydration is unchanged", async () => {
   for (const role of ["ADMIN", "ACCOUNTANT", "POS_ECOMMERCE", "ECOMMERCE_ONLY"]) {
     as(role);
     globalThis.__cloudList = [];
+    globalThis.__wholesaleReads = 0;
     await hydrate.hydrateAll();
+    assert.equal(globalThis.__wholesaleReads, 1, "the store feature is refreshed with cloud settings");
     for (const table of ["products", "orders", "customers", "expenses", "purchase_invoices", "transactions"]) {
       assert.ok(globalThis.__cloudList.includes(table), `${role} still hydrates ${table}`);
     }

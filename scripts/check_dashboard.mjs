@@ -164,7 +164,7 @@ test("the period filter compares INSTANTS, on both halves of the query", () => {
   assert.ok(!/\.gte\(\s*["']occurred_at["']/.test(driver), "no lexical lower bound");
   assert.ok(!/\.lt\(\s*["']occurred_at["']/.test(driver), "no lexical upper bound");
   assert.ok(!/\.order\(\s*["']occurred_at["']/.test(driver), "no lexical ordering");
-  assert.match(driver, /rpc\("ledger_balances"/);
+  assert.match(driver, /rpc\(query\.returnsOnly \? "ledger_return_balances" : "ledger_balances"/);
   assert.match(driver, /rpc\("ledger_events_page"/);
 
   const migration = readFileSync(

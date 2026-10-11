@@ -1088,6 +1088,23 @@ test("SPR-FIN-08: owner and Desktop returns readers include negative POS revenue
   );
   assert.equal(owner.returnsValue, -expected);
   assert.equal(desktop, expected);
+  const within = Number(
+    (
+      await c.query(
+        "select sum(amount) n from ledger_return_balances($1,'revenue',null,null,$2,$3)",
+        [
+          db.store,
+          new Date(Date.now() - 3600000).toISOString().replace("Z", "+00:00"),
+          new Date(Date.now() + 3600000).toISOString(),
+        ],
+      )
+    ).rows[0].n,
+  );
+  assert.equal(
+    within,
+    expected,
+    "timestamp windows include the same refund instants regardless of offset spelling",
+  );
   assert.ok(owner.returnsValue >= 50 * 100);
   assert.equal(owner.netProfit, owner.revenue - owner.cogs - owner.expenses);
   const outside = (

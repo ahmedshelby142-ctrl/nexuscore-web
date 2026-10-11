@@ -80,7 +80,7 @@ test("the driver no longer compares occurred_at as text", () => {
     !/\.lt\(\s*["']ledger_events\.occurred_at["']/.test(driverCode),
     "same defect, upper bound",
   );
-  assert.match(driver, /rpc\("ledger_balances"/, "the window is compared in SQL now");
+  assert.match(driver, /rpc\(query\.returnsOnly \? "ledger_return_balances" : "ledger_balances"/, "both regular and returns-only windows are compared in SQL");
   assert.match(driver, /p_from: query\.from \? query\.from\.toISOString\(\) : null/);
   assert.match(driver, /p_to: query\.to \? query\.to\.toISOString\(\) : null/);
 });

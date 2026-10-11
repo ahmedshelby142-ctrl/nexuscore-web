@@ -1,3 +1,7 @@
+import {expandPendingOrderItems} from "@/lib/pendingOrderItems";
+import {ExchangeReturnPanel} from "./ExchangeReturnPanel";
+import {refreshFeatureStock} from "@/services/featureStockMirror";
+import { bundleAvailableStock } from "@/lib/product";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -352,6 +356,7 @@ export function OrdersPage() {
   // Editing a pending order. `draft` holds the new contents until saved; the
   // order document and the ledger are only touched on confirm.
   const [editOrderId, setEditOrderId] = useState<string | null>(null);
+  const [editBefore,setEditBefore]=useState<any>(null);
   const [draft, setDraft] = useState<EcommerceOrderItem[]>([]);
   const [pendingVariantSelection, setPendingVariantSelection] = useState<{ product: any; qty: number } | null>(null);
 
@@ -385,6 +390,7 @@ export function OrdersPage() {
           // COGS booked at delivery carried 0 for this line.
           unitCost: costOf(product.id),
           variantName,
+          ...(product.isBundle ? {bundleId:product.id,bundleName:product.name} : {}),
         },
       ];
     });
@@ -462,12 +468,10 @@ export function OrdersPage() {
 
   const openEdit = (order: EcommerceOrder) => {
     if (!canEdit(order)) return;
-    if ((order.stockItems ?? []).some((line: any) => line.bundleId)) {
-      setActionError("تعديل طلب يحتوي بوكس غير مدعوم بأمان حاليًا. بيانات الطلب ومخزونه لم تتغير.");
-      return;
-    }
     setActionError(null);
-    setDraft((order.stockItems ?? []).map((line) => ({ ...line })));
+    setDraft((order.items ?? []).map((line) => ({ ...line, productId:line.bundleId || line.productId })));
+    setEditBefore({items:order.items,stockItems:order.stockItems??[],totalAmount:order.totalAmount,
+      discountAmount:order.discountAmount??0,depositAmount:order.depositAmount});
     setEditOrderId(order.id);
   };
 
@@ -605,6 +609,8 @@ export function OrdersPage() {
       if (pending) {
         const saved=fromRemoteRow("orders",pending.order) as EcommerceOrder;
         useOrderStore.setState(state => ({orders:state.orders.map(o => o.id===saved.id?saved:o)}));
+        setEditOrderId(null);
+        await refreshFeatureStock([...(editBefore?.stockItems??[]).map((l:any)=>l.productId),...(saved.stockItems??[]).map(l=>l.productId)]);
         refreshStock();
         if(saved.discountCodeId) await refreshDiscountRow(saved.discountCodeId);
         setEditOrderId(null);
@@ -638,31 +644,12 @@ export function OrdersPage() {
       unitCost: l.unitCost ?? 0,
       variantName: (l as any).variantName,
     }));
-    if (draft.some(line => products.find(p => p.id === line.productId)?.isBundle)) {
-      setActionError("إضافة بوكس من تعديل الطلب غير مدعومة حاليًا. استخدم إنشاء طلب جديد للبوكس.");
-      return;
-    }
-    const after = draft.map((l) => ({
-      productId: l.productId,
-      quantity: l.quantity,
-      unitPrice: l.unitPrice ?? 0,
-      unitCost: l.unitCost ?? 0,
-      variantName: (l as any).variantName,
-    }));
+    // The database expands authoritative recipes and prices inventory. This
+    // preview only supplies component quantities for local availability feedback.
+    const after = expandPendingOrderItems(draft,editBefore??order,products,costOf);
 
-    // Anything newly reserved has to actually be on the shelf. Checked against
-    // the ledger, and against what THIS order already holds — raising a line
-    // from 2 to 3 needs one more unit available, not three.
-    for (const line of after) {
-      const had = before.find((b) => b.productId === line.productId)?.quantity ?? 0;
-      const extra = line.quantity - had;
-      if (extra > 0 && extra > qtyOf(line.productId)) {
-        setActionError(
-          `مفيش كمية كافية من "${draft.find((d) => d.productId === line.productId)?.productName ?? line.productId}" — متاح ${qtyOf(line.productId)} بس`,
-        );
-        return;
-      }
-    }
+    // Stock is validated under server locks against the captured recipe.
+    // A catalogue edit in another tab cannot substitute a different reservation.
 
     // Claimed after the validations and before the first `await`, like every
     // other action here: one order, one write in flight.
@@ -681,17 +668,14 @@ export function OrdersPage() {
     try {
       const result = await runFinancialCommand<{ order: any }>("order_edit", {
         orderId: order.id,
-        before: { items: order.items, stockItems: order.stockItems ?? [], totalAmount: order.totalAmount,
-          discountAmount: order.discountAmount ?? 0, depositAmount: order.depositAmount },
-        patch: { items: draft, stockItems: draft, discountAmount: draftDiscount, totalAmount: draftTotal },
+        before: editBefore,
+        patch: { items: draft, stockItems: after, discountAmount: draftDiscount, totalAmount: draftTotal },
       }, "order_edit:" + order.id);
       const saved = fromRemoteRow("orders", result.order) as EcommerceOrder;
       useOrderStore.setState(state => ({ orders: state.orders.map(o => o.id === saved.id ? saved : o) }));
+      setEditOrderId(null);
       if (saved.discountCodeId) await refreshDiscountRow(saved.discountCodeId);
-      applyStockMoves([
-        ...before.map(b => ({ productId: b.productId, delta: b.quantity, variantName: b.variantName })),
-        ...after.map(a => ({ productId: a.productId, delta: -a.quantity, variantName: a.variantName })),
-      ]);
+      await refreshFeatureStock([...before.map(b=>b.productId),...(saved.stockItems??[]).map(a=>a.productId)]);
       refreshStock();
       setEditOrderId(null);
     } catch (e) {
@@ -805,7 +789,8 @@ export function OrdersPage() {
       });
 
       // Called off before it ever shipped — everything goes back on the shelf.
-      applyStockMoves(
+      if(order.exchangeDetails) await refreshFeatureStock((order.stockItems??[]).map(l=>l.productId));
+      else applyStockMoves(
         (order.stockItems ?? []).map((line: any) => ({
           productId: line.productId,
           delta: line.quantity,
@@ -1051,6 +1036,7 @@ export function OrdersPage() {
               shippingFee: order.shippingFee,
               wastedTripCompensation: order.wastedTripCompensation ?? 0,
               courierFee: order.courierFee,
+              courierCompensation: order.exchangeDetails?.cause === "courier",
               depositAmount: order.depositAmount,
               wallet: targetWallet,
               codAmount: order.expectedCod,
@@ -1268,7 +1254,8 @@ export function OrdersPage() {
       });
 
       // The courier brought it back. Same movement as a cancellation.
-      applyStockMoves(
+      if(order.exchangeDetails) await refreshFeatureStock((order.stockItems??[]).map(l=>l.productId));
+      else applyStockMoves(
         (order.stockItems ?? []).map((line: any) => ({
           productId: line.productId,
           delta: line.quantity,
@@ -1531,6 +1518,7 @@ export function OrdersPage() {
             shippingFee: order.shippingFee,
             wastedTripCompensation: order.wastedTripCompensation ?? 0,
             courierFee: order.courierFee,
+              courierCompensation: order.exchangeDetails?.cause === "courier",
             depositAmount: order.depositAmount,
             wallet: targetWallet,
             codAmount: order.expectedCod,
@@ -2167,6 +2155,11 @@ export function OrdersPage() {
                                 </Button>
                               )}
 
+                            {order.exchangeDetails && <ExchangeReturnPanel order={order} onSaved={saved=>{
+                              useOrderStore.setState(state=>({orders:state.orders.map(o=>o.id===saved.id?saved:o)}));
+                              refreshStock();
+                            }}/>}
+
                             {/* Money sent before the courier arrives. Only
                                 offered while something is still owed. */}
                             {actions.includes("pay") && order.expectedCod > 0 && (
@@ -2489,10 +2482,15 @@ export function OrdersPage() {
               <div className="space-y-2">
                 {draft.map((line) => {
                   const original =
-                    editingOrder?.stockItems?.find((l) => l.productId === line.productId)
+                    editingOrder?.items?.find((l) => l.productId === line.productId && l.variantName===line.variantName)
                       ?.quantity ?? 0;
                   // What this order already holds counts as available to it.
-                  const ceiling = qtyOf(line.productId) + original;
+                  const componentRows=(editingOrder?.stockItems??[]).filter(l=>l.bundleId===line.productId);
+                  const ceiling = line.bundleId && componentRows.length && original>0
+                    ? original + Math.min(...componentRows.map(c=>Math.floor(qtyOf(c.productId)/(c.quantity/original))))
+                    : (products.find(p=>p.id===line.productId)?.isBundle
+                      ? bundleAvailableStock(products.find(p=>p.id===line.productId),products)
+                      : qtyOf(line.productId) + original);
                   return (
                     <div
                       key={`${line.productId}::${line.variantName ?? ""}`}
@@ -2513,6 +2511,7 @@ export function OrdersPage() {
                       </div>
                       <Input
                         type="number"
+                        aria-label={`كمية ${line.productName} في الطلب`}
                         min="1"
                         max={ceiling}
                         value={line.quantity}

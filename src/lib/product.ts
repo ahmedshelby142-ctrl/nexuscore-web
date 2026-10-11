@@ -208,11 +208,17 @@ export function buildableFromRecipe(
   if (!recipe?.length) return 0;
 
   let buildable = Infinity;
+  const totals = new Map<string,number>();
+  const variants = new Map<string,{productId:string;variantName?:string;quantity:number}>();
   for (const component of recipe) {
-    const per = Number(component.quantity);
-    if (!Number.isFinite(per) || per <= 0) continue;
-    buildable = Math.min(buildable, Math.floor(onHandOf(component.productId, component.variantName) / per));
+    const per=Number(component.quantity);
+    if (!Number.isFinite(per) || per<=0) return 0;
+    totals.set(component.productId,(totals.get(component.productId)??0)+per);
+    const key=component.productId+"::"+(component.variantName??"");
+    variants.set(key,{...component,quantity:(variants.get(key)?.quantity??0)+per});
   }
+  for (const [id,per] of totals) buildable=Math.min(buildable,Math.floor(onHandOf(id)/per));
+  for (const c of variants.values()) buildable=Math.min(buildable,Math.floor(onHandOf(c.productId,c.variantName)/c.quantity));
   return Number.isFinite(buildable) ? Math.max(0, buildable) : 0;
 }
 

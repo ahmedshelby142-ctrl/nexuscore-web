@@ -1,3 +1,4 @@
+import { exchangeUnits } from "./partialExchange.ts";
 /**
  * استبدال — what a replacement IS in this ERP, in one place.
  *
@@ -33,20 +34,18 @@
  * Concretely, over time:
  *
  *   1. replacement order placed   `order_placed`   stock − (the new goods)
- *   2. original order → returned  `order_returned_pending`   nothing moves
- *   3. original return confirmed  `return_confirmed` with movement "exchange"
- *                                 stock +, revenue −, cogs −, LTV −, and the
- *                                 courier's fee charged to whoever CAUSED the
- *                                 swap — see `shippingBorneBy`. It falls on
- *                                 the customer only when the customer changed
- *                                 their mind; a swap we caused is our cost.
+ *   2. source unit identities are reserved privately; unaffected source items
+ *      and its delivered status stay intact.
+ *   3. physical receipt confirmed via record_exchange_return:
+ *      selected stock +, historical revenue/COGS/LTV −, original discount
+ *      allocated to exact units. Extra return-trip fees follow the stored cause.
  *   4. replacement delivered      `order_delivered`  revenue +, cogs +, COD
  *
  * ## Why there is no "price difference" event
  *
  * There is deliberately NO arithmetic here that computes a difference and then
  * moves money by it. Step 4 books the replacement at its full price and step 3
- * reverses the original at its full price, so the net the books end up with IS
+ * reverses only the selected original units at their allocated net price, so the net the books end up with IS
  * the difference — including the sign. A cheaper replacement nets negative on
  * its own, with no special case.
  *
@@ -71,6 +70,7 @@ export interface ExchangeableOrder {
   /** Set on a REPLACEMENT order; points at the order being replaced. */
   original_order_id?: string | null;
   isExchange?: boolean;
+  exchangeDetails?: import("./partialExchange").ExchangeDetails | null;
 }
 
 /** A return already recorded against an order, as `return_records` stores it. */
@@ -165,12 +165,12 @@ export function exchangeBlock(
 ): ExchangeBlock | null {
   if (order.status !== "delivered") return "not_delivered";
   if (order.returnConfirmedAt) return "already_returned";
-  if (replacements.some((o) => o.id !== order.id && o.original_order_id === order.id)) {
+  if (replacements.some((o) => o.id !== order.id && o.original_order_id === order.id && !o.exchangeDetails && o.status!=="cancelled")) {
     return "already_replaced";
   }
+  const units=exchangeUnits(order,priorReturns,replacements);
   const remaining = remainingQuantities(order, priorReturns);
-  let left = 0;
-  for (const qty of remaining.values()) left += qty;
+  let left = units.length ? units.reduce((n,u)=>n+u.remaining,0):[...remaining.values()].reduce((n,q)=>n+q,0);
   if (left <= 0) return "nothing_left";
   return null;
 }
@@ -370,7 +370,7 @@ export interface ReturnableUnit {
   /** Cost per unit; for a بوكس the components carry it instead. */
   unitCost: number;
   isBundle?: boolean;
-  bundleItems?: { productId: string; quantity: number; unitCost: number }[];
+  bundleItems?: { productId: string; quantity: number; unitCost: number; variantName?:string }[];
 }
 
 /**
@@ -424,6 +424,7 @@ export function returnableUnits(order: any): ReturnableUnit[] {
     // Per-box component quantity: the stock line holds the total that left.
     unit.bundleItems!.push({
       productId: line.productId,
+      variantName: line.variantName,
       quantity: (Number(line.quantity) || 0) / (boxes || 1),
       unitCost: Number(line.unitCost) || 0,
     });

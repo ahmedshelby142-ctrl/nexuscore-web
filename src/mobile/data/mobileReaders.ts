@@ -87,7 +87,7 @@ const ORDER_COLUMNS = [
   "codSettledAt", "returnConfirmedAt", "returnType", "return_cause", "isExchange",
   "original_order_id", "wholesaleClientId", "shippingPenaltyApplied", "store_id", "deleted_at",
   // 054: customer-facing (not a cost), exposed by `orders_operational` to every member.
-  "wastedTripCompensation",
+  "wastedTripCompensation", "exchangeDetails",
 ].join(",");
 
 /**

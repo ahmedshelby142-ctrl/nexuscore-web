@@ -52,6 +52,7 @@ type CreateEcommerceOrder = Omit<
    * on its behalf.
    */
   orderNumber?: string;
+  exchangeRequest?: {originalOrderId:string;selections:import("@/lib/partialExchange").ExchangeSelection[];cause:"customer"|"shop"|"courier"};
   items: OrderItemInput[];
   status?: EcommerceOrderStatus;
   /**
@@ -169,6 +170,8 @@ async function buildNewOrder(orderData: CreateEcommerceOrder, orderNumber: strin
     updated_at: Date.now(),
     revenueLogged: false,
   };
+
+  delete (order as any).exchangeRequest;
 
   // Find-or-create the person, and put THEIR ID on the order. The id
   // is what `order_delivered` keys `customer_ltv` to, and what قاعدة
@@ -335,7 +338,10 @@ export const useOrderStore = create<OrderState>()(
             stamp: Date.now(),
           });
           const p_event = await prepareEvent(placement);
-          const data = await runFinancialCommand<any>("order_place",{order:p_order,event:p_event},"order_place");
+          const exchange=orderData.exchangeRequest;
+          const data = await runFinancialCommand<any>(exchange ? "exchange_place" : "order_place",{
+            order:p_order,event:p_event,...(exchange??{}),
+          },"order_place");
           const saved = fromRemoteRow("orders", (data as any).order) as EcommerceOrder;
           set((state: any) => {
             const at = state.orders.findIndex((o: EcommerceOrder) => o.id === saved.id);

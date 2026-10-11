@@ -80,6 +80,12 @@ export async function runFinancialCommand<T>(
               ? "record_pos_sale"
               : op.command === "order_edit"
                 ? "record_order_edit"
+                : op.command === "bundle_edit"
+                  ? "record_bundle_edit"
+                  : op.command === "exchange_place"
+                    ? "record_exchange_place"
+                    : op.command === "exchange_return"
+                      ? "record_exchange_return"
                 : "record_financial_command";
         const { data, error } = await sb.rpc(
           rpc,

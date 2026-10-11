@@ -28,6 +28,8 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { runFinancialCommand, resolvePendingFinancialCommand } from "@/lib/financialCommand";
+import { fromRemoteRow } from "@/services/api/fieldMapping";
 import { cn } from "@/lib/utils";
 import type { Product } from "@/types";
 
@@ -46,6 +48,7 @@ export function BundlesPage() {
   const [sku, setSku] = useDraftState("bundle:sku", "");
   const [price, setPrice] = useDraftState("bundle:price", "");
   const [selected, setSelected] = useDraftState<Record<string, number>>("bundle:selected", {});
+  const [editing, setEditing] = useDraftState<any>("bundle:editing", null);
   const [message, setMessage] = useState("");
   const [pendingVariantSelection, setPendingVariantSelection] = useState<{ product: Product } | null>(null);
 
@@ -78,6 +81,17 @@ export function BundlesPage() {
   // One in-flight write at a time; see `useRunOnce`.
   const runOnce = useRunOnce();
   const saveBundle = async () => runOnce(async () => {
+    try {
+      const previous=await resolvePendingFinancialCommand<{product:any}>("bundle_edit");
+      if(previous){
+        const saved=fromRemoteRow("products",previous.product) as Product;
+        useBusinessStore.setState(state=>({products:state.products.map(p=>p.id===saved.id?saved:p)}));
+        editBundle(saved);
+        setMessage("تم تأكيد التعديل السابق بنفس العملية. راجع البوكس المحفوظ قبل تعديل جديد.");
+        return;
+      }
+    }catch(e){setMessage(e instanceof Error?e.message:String(e));return;}
+
     if (!name.trim() || !sku.trim() || !price || selectedItems.length === 0) {
       setMessage("أكمل اسم البوكس، SKU، السعر، وقم باختيار المنتجات");
       return;
@@ -85,7 +99,7 @@ export function BundlesPage() {
     const invalid=bundleDefinitionError(Number(price),selectedItems);
     if (invalid) {setMessage(invalid);return;}
 
-    if (!selectedStockOk) {
+    if (!editing && !selectedStockOk) {
       setMessage("لا يمكن حفظ البوكس: بعض المنتجات المختارة لا يوجد منها رصيد كافٍ بالمخزن");
       return;
     }
@@ -94,7 +108,16 @@ export function BundlesPage() {
     // to fire the write and immediately announce "تم حفظ البوكس" — so a
     // rejected write cleared the user's work and told them it was saved.
     try {
-      await addProduct({
+      if (editing) {
+        const result = await runFinancialCommand<{product:any}>("bundle_edit", {
+          productId: editing.id, before: editing.before,
+          patch: {name:name.trim(),sku:sku.trim(),unitPrice:Number(price),bundleItems:selectedItems.map(item=>({
+            productId:item.productId,variantName:item.variantName || undefined,quantity:item.quantity,
+          }))},
+        });
+        const saved=fromRemoteRow("products",result.product) as Product;
+        useBusinessStore.setState(state=>({products:state.products.map(p=>p.id===saved.id?saved:p)}));
+      } else await addProduct({
       name: name.trim(),
       sku: sku.trim(),
       category: "بوكسات",
@@ -106,16 +129,25 @@ export function BundlesPage() {
     });
 
       clearDrafts("bundle:");
+      setEditing(null);
       setName("");
       setSku("");
       setPrice("");
       setSelected({});
       setMessage("تم حفظ البوكس وربطه بالمنتجات الفردية");
-    } catch {
-      // The store already told the user what went wrong. Keep their input.
-      setMessage("البوكس متسجّلش. راجع الاتصال وجرّب تاني — البيانات زي ما هي.");
+    } catch(e) {
+      setMessage(`تعذّر تأكيد حفظ البوكس؛ المسودة محفوظة. ${e instanceof Error?e.message:String(e)}`);
     }
   });
+
+  const editBundle = (bundle: Product) => {
+    setEditing({id:bundle.id,before:{name:bundle.name,sku:bundle.sku,unitPrice:bundle.unitPrice,
+      bundleItems:bundle.bundleItems,updated_at:bundle.updated_at ?? 0}});
+    setName(bundle.name);setSku(bundle.sku);setPrice(String(bundle.unitPrice));
+    setSelected(Object.fromEntries((bundle.bundleItems??[]).map(c=>[`${c.productId}::${c.variantName??""}`,c.quantity])));
+    setMessage("التعديل يخص البوكس في الكتالوج فقط. الفواتير وحجوزات الطلبات السابقة تحتفظ بمكوناتها وتكلفتها.");
+  };
+  const cancelEdit = () => {setEditing(null);setName("");setSku("");setPrice("");setSelected({});setMessage("");};
 
   const toggleBundle = async (id: string, currentActive: boolean) => runOnce(async () => {
     // Awaited so a refused toggle surfaces instead of becoming an unhandled
@@ -131,7 +163,8 @@ export function BundlesPage() {
     if (p.metadata?.variants && p.metadata.variants.length > 0) {
       setPendingVariantSelection({ product: p });
     } else {
-      setQuantity(p.id, (selected[p.id] || 0) + 1);
+      const key=Object.keys(selected).find(k=>k.split("::")[0]===p.id&&!k.split("::")[1])??p.id;
+      setQuantity(key, (selected[key] || 0) + 1);
     }
   };
 
@@ -151,7 +184,7 @@ export function BundlesPage() {
               <Boxes className="size-5 text-purple-600" />
             </div>
             <div>
-              <h2 className="font-display text-xl font-bold">منشئ البوكس</h2>
+              <h2 className="font-display text-xl font-bold">{editing ? "تعديل البوكس" : "منشئ البوكس"}</h2>
               <p className="text-xs text-muted-foreground">ابحث عن المنتجات وأضفها للتجميع</p>
             </div>
           </div>
@@ -273,11 +306,12 @@ export function BundlesPage() {
           <Button
             className="w-full"
             onClick={saveBundle}
-            disabled={!name || !sku || !price || selectedItems.length === 0 || !selectedStockOk}
+            disabled={!name || !sku || !price || selectedItems.length === 0 || (!editing && !selectedStockOk)}
           >
             <Save className="size-4 ml-2" />
-            حفظ البوكس
+            {editing ? "حفظ تعديل البوكس" : "حفظ البوكس"}
           </Button>
+          {editing && <Button variant="outline" onClick={cancelEdit}>إلغاء تعديل البوكس</Button>}
         </div>
 
         <div className="lg:col-span-2 rounded-2xl border border-border bg-card overflow-hidden">
@@ -358,7 +392,8 @@ export function BundlesPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-center px-4">
-                      <div className="flex items-center justify-center gap-1">
+                      <div className="flex items-center justify-center gap-1 flex-wrap">
+                        <Button variant="outline" size="sm" aria-label={`تعديل ${bundle.name}`} onClick={()=>editBundle(bundle)}>تعديل</Button>
                         <Button variant="outline" size="sm" onClick={() => toggleBundle(bundle.id, bundle.isActive ?? true)}>
                           {bundle.isActive ? "تعطيل" : "تفعيل"}
                         </Button>

@@ -39,12 +39,15 @@ const business = {
   removeProduct: write,
 };
 const stubs = {
+  "@/lib/financialCommand": {resolvePendingFinancialCommand:async()=>null,runFinancialCommand:async(_command,input)=>{
+    await write(input);return {product:{...input.patch,id:input.productId}};
+  }},
   "@/store/useCourierStore": {
     useCourierStore: (selector) =>
       selector({ accounts: [{ id: "synthetic-courier", name: "Synthetic courier" }] }),
   },
   "@/store/useBusinessStore": {
-    useBusinessStore: (selector) => (selector ? selector(business) : business),
+    useBusinessStore: Object.assign((selector) => (selector ? selector(business) : business),{setState:()=>{}}),
   },
   "@/store/useOrderStore": { useOrderStore: () => ({ orders: [] }) },
   "@/hooks/useDraftState": {

@@ -11,7 +11,8 @@ import { toPiastres } from "../../src/lib/ledger/money.ts";
 export const ROOT = path.resolve(import.meta.dirname, "../..");
 export const read = (name) => fs.readFileSync(path.join(ROOT, name), "utf8");
 export const MIGRATION = "supabase/migrations/20261011150322_final_v1_financial_integrity.sql";
-export async function openBusinessDb({ migrate = true } = {}) {
+export const FEATURES_MIGRATION="supabase/migrations/20261011202254_final_features_bundle_exchange.sql";
+export async function openBusinessDb({ migrate = true, baselineOnly = false } = {}) {
   const store = crypto.randomUUID(),
     device = crypto.randomUUID();
   const users = Object.fromEntries(
@@ -88,8 +89,10 @@ export async function openBusinessDb({ migrate = true } = {}) {
       }
     }
     await admin.query(read("scripts/fixtures/purchasing-public-schema.sql"));
-    await admin.query(read("supabase/migrations/20261010183049_wholesale_feature_toggle.sql"));
-    await admin.query(read("supabase/migrations/20261011051927_receipt_product_validation.sql"));
+    if (!baselineOnly) {
+      await admin.query(read("supabase/migrations/20261010183049_wholesale_feature_toggle.sql"));
+      await admin.query(read("supabase/migrations/20261011051927_receipt_product_validation.sql"));
+    }
     for (const [role, id] of Object.entries(users))
       await admin.query("insert into auth.users values($1,$2,now())", [
         id,
@@ -109,7 +112,8 @@ export async function openBusinessDb({ migrate = true } = {}) {
         store,
         role,
       ]);
-    if (migrate) await admin.query(read(MIGRATION));
+    await admin.query("select set_config('request.jwt.claim.sub',$1,false)",[users.ADMIN]);
+    if (migrate && !baselineOnly) {await admin.query(read(MIGRATION));await admin.query(read(FEATURES_MIGRATION));}
     async function client(role = "ADMIN") {
       const c = await connect();
       await c.query("set role authenticated");

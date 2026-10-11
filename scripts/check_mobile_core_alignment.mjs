@@ -144,9 +144,9 @@ test("buildable boxes are the scarcest component, floored", () => {
   assert.equal(buildableFromRecipe(undefined, () => 99), 0);
 });
 
-test("a zero-quantity component line cannot make a box infinitely available", () => {
+test("a zero-quantity component makes an invalid box unavailable", () => {
   const recipe = [{ productId: "X", quantity: 0 }, { productId: "Y", quantity: 1 }];
-  assert.equal(buildableFromRecipe(recipe, (id) => (id === "Y" ? 3 : 0)), 3);
+  assert.equal(buildableFromRecipe(recipe, (id) => (id === "Y" ? 3 : 0)), 0);
 });
 
 test("the desktop entry point still gives the same answer through the shared rule", () => {

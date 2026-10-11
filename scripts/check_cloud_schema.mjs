@@ -30,18 +30,23 @@ test.beforeEach(() => {
   resetDroppedReport();
 });
 
-test("every declared column really exists in the deployed schema", () => {
+test("every declared column exists in the ordered release schema", () => {
   // The whole design rests on this file matching the SQL. If they drift, the
   // whitelist starts dropping real data or sending phantom columns.
   // EVERY migration, not just the master one. Migrations are additive: a table
   // added in 010 is just as deployed as one declared in 000, and reading only
   // the master made a correctly-migrated table look missing.
   const dir = fileURLToPath(new URL("../docs/migrations/", import.meta.url));
+  const pendingDir = fileURLToPath(new URL("../supabase/migrations/", import.meta.url));
   const sql = readdirSync(dir)
     .filter((f) => f.endsWith(".sql"))
     .sort()
     .map((f) => readFileSync(dir + f, "utf8"))
-    .join(String.fromCharCode(10));
+    .join(String.fromCharCode(10)) + String.fromCharCode(10) + readdirSync(pendingDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort()
+      .map((f) => readFileSync(pendingDir + f, "utf8"))
+      .join(String.fromCharCode(10));
 
   // Columns the §6 patch loop adds to every synced table.
   const patched = new Set(["store_id", "updated_at"]);
@@ -57,7 +62,7 @@ test("every declared column really exists in the deployed schema", () => {
       // …or added later by an additive migration (e.g. 052's
       // `ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS ledger_event_id`).
       const added = new RegExp(
-        `ALTER TABLE public\\.${table} ADD COLUMN IF NOT EXISTS (?:"${col}\\b"|${col}\\b)`,
+        `ALTER TABLE public\\.${table} ADD COLUMN (?:IF NOT EXISTS )?(?:"${col}\\b"|${col}\\b)`,
       ).test(sql);
       const present = body.includes(`\n  ${col} `) || body.includes(`"${col}"`) || added;
       assert.ok(present, `${table}.${col} is declared here but not in the SQL`);

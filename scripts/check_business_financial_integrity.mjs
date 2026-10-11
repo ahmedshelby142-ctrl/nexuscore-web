@@ -1,7 +1,7 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { openBusinessDb, read, MIGRATION } from "./helpers/business-db.mjs";
+import { openBusinessDb, read, MIGRATION, FEATURES_MIGRATION } from "./helpers/business-db.mjs";
 import { buildSaleLines } from "../src/lib/ledger/sales.ts";
 import {
   buildOrderPlacedLines,
@@ -141,6 +141,7 @@ before(async () => {
   await c.query("rollback");
   await seller.query("rollback");
   await db.admin.query(read(MIGRATION));
+  await db.admin.query(read(FEATURES_MIGRATION));
   fs.writeFileSync(
     "logs/final-v1-sprint/financial-db-environment.json",
     JSON.stringify(
@@ -1239,7 +1240,7 @@ test("SPR-POS-07: receipt refunds reverse original customer spend even when the 
   ).rows;
   assert.deepEqual(totals, [{ subject_id: original, n: "0" }]);
 });
-test("SPR-ECO-10: box-component edits fail closed without replacing the sold box with zero-priced components", async () => {
+test("SPR-ECO-10: forged box component rows fail closed instead of replacing the sold box with zero-priced components", async () => {
   const plain = await placedOrder({ discount: false, qty: 1 }),
     box = crypto.randomUUID(),
     id = crypto.randomUUID();
@@ -1290,7 +1291,7 @@ test("SPR-ECO-10: box-component edits fail closed without replacing the sold box
       plain.seller,
       operation,
     ),
-    /NEXUS_ORDER_BOX_EDIT_UNIMPLEMENTED/,
+    /درجة المنتج أو ربط البوكس غير صالح/,
   );
   assert.equal(await count("ledger_events", operation), 0);
   assert.deepEqual(

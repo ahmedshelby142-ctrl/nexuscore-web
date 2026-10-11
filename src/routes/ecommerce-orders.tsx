@@ -1,3 +1,5 @@
+import {refreshFeatureStock} from "@/services/featureStockMirror";
+import { exchangeUnits, exchangeRefund } from "@/lib/partialExchange";
 import { stockIsAuthoritative } from "@/lib/ledger/stockSnapshot";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -40,7 +42,6 @@ import { useSearchParams } from "react-router-dom";
 import { buildOrderPlacedLines } from "@/lib/ledger/orders";
 import {
   exchangeBlock,
-  isFullExchangeSelection,
   returnedValue,
   priceDifference,
   remainingQuantities,
@@ -218,7 +219,7 @@ function EcommerceOrdersInner() {
   const [isExchange, setIsExchange] = useDraftState("eco-order:isExchange", false);
   const [originalOrderId, setOriginalOrderId] = useDraftState("eco-order:originalOrderId", "");
   // WHY the swap happens — decided here, at the one moment the trip is priced.
-  // Stored on the ORIGINAL order's `return_cause` and read back, locked, when
+  // Stored atomically on the exchange reservation and read back, locked, when
   // that order's return is confirmed, so the trip is charged exactly once.
   const [exchangeCause, setExchangeCause] = useDraftState<ReturnCause>("eco-order:exchangeCause", "unknown");
   /**
@@ -233,7 +234,7 @@ function EcommerceOrdersInner() {
    * courier actually hands them over, not when the swap is typed.
    */
   const [returningLines, setReturningLines] = useDraftState<
-    { product_id: string; product_name: string; quantity: number; unit_price: number }[]
+    { product_id: string; product_name: string; quantity: number; unit_price: number; lineId?:string; variantName?:string }[]
   >("eco-order:returningLines", []);
   const [rows, setRows] = useDraftState<RowItem[]>("eco-order:rows", []);
   const [paymentMethod, setPaymentMethod] = useDraftState<PaymentMethod>("eco-order:paymentMethod", "full_prepaid");
@@ -349,29 +350,10 @@ function EcommerceOrdersInner() {
   );
 
   /** How many of each line are still with the customer — the return ceiling. */
-  const remainingOnOriginal = useMemo(
-    () =>
-      selectedOriginalOrder
-        ? remainingQuantities(selectedOriginalOrder, returnRecords)
-        : new Map<string, number>(),
-    [selectedOriginalOrder, returnRecords],
-  );
-
-  /** What the returned lines are worth, at what the customer actually PAID. */
-  const returningValue = useMemo(
-    () =>
-      selectedOriginalOrder
-        ? returnedValue(
-            selectedOriginalOrder,
-            returningLines.map((l) => ({
-              productId: l.product_id,
-              quantity: l.quantity,
-              unitPrice: l.unit_price,
-            })),
-          )
-        : 0,
-    [selectedOriginalOrder, returningLines],
-  );
+  const originalUnits=useMemo(()=>selectedOriginalOrder ? exchangeUnits(selectedOriginalOrder,returnRecords,allOrders):[],[selectedOriginalOrder,returnRecords,allOrders]);
+  const returningValue=useMemo(()=>selectedOriginalOrder ? exchangeRefund(selectedOriginalOrder,
+    returningLines.map(l=>({lineId:l.lineId??"",quantity:l.quantity})),returnRecords,allOrders):0,
+    [selectedOriginalOrder,returningLines,returnRecords,allOrders]);
 
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null);
   useEffect(() => {
@@ -709,13 +691,9 @@ function EcommerceOrdersInner() {
         setResult({ success: false, message: unclassified });
         return;
       }
-      const left = remainingQuantities(origin, returnRecords);
-      if (!isFullExchangeSelection(origin,returnRecords,returningLines.map(l=>({productId:l.product_id,quantity:l.quantity})))) {
-        setResult({success:false,message:"الاستبدال الجزئي غير مدعوم بأمان حاليًا. اختر كل الأصناف المتبقية في الطلب الأصلي؛ لن يتغير مخزون أو مال."});
-        return;
-      }
+      const left = new Map(exchangeUnits(origin,returnRecords,allOrders).map(u=>[u.lineId,u.remaining]));
       for (const line of returningLines) {
-        const available = left.get(line.product_id) ?? 0;
+        const available = left.get(line.lineId??"") ?? 0;
         if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
           setResult({
             success: false,
@@ -731,23 +709,7 @@ function EcommerceOrdersInner() {
           return;
         }
       }
-      // The cause goes on the ORIGINAL before anything is placed, so the server
-      // trigger's refusal (a courier/shop cause needs ADMIN or ACCOUNTANT)
-      // lands before any stock or money moves.
-      if ((origin as { return_cause?: string }).return_cause !== exchangeCause) {
-        try {
-          await updateOrder(origin.id, { return_cause: exchangeCause } as never);
-        } catch (e) {
-          const raw = e instanceof Error ? e.message : String(e);
-          setResult({
-            success: false,
-            message: raw.includes("NEXUS_CAUSE_NOT_AUTHORISED")
-              ? "تسجيل سبب الاستبدال على المندوب أو المحل للمدير أو المحاسب فقط — الطلب ما اتسجّلش."
-              : `لم يُسجَّل الطلب. ${raw}`,
-          });
-          return;
-        }
-      }
+      // Cause and selection are persisted atomically with the replacement.
     }
     const validRows = rows.filter(rowIsSound);
     const items: EcommerceOrderItem[] = validRows.map((r) => {
@@ -899,7 +861,9 @@ function EcommerceOrdersInner() {
         // TOP-LEVEL, not inside `metadata`: `orders.original_order_id` is the
         // real column `movementFor` reads to know the original's return is a
         // SWAP and not a refund.
-        ...(isExchange && originalOrderId ? { original_order_id: originalOrderId } : {}),
+        ...(isExchange && originalOrderId ? { original_order_id: originalOrderId,
+          exchangeRequest:{originalOrderId,selections:returningLines.map(l=>({lineId:l.lineId??"",quantity:l.quantity})),cause:exchangeCause as "customer"|"shop"|"courier"},
+        } : {}),
         paymentMethod,
         shippingFee: shipping_fee,
         wastedTripCompensation,
@@ -972,14 +936,20 @@ function EcommerceOrdersInner() {
 
     // Confirmed. The next order draws a new number.
     pendingPlacement.current = null;
-    if (appliedDiscount?.id) await refreshDiscountRow(appliedDiscount.id);
+    let committedRefreshWarning = "";
+    try { if (appliedDiscount?.id) await refreshDiscountRow(appliedDiscount.id); }
+    catch { committedRefreshWarning = " تم تسجيل الطلب؛ حدّث الصفحة للتحقق من عرض الخصم والمخزون قبل عملية جديدة."; }
 
     // The goods leave the shelf when the order is taken — the same moment the
     // `order_placed` event reserved them. Cancel and return put them back
     // (OrdersPage), so this is the half that makes those symmetric. Applied on
     // a replay too: the first attempt's answer never reached this mirror.
-    useBusinessStore.getState().applyStockMoves(
-      stockItems.map((line: any) => ({
+    if(placed.order.exchangeDetails) {
+      try { await refreshFeatureStock((placed.order.stockItems??[]).map(l=>l.productId)); }
+      catch(e) { committedRefreshWarning = " " + (e instanceof Error ? e.message : String(e)); }
+    }
+    else useBusinessStore.getState().applyStockMoves(
+      (placed.order.stockItems??stockItems).map((line: any) => ({
         productId: line.productId,
         delta: -line.quantity,
         variantName: line.variantName,
@@ -998,9 +968,9 @@ function EcommerceOrdersInner() {
 
     setResult({
       success: true,
-      message: placed.replayed
+      message: (placed.replayed
         ? `الطلب ${placed.order.orderNumber} كان اتسجّل بالفعل — متسجّلش مرة تانية.`
-        : "تم حفظ الطلب وتحديث المخزون والعميل وشركة الشحن تلقائياً!",
+        : "تم حفظ الطلب وتحديث المخزون والعميل وشركة الشحن تلقائياً!") + committedRefreshWarning,
     });
     clearDrafts("eco-order:");
     setCustomerName("");
@@ -1291,14 +1261,14 @@ function EcommerceOrdersInner() {
             <div className="mt-4 space-y-3">
               <h4 className="text-sm font-medium">المنتجات في الطلب الأصلي:</h4>
               <div className="border border-border rounded-lg overflow-hidden divide-y divide-border">
-                {selectedOriginalOrder.items.map((item: any, idx: number) => {
+                {originalUnits.map((item, idx: number) => {
                   // Marked for return — held in its OWN list, never in the cart.
                   // A negative cart row is what `buildOrderPlacedLines` threw on.
-                  const marked = returningLines.find((l) => l.product_id === item.productId);
+                  const marked = returningLines.find((l) => l.lineId === item.lineId);
                   // Capped at what is still with the customer, not at what was
                   // ordered: returning the same unit twice added it to stock
                   // twice and reversed the revenue twice.
-                  const left = remainingOnOriginal.get(item.productId) ?? 0;
+                  const left = item.remaining;
 
                   /**
                    * Per-line quantity, clamped to what is still with the
@@ -1316,7 +1286,7 @@ function EcommerceOrdersInner() {
                     const clamped = Math.min(Math.max(1, Math.floor(qty) || 1), left);
                     setReturningLines((prev) =>
                       prev.map((l) =>
-                        l.product_id === item.productId ? { ...l, quantity: clamped } : l,
+                        l.lineId === item.lineId ? { ...l, quantity: clamped } : l,
                       ),
                     );
                   };
@@ -1372,12 +1342,13 @@ function EcommerceOrdersInner() {
                           disabled={left <= 0}
                           onClick={() => {
                             setReturningLines((prev) =>
-                              prev.some((l) => l.product_id === item.productId)
-                                ? prev.filter((l) => l.product_id !== item.productId)
+                              prev.some((l) => l.lineId === item.lineId)
+                                ? prev.filter((l) => l.lineId !== item.lineId)
                                 : [
                                     ...prev,
                                     {
                                       product_id: item.productId,
+                                      lineId:item.lineId,variantName:item.variantName,
                                       product_name: item.productName,
                                       // Starts at one. The operator raises it;
                                       // taking the whole line by default is how

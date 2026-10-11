@@ -1,5 +1,5 @@
 import { ArrowRight, Package } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
 import { MobileSection } from "@/mobile/components/MobileSection";
@@ -16,6 +16,8 @@ import { WhatsAppIconLink } from "@/mobile/components/WhatsAppAction";
 import { customerMessage } from "@/lib/whatsapp";
 import { causeLabelsFor, codState, COD_STATE_LABELS_AR, type ReturnCause } from "@/lib/shippingRates";
 import { depositOutcome, DEPOSIT_OUTCOME_LABELS_AR } from "@/mobile/viewmodels/depositOutcome";
+
+const ExchangeReturnPanel=lazy(()=>import("@/components/ecommerce/ExchangeReturnPanel").then(m=>({default:m.ExchangeReturnPanel})));
 
 export function MobileOrderDetails() {
   const navigate = useNavigate();
@@ -86,7 +88,7 @@ export function MobileOrderDetails() {
   const status = resolveOrderStatus(order.status);
   const items = Array.isArray(order.items) ? order.items : [];
   const stockItems = Array.isArray(order.stockItems) ? order.stockItems : [];
-  const displayItems = stockItems.length > 0 ? stockItems : items;
+  const displayItems = items.length > 0 ? items : stockItems;
   const goodsTotal = displayItems.reduce((sum, item) => sum + Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0), 0);
   const shippingFee = Number(order.shippingFee ?? order.courierFee ?? 0);
   const depositAmount = Number(order.depositAmount ?? 0);
@@ -152,6 +154,8 @@ export function MobileOrderDetails() {
         <span>إجمالي الطلب</span>
         <strong>{formatArabicCurrency(totalAmount)}</strong>
       </div>
+
+      {order.exchangeDetails && <Suspense fallback={<SkeletonState />}><ExchangeReturnPanel order={order} readOnly={!showInternal} onSaved={async()=>{reload();await loadTimeline();}}/></Suspense>}
 
       {caseTitle && (
         <MobileSection titleAr={caseTitle}>

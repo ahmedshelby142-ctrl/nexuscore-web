@@ -240,7 +240,7 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
       "depositAmount", "depositWallet", "expectedCod", "cogsAmount",
       "paymentMethod", "courierName", "courierId", "courierFee",
       "revenueLogged", "codSettledAt", "returnConfirmedAt", "returnType",
-      "isExchange", "original_order_id", "wholesaleClientId", "createdAt",
+      "isExchange", "original_order_id", "exchangeDetails", "wholesaleClientId", "createdAt",
       // `shippingPenaltyApplied` is the reason this list is load-bearing: the
       // app wrote it and `clearsShippingDebt` read it, but it was missing here
       // AND from the table, so every write dropped it and the repeat-returner

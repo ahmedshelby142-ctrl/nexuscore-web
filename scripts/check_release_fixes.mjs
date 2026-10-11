@@ -215,7 +215,7 @@ test("C.4 courier-caused exchange: customer 0, shop 0, courier's own trip nets t
   });
 });
 
-test("C.5 the form asks WHY before it prices the swap, and records it on the original first", () => {
+test("C.5 the form asks WHY before pricing and passes it into atomic exchange placement", () => {
   assert.match(
     orderForm,
     /exchangeChargesCustomer = !isExchange \|\| shippingBorneBy\(exchangeCause, "exchange"\) === "customer"/,
@@ -224,12 +224,14 @@ test("C.5 the form asks WHY before it prices the swap, and records it on the ori
     orderForm,
     /if \(isExchange && blockingCauseReason\(exchangeCause, "exchange"\)\) return false;/,
   );
-  const causeWrite = orderForm.indexOf("return_cause: exchangeCause");
+  const causeWrite = orderForm.indexOf("exchangeRequest:");
   const placement = orderForm.indexOf("const placed = await placeOrder(");
   assert.ok(
-    causeWrite > 0 && causeWrite < placement,
-    "cause is written (and the trigger asked) before any stock or money moves",
+    placement > 0 && causeWrite > placement && causeWrite < orderForm.indexOf("if (!placed.success)", placement),
+    "cause and original-unit selection are part of the atomic placement input",
   );
+  assert.match(orderForm, /cause:exchangeCause/);
+  assert.doesNotMatch(orderForm, /return_cause: exchangeCause/);
   // …and the confirmation reuses it rather than asking again.
   assert.match(
     ordersPage,

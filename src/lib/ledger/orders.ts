@@ -196,6 +196,8 @@ export interface OrderDeliveredInput {
    * charge, while preserving an explicitly entered courier-fee override.
    */
   courierFee?: number;
+  /** Confirmed courier-caused exchange: recover their fee as compensation. */
+  courierCompensation?: boolean;
   /** Who carries it. Required when there is a fee to owe them. */
   courierId?: string;
   /**
@@ -326,7 +328,10 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
   if (deliveryMargin > 0) {
     lines.push({ account: "revenue", subjectId: "shipping_delivery_margin", amount: deliveryMargin });
   } else if (deliveryMargin < 0) {
-    lines.push({ account: "expense", subjectId: "shipping", amount: -deliveryMargin });
+    if(order.courierCompensation){
+      if(!order.courierId)throw new Error("order: courier compensation needs a courier");
+      lines.push({account:"receivable_courier",subjectId:order.courierId,amount:-deliveryMargin});
+    }else lines.push({ account: "expense", subjectId: "shipping", amount: -deliveryMargin });
   }
 
   // What we owe the courier for carrying it. Together with the fee sitting

@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "@/lib/supabase";
 import { getSyncIdentity } from "@/services/api/storeContext";
-import { assertFiniteLines } from "./ledger/money";
+import { assertFiniteLines } from "./ledger/money.ts";
 
 /** Only retry metadata lives here. Balances and committed results live in Postgres. */
 type Pending = { id: string; command: string; input: unknown; uncertain?: boolean };
@@ -73,13 +73,29 @@ export async function runFinancialCommand<T>(
     let last = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const { data, error } = await sb.rpc("record_financial_command", {
-          p_id: op.id,
-          p_store: identity.storeId,
-          p_device: identity.deviceId,
-          p_command: op.command,
-          p_input: op.input,
-        });
+        const rpc =
+          op.command === "order_place"
+            ? "place_order"
+            : op.command === "pos_sale"
+              ? "record_pos_sale"
+              : op.command === "order_edit"
+                ? "record_order_edit"
+                : "record_financial_command";
+        const { data, error } = await sb.rpc(
+          rpc,
+          op.command === "order_place"
+            ? {
+                p_order: (op.input as any).order,
+                p_event: (op.input as any).event,
+              }
+            : {
+                p_id: op.id,
+                p_store: identity.storeId,
+                p_device: identity.deviceId,
+                p_command: op.command,
+                p_input: op.input,
+              },
+        );
         if (error) {
           last = error.message;
           // A SQL rejection is definite for this attempt. Retain the identity
@@ -104,15 +120,18 @@ export async function runFinancialCommand<T>(
         if (error.definite) {
           // Keep the envelope on a payload/authorization rejection; never
           // turn an unknown previous commit into a fresh ID automatically.
-          throw new Error(`تعذّر تأكيد العملية: ${error.message}`);
+          throw Object.assign(new Error(`تعذّر تأكيد العملية: ${error.message}`), {
+            definite: !op.uncertain,
+          });
         }
         last = error instanceof Error ? error.message : String(error);
         op.uncertain = true;
         if (typeof sessionStorage !== "undefined") sessionStorage.setItem(key, JSON.stringify(op));
       }
     }
-    throw new Error(
-      `لم يصل تأكيد العملية. أعد المحاولة للتحقق من نفس العملية دون تكرارها. ${last}`,
+    throw Object.assign(
+      new Error(`لم يصل تأكيد العملية. أعد المحاولة للتحقق من نفس العملية دون تكرارها. ${last}`),
+      { definite: false },
     );
   };
   const promise = execute().finally(() => running.delete(key));
@@ -140,13 +159,30 @@ export async function resolvePendingOpeningBalance(): Promise<void> {
     );
 }
 
+/** Resolve the original till request before rechecking stock or code limits. */
+export async function resolvePendingFinancialEvent(kind: string): Promise<string | null> {
+  const result = await resolvePendingFinancialCommand<{ eventId: string }>(`ledger:${kind}`);
+  return result?.eventId ?? null;
+}
+
+/** Replay the saved envelope before draft/status/stock prechecks can block it. */
+export async function resolvePendingFinancialCommand<T>(scope: string): Promise<T | null> {
+  const identity = await getSyncIdentity();
+  if (!identity) return null;
+  const key = PREFIX + identity.storeId + ":" + scope;
+  const saved = typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(key);
+  const op: Pending | undefined = pending.get(key) ?? (saved ? JSON.parse(saved) : undefined);
+  if (!op) return null;
+  return runFinancialCommand<T>(op.command, op.input, scope);
+}
+
 /** Ledger-only input retains the existing shared builders and EGP semantics. */
 export async function appendFinancialEvent(
   event: import("./ledger/types").NewEvent,
 ): Promise<string> {
   assertFiniteLines(event.kind, event.lines);
   const result = await runFinancialCommand<{ eventId: string }>(
-    "ledger",
+    event.kind === "sale" && event.refType === "pos_sale" ? "pos_sale" : "ledger",
     event,
     `ledger:${event.kind}`,
   );

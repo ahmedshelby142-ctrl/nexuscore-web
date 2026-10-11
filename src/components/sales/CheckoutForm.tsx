@@ -27,6 +27,7 @@ import { useCustomerStore } from "@/store/useCustomerStore";
 import { activeCustomers } from "@/lib/customers";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { appendEvent } from "@/lib/ledger";
+import { appendFinancialEvent, resolvePendingFinancialEvent } from "@/lib/financialCommand";
 import { buildSaleLines } from "@/lib/ledger/sales";
 import {
   buildWholesaleInvoiceLines,
@@ -63,12 +64,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { add, multiply, subtract, round, formatQty, includedVat, discountAmountFor } from "@/lib/math";
 import { applyDiscountCode, discountBlock, DISCOUNT_BLOCK_MESSAGE } from "@/lib/discounts";
-import { claimDiscountUse, releaseDiscountUse } from "@/services/discountUsage";
+import { claimDiscountUse, releaseDiscountUse, refreshDiscountRow } from "@/services/discountUsage";
 import { printTableAsPdf, storeIdentity } from "@/lib/pdfGenerator";
 import { sellableStock, productPrice, productWholesalePrice, productMinLevel, activeProducts } from "@/lib/product";
 import { ProductSearch } from "@/components/products/ProductSearch";
 import { CustomerPhoneMatch } from "@/components/ecommerce/CustomerPhoneMatch";
 import { POSReturnModal } from "./POSReturnModal";
+import { posRefundValue, returnStockFields } from "@/lib/posReturn";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { WalletType, PromoDiscount } from "@/types";
@@ -103,6 +105,7 @@ function printPosInvoice(sold: {
   total: number;
   paid: number;
   customer: string;
+  receiptId?: string;
 }): void {
   const { vatRate } = storeIdentity();
   const vat = includedVat(sold.total, vatRate);
@@ -116,8 +119,8 @@ function printPosInvoice(sold: {
     .join(" — ");
 
   printTableAsPdf({
-    title: "فاتورة بيع",
-    subtitle: `العميل: ${sold.customer}`,
+    title: sold.total < 0 ? "فاتورة مرتجع" : "فاتورة بيع",
+    subtitle: `العميل: ${sold.customer}${sold.receiptId ? ` — رقم الفاتورة: ${sold.receiptId}` : ""}`,
     columns: [
       {
         label: "الصنف",
@@ -260,7 +263,7 @@ export default function CheckoutForm() {
     profitDistribution?: any;
     /** Snapshot of what was just sold, kept so the فاتورة can still be
      * printed after the cart is cleared. */
-    sold?: { lines: CartItem[]; total: number; paid: number; customer: string };
+    sold?: { lines: CartItem[]; total: number; paid: number; customer: string; receiptId?: string };
   } | null>(null);
 
   const barcodeRef = useRef<HTMLInputElement>(null);
@@ -281,6 +284,7 @@ export default function CheckoutForm() {
       bundleItems: record.bundleItems.map((c: any) => ({
         productId: c.productId,
         quantity: c.quantity,
+        variantName: c.variantName,
         unitCost: costOf(c.productId),
       })),
     };
@@ -324,9 +328,19 @@ export default function CheckoutForm() {
     product: any,
     qty: number,
     variantName?: string,
-    historical?: { unitPrice: number; productName: string; sourceEventId: string },
+    historical?: { unitPrice: number; productName: string; sourceEventId: string; unitCost?: number; isBundle?: boolean; bundleItems?: { productId: string; quantity: number; unitCost: number }[]; netPiastres?: number; sold?: number; returned?: number; remaining?: number },
   ) => {
     if (!product) return;
+    if (saleMode === "retail" && qty < 0 && !historical) {
+      setResult({success:false,message:"اختر المرتجع من استرجاع بفاتورة لتأكيد السعر والتكلفة والكمية."});return;
+    }
+    if (historical && cart.some((i:any) => i.returnOfEventId && i.returnOfEventId!==historical.sourceEventId)) {
+      setResult({success:false,message:"أكمل مرتجع الفاتورة الحالية قبل اختيار فاتورة أخرى."});return;
+    }
+    if (saleMode === "retail" && cart.some((i) => (i.quantity < 0) !== (qty < 0))) {
+      setResult({ success: false, message: "أكمل مرتجع الفاتورة أولاً، ثم سجّل البيع الجديد بفاتورة مستقلة." });
+      return;
+    }
 
     // A trader's return is proved against their invoice, never typed into the
     // cart. Blocking it HERE covers the barcode scanner, the product search and
@@ -369,6 +383,10 @@ export default function CheckoutForm() {
     
     if (existingItem) {
       const totalInCart = existingItem.quantity + requestedQty;
+      if (historical) {
+        updateCartQuantity(product.id,variantName,totalInCart);
+        return;
+      }
       const allowed = totalInCart < 0 ? totalInCart : Math.min(totalInCart, onHand);
       setCart(
         cart.map((item) => (item.productId === product.id && item.variantName === variantName ? { ...item, quantity: allowed } : item)),
@@ -381,10 +399,10 @@ export default function CheckoutForm() {
           // The receipt's own name and price win over the catalog's whenever
           // this line came from a receipt.
           productName: historical?.productName ?? String(product.name),
-          unitPrice: historical ? historical.unitPrice : Number(product.unitPrice ?? 0),
+          unitPrice: historical ? posRefundValue(historical,Math.abs(requestedQty))/Math.abs(requestedQty) : Number(product.unitPrice ?? 0),
           quantity: requestedQty,
           variantName,
-          ...(historical ? { returnOfEventId: historical.sourceEventId } : {}),
+          ...(historical ? { returnOfEventId: historical.sourceEventId, historicalCost: historical } : {}),
         } as any,
       ]);
     }
@@ -462,7 +480,11 @@ export default function CheckoutForm() {
       
     setCart(
       cart.map((item) =>
-        item.productId === productId && item.variantName === variantName ? { ...item, quantity: newQuantity < 0 ? newQuantity : Math.min(newQuantity, maxQty) } : item,
+        item.productId === productId && item.variantName === variantName ? (() => {
+          const historical=(item as any).historicalCost;
+          const quantity = newQuantity < 0 ? -Math.min(Math.abs(newQuantity),historical?.remaining ?? Math.abs(newQuantity)) : Math.min(newQuantity,maxQty);
+          return {...item,quantity,...(historical && quantity<0 ? {unitPrice:posRefundValue(historical,Math.abs(quantity))/Math.abs(quantity)} : {})};
+        })() : item,
       ),
     );
   };
@@ -481,7 +503,7 @@ export default function CheckoutForm() {
 
   // `subtract` not `-`: this number goes into the ledger, and the discount is
   // already capped at the subtotal, so the result cannot be negative.
-  const calculateTotal = () => Math.max(0, subtract(subtotal, discountAmount));
+  const calculateTotal = () => isReturnMode ? subtotal : Math.max(0, subtract(subtotal, discountAmount));
 
   // ── مرتجع جملة: driven by the trader's invoice, not by the cart ───────────
   //
@@ -557,6 +579,26 @@ export default function CheckoutForm() {
     reconcileWholesaleReturn(wholesaleReturnValue, wholesaleDebt, settlePaidInput);
 
   const handleCompleteSale = async () => {
+    if (saleMode === "retail") {
+      if (!gate.enter()) return;
+      try {
+        const confirmedId = await resolvePendingFinancialEvent("sale");
+        if (confirmedId) {
+          clearDrafts("pos:");
+          setCart([]);
+          setAppliedDiscount(null);
+          setIsReturnMode(false);
+          setResult({ success: true, message: `تم تأكيد العملية السابقة (${confirmedId}). راجع السجل قبل بيع جديد.` });
+          await Promise.all([refreshStock(), refreshWallets()]);
+          return;
+        }
+      } catch (e) {
+        setResult({ success: false, message: `تعذّر تأكيد العملية السابقة. أعد المحاولة دون إنشاء بيع جديد. ${e instanceof Error ? e.message : String(e)}` });
+        return;
+      } finally {
+        gate.exit();
+      }
+    }
     if (saleMode === "wholesale" && !maySellWholesale) {
       setResult({ success: false, message: "مبيعات الجملة غير متاحة حاليًا لهذا المحل." });
       return;
@@ -596,21 +638,16 @@ export default function CheckoutForm() {
 
     const totalAmount = calculateTotal();
 
-    // ── The discount use is CLAIMED before anything is booked ────────────────
-    //
-    // Atomically, inside a Postgres row lock — the browser cannot check a limit
-    // and consume it without a gap, and a sold-out code must not be spendable
-    // by two tills a millisecond apart. A claim held for a sale that then fails
-    // is given back in the catch below, so the failure direction is "one use
-    // briefly unavailable" and never "a discount granted for free".
-    //
-    // A return (negative cart) carries no discount, so nothing is claimed.
+    // Read-only eligibility preflight. The database consumes the redemption
+    // with the sale transaction; failure needs no independent compensation.
     let claimedDiscount: { id: string; amount: number } | null = null;
     // The wholesale branch below `return`s early on several validation
     // failures, and an early return skips `catch`. So the release lives in
     // `finally`, gated on this: it is the one construct every exit path runs
     // through, whether the sale threw, returned, or succeeded.
     let saleCommitted = false;
+    let retailAttempted = false;
+    let retailReceiptId: string | undefined;
     // A document written AFTER the ledger accepted the operation (the return
     // record, the wholesale invoice). Its failure does not undo the sale, so it
     // must not reach the "nothing changed" catch — see `WriteContext`.
@@ -641,7 +678,8 @@ export default function CheckoutForm() {
         // ONE event. Stock, cash, revenue, cost and LTV all move together or
         // none of them do. There is no separate stock update to fall out of
         // sync with the money — that is the whole point.
-        await appendEvent({
+        retailAttempted = true;
+        retailReceiptId = await appendFinancialEvent({
           kind: "sale",
           actor: "POS",
           refType: "pos_sale",
@@ -653,7 +691,8 @@ export default function CheckoutForm() {
             customerId: finalCustomerId || undefined,
             customerName: customerName.trim() || undefined,
             customerPhone: customerPhone.trim() || undefined,
-            items: cart.map((i) => ({ productId: i.productId, productName: i.productName, unitPrice: i.unitPrice, quantity: i.quantity, variantName: i.variantName })),
+            items: cart.map((i: any) => ({ productId: i.productId, productName: i.productName, unitPrice: i.unitPrice, quantity: i.quantity, variantName: i.variantName,
+              ...(i.historicalCost ? returnStockFields(i.historicalCost) : { unitCost: costOf(i.productId), ...bundleFieldsFor(i.productId) }) })),
             // Which receipt this came back against, when it was resolved from
             // one. `remainingSaleLines` reads it to cap the NEXT return of the
             // same line — without it a customer could return the same shirt
@@ -681,8 +720,8 @@ export default function CheckoutForm() {
               // on receive, not a `costPrice` field off the product record. A
               // stored cost field can be edited after the fact and would
               // silently re-price history that already happened.
-              unitCost: costOf(item.productId),
-              ...bundleFieldsFor(item.productId),
+              unitCost: (item as any).historicalCost?.unitCost ?? costOf(item.productId),
+              ...((item as any).historicalCost ? returnStockFields((item as any).historicalCost) : bundleFieldsFor(item.productId)),
             })),
             wallet: selectedWallet,
             customerId: finalCustomerId || undefined,
@@ -694,6 +733,7 @@ export default function CheckoutForm() {
         // on nothing may say "nothing changed", and the basket must not survive
         // to be sold a second time.
         saleCommitted = true;
+        if (appliedDiscount?.id) await refreshDiscountRow(appliedDiscount.id);
       } else {
         // The tab is hidden for these roles, but a stale mode in a restored
         // draft could still reach here. The database is the boundary; this is
@@ -971,11 +1011,15 @@ export default function CheckoutForm() {
       // Every line, variant or not. A negative `quantity` is a مرتجع line and
       // its sign carries through untouched — it puts the goods back.
       useBusinessStore.getState().applyStockMoves(
-        cart.map((item) => ({
+        cart.flatMap((item: any) => item.historicalCost?.isBundle ? item.historicalCost.bundleItems.map((component: any) => ({
+          productId: component.productId,
+          delta: -item.quantity * component.quantity,
+          variantName: component.variantName,
+        })) : [{
           productId: item.productId,
           delta: -item.quantity,
           variantName: item.variantName,
-        })),
+        }]),
       );
 
       refreshStock();
@@ -993,6 +1037,7 @@ export default function CheckoutForm() {
           ? "تمت العملية وسُجّلت في الدفتر (المخزون والخزنة)، لكن تعذّر حفظ مستندها على السحابة. متعيدش العملية — بلّغ المسؤول."
           : "تمت العملية بنجاح!",
         sold: {
+          receiptId: retailReceiptId,
           lines: cart,
           total: totalAmount,
           paid:
@@ -1019,6 +1064,15 @@ export default function CheckoutForm() {
       setPaidAmountInput("");
       setIsReturnMode(false);
     } catch (e) {
+      if (saleMode === "retail" && retailAttempted && !saleCommitted && !(e as any)?.definite) {
+        setResult({
+          success: false,
+          message: (e as any)?.resolved
+            ? "تم تأكيد تسجيل العملية السابقة. راجع سجل المبيعات قبل تسجيل عملية جديدة."
+            : `لم يصل تأكيد البيع. أعد المحاولة للتحقق من نفس العملية دون تكرارها. ${e instanceof Error ? e.message : String(e)}`,
+        });
+        return;
+      }
       if (!saleCommitted) {
         // A rejected append wrote nothing, so the cart is still valid and the
         // cashier can retry. Say that rather than leaving them guessing.
@@ -1072,6 +1126,9 @@ export default function CheckoutForm() {
               {result.message}
             </p>
           </div>
+          {result.sold && (
+            <span className="text-xs break-all">رقم الفاتورة: {result.sold.receiptId}</span>
+          )}
           {result.sold && (
             <Button variant="outline" size="sm" onClick={() => printPosInvoice(result.sold!)}>
               طباعة الفاتورة
@@ -1174,6 +1231,13 @@ export default function CheckoutForm() {
                         unitPrice: line.unitPrice,
                         productName: line.productName,
                         sourceEventId,
+                        unitCost: line.unitCost,
+                        isBundle: line.isBundle,
+                        bundleItems: line.bundleItems,
+                        netPiastres: line.netPiastres,
+                        sold: line.sold,
+                        returned: line.returned,
+                        remaining: line.remaining,
                       },
                     );
                   }}

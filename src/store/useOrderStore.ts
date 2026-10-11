@@ -18,6 +18,7 @@ import { getSupabaseClient } from "@/lib/supabase";
 import { getSyncIdentity } from "@/services/api/storeContext";
 import { fromRemoteRow, toRemoteRow } from "@/services/api/fieldMapping";
 import { prepareEvent, type NewEvent } from "@/lib/ledger";
+import {runFinancialCommand,resolvePendingFinancialCommand} from "@/lib/financialCommand";
 
 
 /**
@@ -325,6 +326,8 @@ export const useOrderStore = create<OrderState>()(
           return { success: false as const, reason: "لا يوجد اتصال بالسحابة", definite: true };
         }
         try {
+          const recovered = await recoverPendingOrderPlacement();
+          if(recovered) return {success:true as const,order:recovered,replayed:true};
           const order = await buildNewOrder(orderData, orderData.orderNumber);
           const p_order = toRemoteRow("orders", order, {
             storeId: identity.storeId,
@@ -332,13 +335,7 @@ export const useOrderStore = create<OrderState>()(
             stamp: Date.now(),
           });
           const p_event = await prepareEvent(placement);
-          const { data, error } = await sb.rpc("place_order", { p_order, p_event });
-          if (error) {
-            // A PostgREST/Postgres error carries a code: the server answered,
-            // and its transaction is gone. No code means the request itself
-            // failed and the outcome is unknown.
-            return { success: false as const, reason: error.message, definite: Boolean(error.code) };
-          }
+          const data = await runFinancialCommand<any>("order_place",{order:p_order,event:p_event},"order_place");
           const saved = fromRemoteRow("orders", (data as any).order) as EcommerceOrder;
           set((state: any) => {
             const at = state.orders.findIndex((o: EcommerceOrder) => o.id === saved.id);
@@ -350,7 +347,7 @@ export const useOrderStore = create<OrderState>()(
           return { success: true as const, order: saved, replayed: (data as any).replayed === true };
         } catch (e) {
           // Thrown before or during the request — nothing confirms either way.
-          return { success: false as const, reason: e instanceof Error ? e.message : String(e), definite: false };
+          return { success: false as const, reason: e instanceof Error ? e.message : String(e), definite: (e as any)?.definite===true };
         }
       },
 
@@ -517,3 +514,13 @@ export const useOrderStore = create<OrderState>()(
     },
   ),
 );
+
+/** Recover the original row/event envelope after reload, before a fresh number,
+ * customer, stock check or code-limit check can start another placement. */
+export async function recoverPendingOrderPlacement(): Promise<EcommerceOrder|null> {
+  const result=await resolvePendingFinancialCommand<{order:any}>("order_place");
+  if(!result)return null;
+  const saved=fromRemoteRow("orders",result.order) as EcommerceOrder;
+  useOrderStore.setState(state=>({orders:[saved,...state.orders.filter(o=>o.id!==saved.id)]}));
+  return saved;
+}

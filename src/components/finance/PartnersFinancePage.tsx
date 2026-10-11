@@ -1701,7 +1701,7 @@ export function PartnersFinancePage() {
                   value={expenseForm.category}
                   onValueChange={(v) => setExpenseForm((f) => ({ ...f, category: v }))}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger aria-label="نوع المصروف">
                     <SelectValue placeholder="اختر التصنيف" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1719,6 +1719,7 @@ export function PartnersFinancePage() {
                   type="number"
                   placeholder="أدخل المبلغ"
                   value={expenseForm.amount}
+                  aria-label="مبلغ المصروف"
                   onChange={(e) => setExpenseForm((f) => ({ ...f, amount: e.target.value }))}
                 />
               </div>
@@ -1727,6 +1728,7 @@ export function PartnersFinancePage() {
                 <Input
                   placeholder="وصف المصروف"
                   value={expenseForm.description}
+                  aria-label="وصف المصروف"
                   onChange={(e) => setExpenseForm((f) => ({ ...f, description: e.target.value }))}
                 />
               </div>
@@ -1735,13 +1737,14 @@ export function PartnersFinancePage() {
                 <Input
                   type="date"
                   value={expenseForm.date}
+                  aria-label="تاريخ المصروف"
                   onChange={(e) => setExpenseForm((f) => ({ ...f, date: e.target.value }))}
                 />
               </div>
               <div className="space-y-2">
                 <Label>اتدفع من (الخزينة)</Label>
                 <select
-                  value={expenseWallet}
+                  aria-label="اتدفع من (الخزينة)" value={expenseWallet}
                   onChange={(e) => setExpenseWallet(e.target.value as WalletType)}
                   className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 >
@@ -1775,6 +1778,7 @@ export function PartnersFinancePage() {
                 <Input
                   placeholder="اسم الموظف"
                   value={payrollForm.employeeName}
+                  aria-label="اسم الموظف"
                   onChange={(e) => setPayrollForm((f) => ({ ...f, employeeName: e.target.value }))}
                 />
               </div>
@@ -1784,7 +1788,7 @@ export function PartnersFinancePage() {
                   value={payrollForm.type}
                   onValueChange={(v: any) => setPayrollForm((f) => ({ ...f, type: v }))}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger aria-label="نوع دفعة الموظف">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1800,6 +1804,7 @@ export function PartnersFinancePage() {
                   type="number"
                   placeholder="أدخل المبلغ"
                   value={payrollForm.amount}
+                  aria-label="مبلغ دفعة الموظف"
                   onChange={(e) => setPayrollForm((f) => ({ ...f, amount: e.target.value }))}
                 />
               </div>
@@ -1808,6 +1813,7 @@ export function PartnersFinancePage() {
                 <Input
                   placeholder="ملاحظات"
                   value={payrollForm.description}
+                  aria-label="بيان دفعة الموظف"
                   onChange={(e) => setPayrollForm((f) => ({ ...f, description: e.target.value }))}
                 />
               </div>
@@ -1816,13 +1822,14 @@ export function PartnersFinancePage() {
                 <Input
                   type="date"
                   value={payrollForm.date}
+                  aria-label="تاريخ دفعة الموظف"
                   onChange={(e) => setPayrollForm((f) => ({ ...f, date: e.target.value }))}
                 />
               </div>
               <div className="space-y-2">
                 <Label>اتدفع من (الخزينة)</Label>
                 <select
-                  value={expenseWallet}
+                  aria-label="اتدفع من (الخزينة)" value={expenseWallet}
                   onChange={(e) => setExpenseWallet(e.target.value as WalletType)}
                   className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 >

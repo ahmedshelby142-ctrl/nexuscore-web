@@ -259,7 +259,7 @@ const pos = read("src/components/sales/CheckoutForm.tsx");
 const handler = pos.slice(pos.indexOf("const handleCompleteSale = async"), pos.indexOf("\n  return (", pos.indexOf("const handleCompleteSale = async")));
 
 test("POS: the operation counts as committed the moment the ledger accepts it", () => {
-  const appends = [...handler.matchAll(/await appendEvent\(\{/g)].map((m) => m.index);
+  const appends = [...handler.matchAll(/await append(?:Financial)?Event\(\{/g)].map((m) => m.index);
   assert.ok(appends.length >= 2, "retail and wholesale sale");
   for (const at of appends) {
     const close = "\n        });";

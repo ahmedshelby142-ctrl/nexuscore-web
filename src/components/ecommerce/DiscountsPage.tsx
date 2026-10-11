@@ -11,6 +11,7 @@ import type { LedgerEvent } from "@/lib/ledger";
 import type { PromoDiscount } from "@/types";
 import { usageOf, redemptionsFor, isExpired } from "@/lib/discounts";
 import { formatMoney } from "@/lib/math";
+import { discountDefinitionError } from "@/lib/businessDefinitions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -49,26 +50,34 @@ export function DiscountsPage() {
   // is where they finally become settable.
   const [maxUses, setMaxUses] = useDraftState("discount:maxUses", "");
   const [expiryDate, setExpiryDate] = useDraftState("discount:expiry", "");
+  const [definitionError,setDefinitionError] = useState<string|null>(null);
+  const [editingId,setEditingId] = useState<string|null>(null);
 
   // One in-flight write at a time; see `useRunOnce`.
   const runOnce = useRunOnce();
   const addDiscount = async () => runOnce(async () => {
-    const numericValue = parseFloat(value);
-    if (!code.trim() || !numericValue || numericValue <= 0) return;
+    const numericValue = Number(value);
+    const invalid=discountDefinitionError(type,numericValue,maxUses,expiryDate);
+    if (!code.trim() || invalid) {setDefinitionError(invalid ?? "أدخل كود الخصم");return;}
+    if (discounts.some(d => d.id!==editingId && String(d.code).toUpperCase()===code.trim().toUpperCase())) {setDefinitionError("الكود موجود بالفعل");return;}
+    setDefinitionError(null);
     // Awaited: the fields are only cleared once the row is actually stored.
     try {
-      const limit = parseInt(maxUses, 10);
-      await addPromoDiscount({
+      const limit = Number(maxUses);
+      const definition = {
         code: code.trim().toUpperCase(),
         type,
         value: numericValue,
-        active: true,
+        active: editingId ? discounts.find(d => d.id===editingId)?.active ?? true : true,
         // Blank means unlimited / never expires, which is what `null` means to
         // `claim_discount_use`. An empty string would reach the numeric column
         // as a cast error and refuse the whole insert.
         maxUses: Number.isFinite(limit) && limit > 0 ? limit : null,
         expiryDate: expiryDate ? new Date(`${expiryDate}T23:59:59`).toISOString() : null,
-      });
+      };
+      if (editingId) await updatePromoDiscount(editingId,definition);
+      else await addPromoDiscount(definition);
+      setEditingId(null);
       setCode("");
       setValue("");
       setMaxUses("");
@@ -169,12 +178,12 @@ export function DiscountsPage() {
           <div className="space-y-3">
             <div>
               <Label>الكود</Label>
-              <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="SAVE10" />
+              <Input aria-label="الكود" value={code} onChange={(e) => setCode(e.target.value)} placeholder="SAVE10" />
             </div>
             <div>
               <Label>نوع الخصم</Label>
               <Select value={type} onValueChange={(v) => setType(v as PromoDiscount["type"])}>
-                <SelectTrigger>
+                <SelectTrigger aria-label="نوع الخصم">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -187,6 +196,7 @@ export function DiscountsPage() {
               <Label>قيمة الخصم</Label>
               <Input
                 type="number"
+                aria-label="قيمة الخصم"
                 min={0}
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
@@ -198,6 +208,7 @@ export function DiscountsPage() {
                 <Label>حد الاستخدام</Label>
                 <Input
                   type="number"
+                  aria-label="حد الاستخدام"
                   min={1}
                   value={maxUses}
                   onChange={(e) => setMaxUses(e.target.value)}
@@ -208,6 +219,7 @@ export function DiscountsPage() {
                 <Label>تاريخ الانتهاء</Label>
                 <Input
                   type="date"
+                  aria-label="تاريخ الانتهاء"
                   value={expiryDate}
                   onChange={(e) => setExpiryDate(e.target.value)}
                 />
@@ -218,8 +230,10 @@ export function DiscountsPage() {
             </p>
             <Button className="w-full" onClick={addDiscount}>
               <Plus className="size-4 ml-2" />
-              إضافة الخصم
+              {editingId ? "حفظ تعديل الخصم" : "إضافة الخصم"}
             </Button>
+            {definitionError && <p role="alert">{definitionError}</p>}
+            {editingId && <Button variant="outline" onClick={() => {setEditingId(null);setCode("");setValue("");setMaxUses("");setExpiryDate("");}}>إلغاء التعديل</Button>}
           </div>
         </div>
 
@@ -309,6 +323,11 @@ export function DiscountsPage() {
                     </TableCell>
                     <TableCell className="text-center px-4">
                       <div className="flex items-center justify-center gap-1">
+                        <Button variant="outline" size="sm" onClick={() => {
+                          setEditingId(discount.id);setCode(discount.code);setType(discount.type);setValue(String(discount.value));
+                          setMaxUses(discount.maxUses == null ? "" : String(discount.maxUses));
+                          setExpiryDate(discount.expiryDate ? new Date(discount.expiryDate).toISOString().slice(0,10) : "");setDefinitionError(null);
+                        }}>تعديل {discount.code}</Button>
                         <Button
                           variant="outline"
                           size="sm"

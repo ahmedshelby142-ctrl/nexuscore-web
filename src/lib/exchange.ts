@@ -138,6 +138,18 @@ export function remainingQuantities(
   return remaining;
 }
 
+/** The current order-return command returns the whole original reservation.
+ * A subset must not be quoted as partial while that command restores it all. */
+export function isFullExchangeSelection(order: ExchangeableOrder,prior: readonly PriorReturn[],selected: readonly {productId: string;quantity: number}[]): boolean {
+  const remaining=remainingQuantities(order,prior),requested=new Map<string,number>();
+  for(const line of selected) {
+    if(!Number.isFinite(line.quantity)||line.quantity<=0) return false;
+    requested.set(line.productId,(requested.get(line.productId)??0)+line.quantity);
+  }
+  return requested.size>0 && [...remaining].every(([id,qty])=>(requested.get(id)??0)===qty)
+    && [...requested].every(([id,qty])=>remaining.get(id)===qty);
+}
+
 /**
  * May this order be exchanged?
  *

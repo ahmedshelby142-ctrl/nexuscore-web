@@ -18,13 +18,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search, Receipt, ArrowLeftRight } from "lucide-react";
-import { events } from "@/lib/ledger";
+import { events, eventLines } from "@/lib/ledger";
 import type { LedgerEvent } from "@/lib/ledger";
 import { formatMoney } from "@/lib/math";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import {
   priorReturnsFrom,
   remainingSaleLines,
+  costedReturnLine,
   type PriorPosReturn,
   type ReturnableSaleLine,
 } from "@/lib/posReturn";
@@ -84,15 +85,23 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
     }
   };
 
-  const handleReturn = (line: ReturnableSaleLine, rec: LedgerEvent) => {
+  const handleReturn = async (line: ReturnableSaleLine, rec: LedgerEvent) => {
+    setLoading(true);
+    try {
+    const product = products.find((p: any) => String(p.id) === String(line.productId));
+    const costed = costedReturnLine(rec, line, await eventLines(rec.id), Boolean(product?.isBundle));
     onReturnItem({
-      line,
+      line: costed,
       sourceEventId: rec.id,
       // Passed for stock/variant handling only. The NAME and the PRICE come
       // off the receipt — a product renamed or repriced since the sale must
       // not rewrite what the customer was charged.
-      product: products.find((p: any) => String(p.id) === String(line.productId)),
+      product,
     });
+    setOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setLoading(false); }
   };
 
   return (
@@ -115,6 +124,7 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
         <div className="flex gap-2 mt-4">
           <Input
             placeholder="ابحث برقم الفاتورة أو رقم هاتف العميل..."
+            aria-label="رقم الفاتورة أو هاتف العميل"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
@@ -177,6 +187,7 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
                           variant="secondary"
                           size="sm"
                           className="shrink-0"
+                          disabled={loading}
                           onClick={() => handleReturn(line, rec)}
                         >
                           <ArrowLeftRight className="size-3 ml-1" />

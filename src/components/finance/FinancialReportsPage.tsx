@@ -156,10 +156,10 @@ export function FinancialReportsPage() {
         { label: "الإجمالي", ...total },
       ],
       footer:
-        `صافي الربح للفترة: ${signed(total.netProfit)} ج.م` +
-        ` — المشتريات: ${formatMoney(total.purchases)} ج.م (تحوّل نقدية لمخزون، مش مصروف)` +
+        `صافي الربح للفترة: ${signed(total.netProfit)}` +
+        ` — المشتريات: ${formatMoney(total.purchases)} (تحوّل نقدية لمخزون، مش مصروف)` +
         (monthlyDepreciation > 0
-          ? ` — إهلاك شهري غير نقدي: ${formatMoney(monthlyDepreciation)} ج.م`
+          ? ` — إهلاك شهري غير نقدي: ${formatMoney(monthlyDepreciation)}`
           : ""),
     });
   };
@@ -341,12 +341,12 @@ export function FinancialReportsPage() {
                 terms. Both are display decisions with a reason, not TODOs. */}
             <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-900 p-4 space-y-2">
               <p className="text-sm font-semibold text-blue-900 dark:text-blue-200">
-                إهلاك الأصول الثابتة — {formatMoney(monthlyDepreciation)} ج.م شهرياً
+                إهلاك الأصول الثابتة — {formatMoney(monthlyDepreciation)} شهرياً
               </p>
               <p className="text-sm text-blue-900 dark:text-blue-300">
                 الإهلاك تكلفة <strong>غير نقدية</strong>: مفيش فلوس بتخرج من أي محفظة، فمش متسجّل
                 كحركة في الدفتر ومش داخل في «المصروفات» ولا في «صافي الربح» فوق. لو حابّة تقيسي
-                الربح بعده: <strong>{signed(total.netProfit - monthlyDepreciation)} ج.م</strong>{" "}
+                الربح بعده: <strong>{signed(total.netProfit - monthlyDepreciation)}</strong>{" "}
                 للشهر الواحد.
               </p>
             </div>

@@ -76,7 +76,7 @@ export function CourierSelect({
         onChange(next, picked ? String(picked.name) : "");
       }}
     >
-      <SelectTrigger id={id}>
+      <SelectTrigger id={id} aria-label="شركة الشحن">
         <SelectValue placeholder="اختر شركة الشحن…" />
       </SelectTrigger>
       <SelectContent>

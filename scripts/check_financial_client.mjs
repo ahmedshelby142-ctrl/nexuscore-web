@@ -170,3 +170,50 @@ test("unfinished product opening resolves before another product can be created"
   await assert.rejects(next.resolvePendingOpeningBalance(), /الرصيد الافتتاحي السابق/);
   assert.equal(Object.keys(saved).length, 0);
 });
+
+test("POS pending request resolves after reload before stock/discount revalidation with original identity", async () => {
+  const saved = storage(),
+    calls = [];
+  const first = client(async () => {
+    throw Error("lost");
+  }, saved);
+  await assert.rejects(
+    first.appendFinancialEvent({
+      kind: "sale",
+      refType: "pos_sale",
+      payload: { discountCodeId: "one-use" },
+      lines: [],
+    }),
+  );
+  const next = client(async (name, args) => {
+    calls.push({ name, args });
+    return { data: { eventId: args.p_id } };
+  }, saved);
+  assert.ok(await next.resolvePendingFinancialEvent("sale"));
+  assert.equal(calls[0].name, "record_pos_sale");
+  assert.equal(calls[0].args.p_input.payload.discountCodeId, "one-use");
+  assert.equal(await next.resolvePendingFinancialEvent("sale"), null);
+});
+test("ecommerce reload reuses the exact original order/event envelope before allocating another number", async () => {
+  const saved = storage(),
+    calls = [];
+  const request = {
+    order: { id: "original-order", orderNumber: "ECO-1", totalAmount: 45 },
+    event: { id: "original-event", ref_id: "ECO-1" },
+  };
+  const first = client(async (name, args) => {
+    calls.push({ name, args });
+    throw Error("lost after commit");
+  }, saved);
+  await assert.rejects(first.runFinancialCommand("order_place", request, "order_place"));
+  const next = client(async (name, args) => {
+    calls.push({ name, args });
+    return { data: { order: args.p_order, replayed: true } };
+  }, saved);
+  const result = await next.resolvePendingFinancialCommand("order_place");
+  assert.equal(result.order.id, "original-order");
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every((c) => c.name === "place_order"));
+  assert.equal(JSON.stringify(calls[0].args), JSON.stringify(calls[2].args));
+  assert.equal(await next.resolvePendingFinancialCommand("order_place"), null);
+});

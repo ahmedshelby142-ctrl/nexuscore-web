@@ -47,6 +47,10 @@ export interface HistoricalSaleLine {
   quantity: number;
   /** What the customer was actually charged per unit, EGP. */
   unitPrice: number;
+  unitCost?: number;
+  isBundle?: boolean;
+  bundleItems?: { productId: string; quantity: number; unitCost: number }[];
+  netPiastres?: number;
 }
 
 /** A sale line with what is still returnable on it. */
@@ -117,11 +121,16 @@ export function historicalSaleLines(event: PosSaleEventLike): HistoricalSaleLine
     const q = toFiniteNumber(item.quantity);
     return q > 0 ? sum + q * toFiniteNumber(item.unitPrice) : sum;
   }, 0);
-  const discount = Math.max(0, toFiniteNumber((payload as { discountAmount?: unknown }).discountAmount));
+  const discount = Math.max(
+    0,
+    toFiniteNumber((payload as { discountAmount?: unknown }).discountAmount),
+  );
   // Clamped: a discount at or above the goods cannot make a refund negative.
   const charged = gross > 0 ? Math.max(0, gross - discount) / gross : 1;
 
   const lines: HistoricalSaleLine[] = [];
+  let grossThrough = 0;
+  let allocatedThrough = 0;
   for (const raw of items) {
     if (!raw || typeof raw !== "object") continue;
     const item = raw as Record<string, unknown>;
@@ -135,6 +144,10 @@ export function historicalSaleLines(event: PosSaleEventLike): HistoricalSaleLine
     if (quantity <= 0) continue;
 
     const variantName = item.variantName ? String(item.variantName) : undefined;
+    grossThrough += quantity * toFiniteNumber(item.unitPrice);
+    const through = Math.round(grossThrough * charged * 100);
+    const netPiastres = through - allocatedThrough;
+    allocatedThrough = through;
 
     lines.push({
       productId,
@@ -145,10 +158,76 @@ export function historicalSaleLines(event: PosSaleEventLike): HistoricalSaleLine
       quantity,
       // Rounded to the piastre, like every other money figure that reaches a
       // screen — see `money()` in `purchases.ts`.
-      unitPrice: Math.round(toFiniteNumber(item.unitPrice) * charged * 100) / 100,
+      unitPrice: netPiastres / quantity / 100,
+      netPiastres,
+      ...(Number.isFinite(item.unitCost) ? { unitCost: Number(item.unitCost) } : {}),
+      ...(item.isBundle && Array.isArray(item.bundleItems)
+        ? { isBundle: true, bundleItems: item.bundleItems as HistoricalSaleLine["bundleItems"] }
+        : {}),
     });
   }
   return lines;
+}
+
+/** Cumulative rounding makes several partial refunds equal one full refund. */
+export function posRefundValue(
+  line: { netPiastres?: number; sold?: number; returned?: number; unitPrice: number },
+  quantity: number,
+): number {
+  if (line.netPiastres == null || !line.sold)
+    return Math.round(line.unitPrice * quantity * 100) / 100;
+  const returned = line.returned ?? 0;
+  return (
+    (Math.round((line.netPiastres * (returned + quantity)) / line.sold) -
+      Math.round((line.netPiastres * returned) / line.sold)) /
+    100
+  );
+}
+
+/** Cost snapshots must not overwrite a partial refund's rounded cash price. */
+export function returnStockFields(
+  line: Pick<HistoricalSaleLine, "unitCost" | "isBundle" | "bundleItems">,
+) {
+  return {
+    unitCost: line.unitCost ?? 0,
+    ...(line.isBundle ? { isBundle: true, bundleItems: line.bundleItems } : {}),
+  };
+}
+
+/** Recover legacy receipt cost from immutable stock lines, never today's WAC. */
+export function costedReturnLine(
+  event: PosSaleEventLike,
+  line: ReturnableSaleLine,
+  stock: readonly {
+    account: string;
+    subject_id: string;
+    qty_delta: number;
+    amount_delta: number;
+  }[],
+  isBundle = false,
+): ReturnableSaleLine {
+  if (line.isBundle && line.bundleItems?.length) return line;
+  if (!isBundle) {
+    const rows = stock.filter((l) => l.account === "stock" && l.subject_id === line.productId);
+    const qty = rows.reduce((n, l) => n - Number(l.qty_delta), 0);
+    const value = rows.reduce((n, l) => n - Number(l.amount_delta), 0);
+    if (qty <= 0) throw new Error("الفاتورة لا تحتوي تكلفة موثقة لهذا الصنف");
+    return { ...line, unitCost: value / qty / 100 };
+  }
+  if (historicalSaleLines(event).length !== 1)
+    throw new Error("البوكس القديم في فاتورة مختلطة يحتاج مراجعة تكلفة مكوناته قبل الإرجاع");
+  return {
+    ...line,
+    isBundle: true,
+    unitCost: 0,
+    bundleItems: stock
+      .filter((l) => l.account === "stock")
+      .map((l) => ({
+        productId: l.subject_id,
+        quantity: -Number(l.qty_delta) / line.sold,
+        unitCost: Number(l.amount_delta) / Number(l.qty_delta) / 100,
+      })),
+  };
 }
 
 /** A past return, as recorded on a later `pos_sale` event. */
@@ -265,9 +344,7 @@ export function resolvePosReturnLine(
     throw new Error(`الكمية المرتجعة لـ"${line.productName}" لازم تكون أكبر من صفر`);
   }
   if (quantity > line.remaining) {
-    throw new Error(
-      `"${line.productName}" — فاضل ${line.remaining} بس ممكن يترجع من الفاتورة دي`,
-    );
+    throw new Error(`"${line.productName}" — فاضل ${line.remaining} بس ممكن يترجع من الفاتورة دي`);
   }
   return { ...line, quantity };
 }

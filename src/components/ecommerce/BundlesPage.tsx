@@ -6,6 +6,7 @@ import { Boxes, Package, Plus, Trash2, Save, CheckCircle2 } from "lucide-react";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useStock } from "@/lib/ledger/useStock";
 import { formatMoney, formatQty } from "@/lib/math";
+import { bundleDefinitionError } from "@/lib/businessDefinitions";
 import { activeProducts, bundleAvailableStock, getActualStock } from "@/lib/product";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,7 +52,7 @@ export function BundlesPage() {
   const selectedItems = useMemo(
     () =>
       Object.entries(selected)
-        .filter(([, quantity]) => quantity > 0)
+        .filter(([, quantity]) => quantity >= 0)
         .map(([key, quantity]) => {
           const [productId, variantName] = key.split("::");
           const product = allProducts.find((item) => item.id === productId);
@@ -67,7 +68,11 @@ export function BundlesPage() {
     [selected, allProducts, costOf],
   );
 
-  const selectedStockOk = selectedItems.every((item) => qtyOf(item.productId) >= item.quantity);
+  const selectedStockOk = selectedItems.every((item) => {
+    const total = selectedItems.filter(i => i.productId === item.productId).reduce((n,i) => n+i.quantity,0);
+    const variant = allProducts.find(p => p.id===item.productId)?.metadata?.variants?.find(v => v.name===item.variantName);
+    return qtyOf(item.productId)>=total && (!item.variantName || !!variant && variant.stock>=item.quantity);
+  });
   const totalComponentCost = selectedItems.reduce((total, item) => total + (item.cost * item.quantity), 0);
 
   // One in-flight write at a time; see `useRunOnce`.
@@ -77,6 +82,8 @@ export function BundlesPage() {
       setMessage("أكمل اسم البوكس، SKU، السعر، وقم باختيار المنتجات");
       return;
     }
+    const invalid=bundleDefinitionError(Number(price),selectedItems);
+    if (invalid) {setMessage(invalid);return;}
 
     if (!selectedStockOk) {
       setMessage("لا يمكن حفظ البوكس: بعض المنتجات المختارة لا يوجد منها رصيد كافٍ بالمخزن");
@@ -153,6 +160,7 @@ export function BundlesPage() {
             <div>
               <Label>اسم البوكس</Label>
               <Input
+                aria-label="اسم البوكس"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="مثال: بوكس العناية"
@@ -160,7 +168,7 @@ export function BundlesPage() {
             </div>
             <div>
               <Label>SKU</Label>
-              <Input value={sku} onChange={(e) => setSku(e.target.value)} placeholder="BOX-001" />
+              <Input aria-label="SKU البوكس" value={sku} onChange={(e) => setSku(e.target.value)} placeholder="BOX-001" />
             </div>
             
             <div className="pt-2 border-t mt-4">
@@ -172,6 +180,7 @@ export function BundlesPage() {
               </div>
               <Input
                 type="number"
+                aria-label="سعر البوكس"
                 min={0}
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}
@@ -213,6 +222,9 @@ export function BundlesPage() {
                     </div>
                   </div>
                   <div className="flex items-center justify-between">
+                    <Button variant="ghost" size="sm" aria-label={`حذف ${item.productName} من البوكس`} onClick={() => setSelected(current => {
+                      const next={...current};delete next[item.key];return next;
+                    })}><Trash2 className="size-4" /></Button>
                     <p className="text-xs font-bold font-mono text-muted-foreground">الإجمالي: {formatMoney(item.cost * item.quantity)}</p>
                     <div className="flex items-center gap-2">
                       <Button
@@ -225,6 +237,7 @@ export function BundlesPage() {
                       </Button>
                       <Input
                         type="number"
+                        aria-label={`كمية ${item.productName} في البوكس`}
                         min={0}
                         value={item.quantity}
                         onChange={(e) => setQuantity(item.key, parseInt(e.target.value) || 0)}

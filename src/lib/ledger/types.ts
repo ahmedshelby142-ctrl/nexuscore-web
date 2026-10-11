@@ -105,6 +105,8 @@ export interface Balance {
 }
 
 export interface BalanceQuery {
+  /** Negative sale/return revenue, displayed separately without deducting twice. */
+  returnsOnly?: boolean;
   account: Account;
   /** Restrict to one subject. Omit for every subject in the account. */
   subjectId?: string;

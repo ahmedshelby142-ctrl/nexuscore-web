@@ -193,7 +193,7 @@ test("CASE I — cloud round-trip keeps shipping 60, compensation 60, courier 60
 test("every money path that totals an order includes the compensation", () => {
   const files = {
     "src/routes/ecommerce-orders.tsx": [/total_price \+ shipping_fee \+ wastedTripCompensation - depositVal/, /full_prepaid"\) return total_price \+ shipping_fee \+ wastedTripCompensation/],
-    "src/components/ecommerce/OrdersPage.tsx": [/draftTotal \+ order\.shippingFee \+ \(order\.wastedTripCompensation \?\? 0\) - order\.depositAmount/],
+    "supabase/migrations/20261011150322_final_v1_financial_integrity.sql": [/"expectedCod"=v_total\+"shippingFee"\+"wastedTripCompensation"-"depositAmount"/],
     "src/routes/returns.tsx": [/order\.totalAmount \+ order\.shippingFee \+ \(order\.wastedTripCompensation \?\? 0\)/],
     "src/mobile/screens/MobileOrderDetails.tsx": [/const collected = netGoods \+ shippingFee \+ wastedTripCompensation;/],
   };

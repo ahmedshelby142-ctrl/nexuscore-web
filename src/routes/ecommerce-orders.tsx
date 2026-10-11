@@ -25,7 +25,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useFeatureStore } from "@/store/useFeatureStore";
-import { useOrderStore, expandStockItems } from "@/store/useOrderStore";
+import { useOrderStore, expandStockItems, recoverPendingOrderPlacement } from "@/store/useOrderStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
 import {
   rateFor,
@@ -40,6 +40,7 @@ import { useSearchParams } from "react-router-dom";
 import { buildOrderPlacedLines } from "@/lib/ledger/orders";
 import {
   exchangeBlock,
+  isFullExchangeSelection,
   returnedValue,
   priceDifference,
   remainingQuantities,
@@ -60,7 +61,7 @@ import { useBalances } from "@/lib/ledger/useBalances";
 import { productPrice, activeProducts, getVariantStock } from "@/lib/product";
 import { formatMoney, formatQty, discountAmountFor } from "@/lib/math";
 import { applyDiscountCode } from "@/lib/discounts";
-import { claimDiscountUse, releaseDiscountUse } from "@/services/discountUsage";
+import { claimDiscountUse, releaseDiscountUse, refreshDiscountRow } from "@/services/discountUsage";
 import { nextDocumentNumber } from "@/services/documentNumber";
 import { statusOf } from "@/lib/figure";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
@@ -373,6 +374,16 @@ function EcommerceOrdersInner() {
   );
 
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null);
+  useEffect(() => {
+    let mounted=true;
+    void recoverPendingOrderPlacement().then(async saved => {
+      if(!saved)return;
+      refreshStock();
+      if(saved.discountCodeId) await refreshDiscountRow(saved.discountCodeId);
+      if(mounted) setResult({success:true,message:`تم تأكيد الطلب السابق ${saved.orderNumber}. راجع إدارة الطلبات قبل إنشاء طلب جديد.`});
+    }).catch(e => {if(mounted)setResult({success:false,message:e instanceof Error?e.message:String(e)});});
+    return () => {mounted=false;};
+  },[refreshStock]);
 
   const governorateFees = useMemo(
     () => shippingRates.map((r) => ({ name: r.governorate, fee: r.delivery })),
@@ -622,6 +633,16 @@ function EcommerceOrdersInner() {
   // customers and three stock deductions — see `useRunOnce`.
   const runOnce = useRunOnce();
   const handleSubmit = useCallback(async () => runOnce(async () => {
+    try {
+      const recovered=await recoverPendingOrderPlacement();
+      if(recovered) {
+        pendingPlacement.current=null;
+        refreshStock();
+        if(recovered.discountCodeId) await refreshDiscountRow(recovered.discountCodeId);
+        setResult({success:true,message:`تم تأكيد الطلب السابق ${recovered.orderNumber}. راجع إدارة الطلبات قبل إنشاء طلب جديد.`});
+        return;
+      }
+    } catch(e) {setResult({success:false,message:e instanceof Error?e.message:String(e)});return;}
     if (!canSubmit) {
       setResult({ success: false, message: "يرجى إكمال جميع الحقول المطلوبة" });
       return;
@@ -689,6 +710,10 @@ function EcommerceOrdersInner() {
         return;
       }
       const left = remainingQuantities(origin, returnRecords);
+      if (!isFullExchangeSelection(origin,returnRecords,returningLines.map(l=>({productId:l.product_id,quantity:l.quantity})))) {
+        setResult({success:false,message:"الاستبدال الجزئي غير مدعوم بأمان حاليًا. اختر كل الأصناف المتبقية في الطلب الأصلي؛ لن يتغير مخزون أو مال."});
+        return;
+      }
       for (const line of returningLines) {
         const available = left.get(line.product_id) ?? 0;
         if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
@@ -799,17 +824,9 @@ function EcommerceOrdersInner() {
       0,
     );
 
-    // ── The discount use is CLAIMED before anything is reserved ──────────────
-    //
-    // Atomically, inside a Postgres row lock. The browser cannot check a limit
-    // and consume it without a gap, so a sold-out code must not be spendable by
-    // two order forms a millisecond apart. Every failure path below gives the
-    // claim back, so a refused order never leaves a use burnt — and on a
-    // one-use code, never burns the only one.
-    //
-    // A retry of a placement whose outcome is unknown keeps that attempt's
-    // claim: if the order was in fact placed, that claim is the order's own.
-    // A different discount (or amount) since then gives the old one back.
+    // Read-only eligibility preflight. place_order and its deferred ledger
+    // trigger consume usage atomically. These retained retry fields track
+    // eligibility only; releaseDiscountUse refreshes without decrementing.
     let claimedDiscount = pendingPlacement.current?.claimed ?? null;
     const wantDiscount = appliedDiscount?.id && discountAmount > 0
       ? { id: appliedDiscount.id, amount: discountAmount }
@@ -955,6 +972,7 @@ function EcommerceOrdersInner() {
 
     // Confirmed. The next order draws a new number.
     pendingPlacement.current = null;
+    if (appliedDiscount?.id) await refreshDiscountRow(appliedDiscount.id);
 
     // The goods leave the shelf when the order is taken — the same moment the
     // `order_placed` event reserved them. Cancel and return put them back
@@ -1113,6 +1131,7 @@ function EcommerceOrdersInner() {
             </label>
             <input
               value={customer_name}
+              aria-label="اسم العميل"
               onChange={(e) => setCustomerName(e.target.value)}
               placeholder="أدخل اسم العميل"
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
@@ -1125,6 +1144,7 @@ function EcommerceOrdersInner() {
             </label>
             <input
               value={customer_phone}
+              aria-label="رقم الهاتف"
               onChange={(e) => {
                 setCustomerPhone(e.target.value);
                 if (customerId) setCustomerId("");
@@ -1143,6 +1163,7 @@ function EcommerceOrdersInner() {
             </label>
             <select
               value={governorate}
+              aria-label="المحافظة"
               onChange={(e) => setGovernorate(e.target.value)}
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
             >
@@ -1175,6 +1196,7 @@ function EcommerceOrdersInner() {
             </label>
             <input
               value={city}
+              aria-label="المدينة / المنطقة"
               onChange={(e) => setCity(e.target.value)}
               placeholder="مثال: مدينة نصر، سموحة"
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
@@ -1187,6 +1209,7 @@ function EcommerceOrdersInner() {
             </label>
             <input
               value={detailedAddress}
+              aria-label="العنوان بالتفصيل"
               onChange={(e) => setDetailedAddress(e.target.value)}
               placeholder="اسم الشارع، رقم العمارة، الشقة"
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
@@ -1445,6 +1468,7 @@ function EcommerceOrdersInner() {
               min={0}
               step="0.01"
               value={deposit_amount}
+              aria-label="قيمة العربون المدفوع"
               onChange={(e) => setDepositAmount(e.target.value)}
               placeholder="0 (بدون عربون)"
               className="flex h-10 w-full max-w-xs rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
@@ -1455,6 +1479,7 @@ function EcommerceOrdersInner() {
                 <Label className="text-sm font-medium">وصل في أي خزينة؟</Label>
                 <select
                   value={depositWallet}
+                  aria-label="خزينة العربون"
                   onChange={(e) => setDepositWallet(e.target.value as WalletType)}
                   className="flex h-10 w-full max-w-xs rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
                 >
@@ -1670,6 +1695,7 @@ function EcommerceOrdersInner() {
               type="number"
               min={0}
               value={courierFee}
+              aria-label="عمولة / تكلفة الشحن"
               onChange={(e) => setCourierFee(e.target.value)}
               placeholder={formatQty(shipping_fee)}
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"

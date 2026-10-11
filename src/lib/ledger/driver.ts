@@ -192,7 +192,7 @@ const supabaseDriver: LedgerDriver = {
     const sb = requireClient();
     const storeId = await requireStoreId();
 
-    const { data, error } = await sb.rpc("ledger_balances", {
+    const { data, error } = await sb.rpc(query.returnsOnly ? "ledger_return_balances" : "ledger_balances", {
       p_store: storeId,
       p_account: query.account,
       p_kind: query.kind ?? null,

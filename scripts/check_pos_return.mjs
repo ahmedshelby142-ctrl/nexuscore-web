@@ -158,7 +158,7 @@ test("the picker no longer rebuilds lines out of revenue rows", () => {
 
 test("the refunded price and the source receipt reach the cart", () => {
   const src = read("../src/components/sales/CheckoutForm.tsx");
-  assert.match(src, /historical \? historical\.unitPrice/, "refund at the historical price");
+  assert.match(src, /historical \? posRefundValue\(historical/, "refund the historical allocated amount with cumulative piastre rounding");
   assert.match(src, /returnOfEventId: historical\.sourceEventId/);
   assert.match(src, /returnOfEventId:\s*\n?\s*cart\.map/, "and onto the event payload");
 });

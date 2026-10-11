@@ -19,6 +19,7 @@ import {
 import { useCourierStore } from "@/store/useCourierStore";
 import { useOrderStore } from "@/store/useOrderStore";
 import { useBalances } from "@/lib/ledger/useBalances";
+import { useCourierFees } from "@/services/useCourierFees";
 import { appendEvent, events } from "@/lib/ledger";
 import { buildCourierBatchSettlementLines } from "@/lib/ledger/orders";
 import {
@@ -119,12 +120,9 @@ export function CourierLedgerPage() {
   // `courier:return` subject — the same two accounts, narrowed to the lines one
   // KIND of event wrote, which `BalanceQuery.kind` already does in SQL.
   //   delivery = payable_courier written by order_delivered
-  //   exchange = receivable_courier written by return_confirmed (the customer
-  //              pays it; the courier collects it on our behalf)
-  //   return   = the rest of what return_confirmed put on payable_courier
-  const feeDelivery = useBalances("payable_courier", "order_delivered");
-  const feeReturnish = useBalances("payable_courier", "return_confirmed");
-  const feeExchange = useBalances("receivable_courier", "return_confirmed");
+  // Return/exchange fees are positive payable lines classified by movement.
+  // Refund principal in receivable_courier is never a fee.
+  const { delivery: feeDelivery, returns: feeReturnish, exchange: feeExchange } = useCourierFees();
 
   // Every balance on this screen, and whether ALL of them actually answered.
   // `useBalances` says 0 both before its read lands and after it fails, so a
@@ -588,7 +586,7 @@ export function CourierLedgerPage() {
                 const theirs = owedToThem.amountOf(courier.id);
                 const ours = owedToUs.amountOf(courier.id);
                 const exchange = feeExchange.amountOf(courier.id);
-                const returns = feeReturnish.amountOf(courier.id) - exchange;
+                const returns = feeReturnish.amountOf(courier.id);
                 const openCount = openByCourier.get(courier.id) ?? 0;
                 return (
                   <Fragment key={courier.id}>

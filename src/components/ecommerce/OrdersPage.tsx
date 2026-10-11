@@ -75,7 +75,6 @@ import {
   buildReturnConfirmedLines,
   buildOrderRTOLines,
   buildOrderPaymentLines,
-  buildOrderEditLines,
   orderItemsTotal,
 } from "@/lib/ledger/orders";
 import { useStock } from "@/lib/ledger/useStock";
@@ -95,7 +94,9 @@ import {
   WHOLESALE_RETURN_TYPE,
 } from "@/lib/ledger/wholesale";
 import { commitWholesaleReturn, WHOLESALE_RETURN_FORBIDDEN } from "@/lib/wholesaleReturnDoc";
-import { adjustDiscountTotal } from "@/services/discountUsage";
+import { runFinancialCommand, resolvePendingFinancialCommand } from "@/lib/financialCommand";
+import { fromRemoteRow } from "@/services/api/fieldMapping";
+import { refreshDiscountRow } from "@/services/discountUsage";
 import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -461,6 +462,10 @@ export function OrdersPage() {
 
   const openEdit = (order: EcommerceOrder) => {
     if (!canEdit(order)) return;
+    if ((order.stockItems ?? []).some((line: any) => line.bundleId)) {
+      setActionError("تعديل طلب يحتوي بوكس غير مدعوم بأمان حاليًا. بيانات الطلب ومخزونه لم تتغير.");
+      return;
+    }
     setActionError(null);
     setDraft((order.stockItems ?? []).map((line) => ({ ...line })));
     setEditOrderId(order.id);
@@ -594,6 +599,20 @@ export function OrdersPage() {
   const runOnce = useRunOnce();
 
   const saveEdit = async () => runOnce(async () => {
+    setIsWorking(true);
+    try {
+      const pending = await resolvePendingFinancialCommand<{ order: any }>("order_edit:" + editOrderId);
+      if (pending) {
+        const saved=fromRemoteRow("orders",pending.order) as EcommerceOrder;
+        useOrderStore.setState(state => ({orders:state.orders.map(o => o.id===saved.id?saved:o)}));
+        refreshStock();
+        if(saved.discountCodeId) await refreshDiscountRow(saved.discountCodeId);
+        setEditOrderId(null);
+        return;
+      }
+    } catch(e) {
+      setActionError(e instanceof Error?e.message:String(e));return;
+    } finally {setIsWorking(false);}
     // `editingOrder` is the render value the dialog draws from; the SAVE reads
     // the store, so it cannot act on a status this render has not seen yet.
     const order = currentOrder(editOrderId ?? "");
@@ -612,12 +631,17 @@ export function OrdersPage() {
     }
 
     const before = (order.stockItems ?? []).map((l) => ({
+      // Component rows are not editable sold box lines.
       productId: l.productId,
       quantity: l.quantity,
       unitPrice: l.unitPrice,
       unitCost: l.unitCost ?? 0,
       variantName: (l as any).variantName,
     }));
+    if (draft.some(line => products.find(p => p.id === line.productId)?.isBundle)) {
+      setActionError("إضافة بوكس من تعديل الطلب غير مدعومة حاليًا. استخدم إنشاء طلب جديد للبوكس.");
+      return;
+    }
     const after = draft.map((l) => ({
       productId: l.productId,
       quantity: l.quantity,
@@ -640,8 +664,6 @@ export function OrdersPage() {
       }
     }
 
-    const lines = buildOrderEditLines({ before, after });
-
     // Claimed after the validations and before the first `await`, like every
     // other action here: one order, one write in flight.
     const claim = claimOrder(order.id, order.status, "edit");
@@ -657,69 +679,24 @@ export function OrdersPage() {
     setIsWorking(true);
     setActionError(null);
     try {
-      if (lines.length > 0) {
-        // ONE event holding both directions: stock back for what was removed,
-        // stock out for what was added. The original order_placed event is
-        // never touched — the ledger is append-only.
-        await appendEvent({
-          kind: "order_edited",
-          actor: "أونلاين",
-          refType: "ecommerce_order",
-          refId: order.orderNumber,
-          payload: {
-            customerName: order.customerName,
-            before: before.map((l) => ({ productId: l.productId, quantity: l.quantity })),
-            after: after.map((l) => ({ productId: l.productId, quantity: l.quantity })),
-          },
-          lines,
-        });
-      }
-
-      // The edit as one movement: what the old basket held comes back, what
-      // the new basket holds goes out. Plain products move too — the pair of
-      // loops this replaced were both gated on `variantName`.
+      const result = await runFinancialCommand<{ order: any }>("order_edit", {
+        orderId: order.id,
+        before: { items: order.items, stockItems: order.stockItems ?? [], totalAmount: order.totalAmount,
+          discountAmount: order.discountAmount ?? 0, depositAmount: order.depositAmount },
+        patch: { items: draft, stockItems: draft, discountAmount: draftDiscount, totalAmount: draftTotal },
+      }, "order_edit:" + order.id);
+      const saved = fromRemoteRow("orders", result.order) as EcommerceOrder;
+      useOrderStore.setState(state => ({ orders: state.orders.map(o => o.id === saved.id ? saved : o) }));
+      if (saved.discountCodeId) await refreshDiscountRow(saved.discountCodeId);
       applyStockMoves([
-        ...before.map((b: any) => ({
-          productId: b.productId,
-          delta: b.quantity,
-          variantName: b.variantName,
-        })),
-        ...after.map((a: any) => ({
-          productId: a.productId,
-          delta: -a.quantity,
-          variantName: a.variantName,
-        })),
+        ...before.map(b => ({ productId: b.productId, delta: b.quantity, variantName: b.variantName })),
+        ...after.map(a => ({ productId: a.productId, delta: -a.quantity, variantName: a.variantName })),
       ]);
-
-      // The document follows the ledger, not the other way round. Deposit is
-      // already paid, so the COD absorbs the change in total.
-      await updateOrder(order.id, {
-        items: draft,
-        stockItems: draft,
-        discountAmount: draftDiscount || undefined,
-        totalAmount: draftTotal,
-        cogsAmount: after.reduce((sum, l) => sum + l.unitCost * l.quantity, 0),
-        expectedCod: Math.max(
-          0,
-          draftTotal + order.shippingFee + (order.wastedTripCompensation ?? 0) - order.depositAmount,
-        ),
-      });
-
-      // The edit re-priced the discount, so what the code has GRANTED changed
-      // even though how many times it was USED did not. Without this the
-      // Discounts screen keeps reporting the amount the order was first given —
-      // an edit from 100 down to 50 would leave 50 of discount on the books that
-      // nobody ever received. The use count is deliberately untouched.
-      if (order.discountCodeId) {
-        const before = Number(order.discountAmount) || 0;
-        await adjustDiscountTotal(order.discountCodeId, round(draftDiscount - before));
-      }
-
       refreshStock();
       setEditOrderId(null);
     } catch (e) {
       setActionError(
-        `التعديل متسجّلش ومفيش حاجة اتغيّرت. ${e instanceof Error ? e.message : String(e)}`,
+        `تعذّر تأكيد التعديل. أعد المحاولة للتحقق من نفس العملية، ولا تسجل تعديلًا بديلًا قبل التأكد. ${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       releaseOrder(order.id);
@@ -1193,6 +1170,7 @@ export function OrdersPage() {
             // from the lines: who was responsible, and how the money went.
             return_cause: cause,
             refundVia,
+            movement,
           },
           lines: buildReturnConfirmedLines({
             items: (order.stockItems ?? []).map((line) => ({
@@ -2517,7 +2495,7 @@ export function OrdersPage() {
                   const ceiling = qtyOf(line.productId) + original;
                   return (
                     <div
-                      key={line.productId}
+                      key={`${line.productId}::${line.variantName ?? ""}`}
                       className="flex items-center justify-between gap-3 p-3 rounded-lg border border-border"
                     >
                       <div className="flex-1 space-y-1 overflow-hidden">
@@ -2541,7 +2519,7 @@ export function OrdersPage() {
                         onChange={(e) =>
                           setDraft((prev) =>
                             prev.map((l) =>
-                              l.productId === line.productId
+                              l.productId === line.productId && l.variantName === line.variantName
                                 ? {
                                   ...l,
                                   quantity: Math.max(
@@ -2560,7 +2538,7 @@ export function OrdersPage() {
                         size="sm"
                         className="text-destructive"
                         onClick={() =>
-                          setDraft((prev) => prev.filter((l) => l.productId !== line.productId))
+                          setDraft((prev) => prev.filter((l) => l.productId !== line.productId || l.variantName !== line.variantName))
                         }
                       >
                         حذف

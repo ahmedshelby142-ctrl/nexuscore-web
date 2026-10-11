@@ -1,32 +1,6 @@
-/**
- * Claiming and releasing a discount use — the atomic half.
- *
- * ## Why this is an RPC and not an update
- *
- * Enforcing `maxUses` means reading the current count and incrementing it with
- * nothing able to happen in between. A browser cannot do that against
- * PostgREST: `select` then `update` always leaves a gap, and two tills a
- * millisecond apart both read `used = limit - 1` and both proceed. Counting
- * orders instead of keeping a counter does not help — the count only moves once
- * the order is written, which is after the check.
- *
- * `claim_discount_use` (migration 027) does the check and the increment inside
- * one transaction holding a row lock, exactly as `next_document_number` does
- * for invoice numbers. That is the only place the answer can be trusted, so it
- * is the only place the limit is enforced; `lib/discounts` is the early,
- * friendly refusal, not the boundary.
- *
- * ## The order of operations, and why
- *
- *     claim → write the order → (on failure) release
- *
- * Claiming first means a code can never be spent by more orders than its limit.
- * The opposite order — order first, claim after — would let a sold-out code
- * through whenever the claim failed, and there is no way to un-sell the goods.
- * A claim held for an order that then fails is given back by `releaseUse`, so
- * the failure direction is a use temporarily unavailable rather than a
- * discount granted for free.
- */
+/** Discount eligibility is a read-only preflight. PostgreSQL commits usage with
+ * the successful sale/order in the same transaction. Failed transactions need
+ * no counter compensation; retries keep the original financial identity. */
 
 import { getSupabaseClient } from "@/lib/supabase";
 import { getActiveStoreId } from "@/services/api/storeContext";
@@ -76,7 +50,9 @@ export async function claimDiscountUse(codeId: string, amount: number): Promise<
   const storeId = await getActiveStoreId();
   if (!storeId) throw new Error("لم يتم ربط هذا الجهاز بمتجر بعد");
 
-  const { data, error } = await sb.rpc("claim_discount_use", {
+  // This is only a friendly preflight. The deferred database trigger checks
+  // the limit again and accounts the use with the committed sale/order.
+  const { data, error } = await sb.rpc("validate_discount_use", {
     p_store: storeId,
     p_code_id: codeId,
     p_amount: amount,
@@ -86,29 +62,13 @@ export async function claimDiscountUse(codeId: string, amount: number): Promise<
   if (data) mergeLocally(data);
 }
 
-/**
- * Give a claim back. Never throws: it runs on a path that is already failing,
- * and turning the compensation into a second error would replace the message
- * explaining what actually went wrong.
- *
- * A release that genuinely fails leaves one use unavailable on a code — visible
- * on the Discounts screen and fixable, unlike the alternative.
- */
+/** Failure cleanup refreshes the committed row without changing usage. */
 export async function releaseDiscountUse(codeId: string, amount: number): Promise<void> {
-  try {
-    const sb = getSupabaseClient();
-    if (!sb) return;
-    const storeId = await getActiveStoreId();
-    if (!storeId) return;
-    await sb.rpc("release_discount_use", {
-      p_store: storeId,
-      p_code_id: codeId,
-      p_amount: amount,
-    });
-    await refreshDiscountRow(codeId);
-  } catch (e) {
-    console.error("[discountUsage] release failed", e);
-  }
+  // A refused financial transaction rolled its use back too. There is no
+  // separate claim to decrement, including on a repeated/lost-reply failure.
+  // Keep the existing callers' cleanup entry point without a mutable RPC.
+  if (!Number.isFinite(amount) || amount < 0) return;
+  await refreshDiscountRow(codeId);
 }
 
 /**
@@ -120,24 +80,27 @@ export async function releaseDiscountUse(codeId: string, amount: number): Promis
  * other would give the use back. Without this the Discounts screen kept
  * reporting the discount the order was FIRST given.
  *
- * Never throws, for the same reason `releaseDiscountUse` does not: it runs
- * beside an edit that has already been saved.
+ * Reconcile from an identified persisted document, never an unpaired delta.
+ * Pending edits use record_order_edit so this occurs inside their transaction.
  */
-export async function adjustDiscountTotal(codeId: string, delta: number): Promise<void> {
-  if (!delta) return;
-  try {
+export async function adjustDiscountTotal(
+  codeId: string,
+  delta: number,
+  orderId: string,
+): Promise<void> {
+  if (!Number.isFinite(delta)) throw new Error("قيمة الخصم غير صالحة");
+  {
     const sb = getSupabaseClient();
-    if (!sb) return;
+    if (!sb) throw new Error("تعذّر تحديث إحصاءات الخصم — لا يوجد اتصال بالسحابة");
     const storeId = await getActiveStoreId();
-    if (!storeId) return;
-    await sb.rpc("adjust_discount_total", {
+    if (!storeId) throw new Error("لم يتم ربط هذا الجهاز بمتجر بعد");
+    const { error } = await sb.rpc("reconcile_discount_order", {
       p_store: storeId,
       p_code_id: codeId,
-      p_delta: delta,
+      p_order_id: orderId,
     });
+    if (error) throw new Error(`تعذّر تأكيد إحصاءات الخصم: ${error.message}`);
     await refreshDiscountRow(codeId);
-  } catch (e) {
-    console.error("[discountUsage] adjust failed", e);
   }
 }
 

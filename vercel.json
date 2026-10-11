@@ -4,7 +4,8 @@
   "git": {
     "deploymentEnabled": {
       "codex/wholesale-toggle-release": false,
-      "codex/purchasing-repair": false
+      "codex/purchasing-repair": false,
+      "codex/final-v1-business-sprint": false
     }
   },
   "rewrites": [

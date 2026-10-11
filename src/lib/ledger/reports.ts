@@ -217,6 +217,7 @@ const CHANNEL_LABELS: Record<string, string> = {
   wholesale: "الجملة",
   exchange: "استبدال",
   forfeited_deposit: "عربون محتجز",
+  deposit_pending_resolution: "عربون بانتظار تسوية العميل",
   // Written by `order_delivered` (054): a recovered earlier wasted trip, and
   // what a courier override saved the shop against the base delivery fee.
   wasted_trip_compensation: "تعويض رحلة شحن سابقة",
@@ -241,8 +242,8 @@ export interface PnlInput {
   /** `SUM(cogs)` for the window. Already net of returns. */
   cogs: number;
   /**
-   * `SUM(revenue)` restricted to `kind: "return_confirmed"` — NEGATIVE, being
-   * the reversal lines themselves. Display only; see the file header.
+   * Negative revenue from POS refunds and confirmed returns. Display only;
+   * net revenue/profit already includes it and must not deduct it again.
    */
   returnsRevenue: number;
   /** `SUM(stock.amount)` restricted to `kind: "purchase"`. Display only. */
@@ -340,7 +341,7 @@ export async function fetchPnl(balances: BalancesFn, w: ReportWindow): Promise<P
     balances({ account: "revenue", ...w }),
     balances({ account: "cogs", ...w }),
     balances({ account: "expense", ...w }),
-    balances({ account: "revenue", kind: "return_confirmed", ...w }),
+    balances({ account: "revenue", returnsOnly: true, ...w }),
     balances({ account: "stock", kind: "purchase", ...w }),
   ]);
   return pnl({

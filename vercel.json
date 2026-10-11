@@ -3,7 +3,8 @@
   "framework": "vite",
   "git": {
     "deploymentEnabled": {
-      "codex/wholesale-toggle-release": false
+      "codex/wholesale-toggle-release": false,
+      "codex/purchasing-repair": false
     }
   },
   "rewrites": [

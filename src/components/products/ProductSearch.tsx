@@ -29,6 +29,7 @@ import type { Product } from "@/types";
 
 interface ProductSearchProps {
   products: Product[];
+  inputId?: string;
   onSelect: (product: Product) => void;
   /** Product ids already chosen, shown as "مضاف بالفعل" and not selectable. */
   excludeIds?: string[];
@@ -41,6 +42,7 @@ interface ProductSearchProps {
 
 export function ProductSearch({
   products,
+  inputId,
   onSelect,
   excludeIds = [],
   placeholder,
@@ -63,6 +65,7 @@ export function ProductSearch({
       <div className="relative">
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
         <Input
+          id={inputId}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={placeholder ?? "ابحث باسم المنتج أو الكود..."}

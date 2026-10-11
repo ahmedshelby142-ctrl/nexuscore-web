@@ -25,7 +25,7 @@
  * selection and decides what to do with it.
  */
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { format } from "date-fns";
 import { ChevronDown, ChevronLeft, FileText } from "lucide-react";
 import { formatMoney } from "@/lib/math";
@@ -81,6 +81,7 @@ export function SupplierReturnPicker({
   supplierMissing = false,
 }: SupplierReturnPickerProps) {
   const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
+  const fieldId = useId();
   const [query, setQuery] = useState("");
 
   // One pass over the ledger rows per render, not one per line — and the
@@ -136,7 +137,9 @@ export function SupplierReturnPicker({
 
   return (
     <div className="space-y-2">
+      <label htmlFor={`${fieldId}-search`} className="text-sm font-medium">بحث فواتير المورد</label>
       <input
+        id={`${fieldId}-search`}
         type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
@@ -209,7 +212,7 @@ export function SupplierReturnPicker({
                   return (
                     <div key={key} className="flex flex-wrap items-center gap-3 p-3">
                       <div className="min-w-0 flex-1">
-                        <p className="truncate font-semibold">{line.productName}</p>
+                        <p id={`${fieldId}-${key}-product`} className="truncate font-semibold">{line.productName}{line.line.variantName && <span> — {line.line.variantName}</span>}</p>
                         <p className="text-xs text-muted-foreground">
                           {line.sku ? `${line.sku} · ` : ""}
                           اتشحن {line.received} · اترجع {line.returned} · متبقي {line.remaining}
@@ -225,7 +228,10 @@ export function SupplierReturnPicker({
                         <p className="text-sm font-bold">{formatMoney(line.unitCost)}</p>
                         <p className="text-[10px] text-muted-foreground">تكلفة الشراء</p>
                       </div>
+                      <label id={`${fieldId}-${key}-label`} htmlFor={`${fieldId}-${key}`} className="text-sm font-medium">كمية المرتجع</label>
                       <input
+                        id={`${fieldId}-${key}`}
+                        aria-labelledby={`${fieldId}-${key}-product ${fieldId}-${key}-label`}
                         type="number"
                         min={0}
                         max={Math.min(line.remaining, Number.isFinite(shelf) ? shelf : line.remaining)}

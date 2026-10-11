@@ -11,6 +11,7 @@
  * hands back what the cashier typed. The events are the caller's business.
  */
 
+import { useId } from "react";
 import { formatQty } from "@/lib/math";
 import { statusOf, type ReadState } from "@/lib/figure";
 import { reconcileWholesaleReturn } from "@/lib/ledger/wholesale";
@@ -72,6 +73,7 @@ export function WholesaleReturnPanel({
   variant = "client",
   debtRead,
 }: WholesaleReturnPanelProps) {
+  const paidId = useId();
   const debtStatus = statusOf(debtRead);
   const copy = COPY[variant];
   const { remainingDebt, cashBack, newDebt } = reconcileWholesaleReturn(
@@ -111,8 +113,9 @@ export function WholesaleReturnPanel({
           {remainingDebt > 0 ? (
             <>
               <div className="flex items-center justify-between gap-3">
-                <label className="text-base font-semibold">المبلغ المدفوع</label>
+                <label htmlFor={paidId} className="text-base font-semibold">المبلغ المدفوع</label>
                 <input
+                  id={paidId}
                   type="number"
                   min={0}
                   max={remainingDebt}

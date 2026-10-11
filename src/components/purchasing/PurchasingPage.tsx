@@ -1,3 +1,4 @@
+import { usePurchasingDialogFocus } from "./usePurchasingDialogFocus";
 import React, { useCallback, useMemo, useState } from "react";
 import { Package, Plus, Trash2, Loader2, Save, FileText, Users, CreditCard, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
@@ -97,6 +98,12 @@ export function PurchasingPage() {
   const totalVolume = purchaseInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0);
 
   // Modal State
+  const receiptFocus = usePurchasingDialogFocus();
+  const returnFocus = usePurchasingDialogFocus();
+  const invoiceFocus = usePurchasingDialogFocus();
+  const supplierFocus = usePurchasingDialogFocus();
+  const paymentFocus = usePurchasingDialogFocus("purchasing-supplier-title");
+  const variantFocus = usePurchasingDialogFocus();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [draft, setDraft] = useState<any[]>([]);
   const [wallet, setWallet] = useState<any>("inStoreSafe");
@@ -598,15 +605,15 @@ export function PurchasingPage() {
       */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-display font-bold">المشتريات والموردين</h1>
+          <h1 id="purchasing-heading" tabIndex={-1} className="text-3xl font-display font-bold">المشتريات والموردين</h1>
           <p className="text-muted-foreground mt-1">إدارة فواتير المشتريات، الموردين وتوريد المخزون</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" onClick={openReturnModal}>
+          <Button variant="outline" onClick={(event) => { returnFocus.remember(event.currentTarget); openReturnModal(); }}>
             <RotateCcw className="ml-2 size-4" />
             مرتجع مورد
           </Button>
-          <Button onClick={() => setIsModalOpen(true)}>
+          <Button onClick={(event) => { receiptFocus.remember(event.currentTarget); setIsModalOpen(true); }}>
             <Plus className="ml-2 size-4" />
             تسجيل فاتورة مشتريات
           </Button>
@@ -683,8 +690,8 @@ export function PurchasingPage() {
                   </TableRow>
                 ) : (
                   purchaseInvoices.slice().reverse().map((inv) => (
-                    <TableRow key={inv.id} className="cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => setSelectedInvoice(inv)}>
-                      <TableCell className="text-right px-4 font-mono font-bold text-gray-900 dark:text-white">{inv.invoiceNumber}</TableCell>
+                    <TableRow key={inv.id} className="cursor-pointer hover:bg-gray-50 transition-colors" onClick={(event) => { invoiceFocus.remember(event.currentTarget.querySelector("button")); setSelectedInvoice(inv); }}>
+                      <TableCell className="text-right px-4 font-mono font-bold text-gray-900 dark:text-white"><button type="button" className="rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary" aria-label={`فتح فاتورة المشتريات ${inv.invoiceNumber}`} onClick={(event) => { event.stopPropagation(); invoiceFocus.remember(event.currentTarget); setSelectedInvoice(inv); }}>{inv.invoiceNumber}</button></TableCell>
                       <TableCell className="text-right px-4">{inv.supplierName}</TableCell>
                       <TableCell className="text-right px-4">
                         {new Date(inv.createdAt).toLocaleDateString("ar-EG", { year: "numeric", month: "short", day: "numeric" })}
@@ -723,8 +730,8 @@ export function PurchasingPage() {
                   </TableRow>
                 ) : (
                   suppliers.map((sup) => (
-                    <TableRow key={sup.id} className="cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => setSelectedSupplier(sup)}>
-                      <TableCell className="text-right px-4 font-bold">{sup.companyName}</TableCell>
+                    <TableRow key={sup.id} className="cursor-pointer hover:bg-gray-50 transition-colors" onClick={(event) => { supplierFocus.remember(event.currentTarget.querySelector("button")); setSelectedSupplier(sup); }}>
+                      <TableCell className="text-right px-4 font-bold"><button type="button" className="rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary" aria-label={`فتح ملف المورد ${sup.companyName}`} onClick={(event) => { event.stopPropagation(); supplierFocus.remember(event.currentTarget); setSelectedSupplier(sup); }}>{sup.companyName}</button></TableCell>
                       <TableCell className="text-right px-4">{sup.contactPerson || "-"}</TableCell>
                       <TableCell dir="ltr" className="text-right px-4 font-mono font-bold text-gray-900 dark:text-white">{sup.phone || "-"}</TableCell>
                     </TableRow>
@@ -739,7 +746,7 @@ export function PurchasingPage() {
       {/* Invoice Creation Modal */}
       {/* مرتجع مورد — goods back to the supplier, settled against our debt */}
       <Dialog open={isReturnOpen} onOpenChange={setIsReturnOpen}>
-        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto" dir="rtl">
+        <DialogContent onCloseAutoFocus={returnFocus.restore} className="sm:max-w-2xl max-h-[90vh] overflow-y-auto" dir="rtl">
           <DialogHeader>
             <DialogTitle>مرتجع مورد</DialogTitle>
             <DialogDescription>
@@ -749,8 +756,8 @@ export function PurchasingPage() {
 
           <div className="space-y-4">
             <div className="space-y-1.5">
-              <Label>المورد</Label>
-              <select
+              <Label htmlFor="return-supplier">المورد</Label>
+              <select id="return-supplier"
                 value={returnSupplierId}
                 onChange={(e) => setReturnSupplierId(e.target.value)}
                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -765,7 +772,7 @@ export function PurchasingPage() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>الفاتورة والبنود الراجعة</Label>
+              <p className="text-sm font-medium">الفاتورة والبنود الراجعة</p>
               <SupplierReturnPicker
                 invoices={returnSupplierInvoices}
                 priorReturns={priorReturns}
@@ -790,7 +797,7 @@ export function PurchasingPage() {
                     className="flex flex-wrap items-center justify-between gap-3 p-3"
                   >
                     <div className="min-w-0 flex-1">
-                      <span className="font-medium">{line.productName}</span>
+                      <span className="font-medium">{line.productName}{line.variantName && <span> — {line.variantName}</span>}</span>
                       {/* The source receipt and its cost stay on screen right
                           up to the confirm button — this is the number the
                           whole fix is about. */}
@@ -857,7 +864,7 @@ export function PurchasingPage() {
           setNewSupplierPhone("");
         }
       }}>
-        <DialogContent className="max-w-5xl h-[90vh] flex flex-col overflow-hidden" dir="rtl">
+        <DialogContent onCloseAutoFocus={receiptFocus.restore} className="max-w-5xl h-[90vh] flex flex-col overflow-hidden" dir="rtl">
           <DialogHeader className="shrink-0">
             <DialogTitle>فاتورة مشتريات جديدة</DialogTitle>
             <DialogDescription>أضف المنتجات وحدد بيانات السداد والمورد</DialogDescription>
@@ -869,10 +876,13 @@ export function PurchasingPage() {
                   <CardTitle>المنتجات</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  <Label htmlFor="purchase-product-search">بحث المنتجات</Label>
                   <ProductSearch
+                    inputId="purchase-product-search"
                     products={products}
                     onSelect={(product) => {
                       if (product.metadata?.variants?.length > 0) {
+                        variantFocus.remember(document.getElementById("purchase-product-search"));
                         setPendingVariantSelection({ product, qty: 1 });
                       } else {
                         addItemToDraft(product, 1);
@@ -887,7 +897,7 @@ export function PurchasingPage() {
                     <div className="rounded-md border border-border divide-y divide-border">
                       {draft.map((line, idx) => (
                         <div key={`${line.productId}-${line.variantName}-${idx}`} className="p-3 flex items-center justify-between gap-4">
-                          <div className="min-w-0 flex-1">
+                          <div id={`purchase-line-${idx}`} className="min-w-0 flex-1">
                             <p className="font-medium text-sm truncate">{line.productName}</p>
                             {line.variantName && (
                               <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-bold">
@@ -897,10 +907,12 @@ export function PurchasingPage() {
                           </div>
                           <div className="flex items-center gap-3">
                             <div className="w-24">
-                              <Label className="text-[10px] text-muted-foreground mb-1 block">الكمية</Label>
+                              <Label id={`purchase-quantity-label-${idx}`} htmlFor={`purchase-quantity-${idx}`} className="text-[10px] text-muted-foreground mb-1 block">الكمية</Label>
                               <Input
                                 type="number"
                                 min="1"
+                                id={`purchase-quantity-${idx}`}
+                                aria-labelledby={`purchase-line-${idx} purchase-quantity-label-${idx}`}
                                 value={line.quantity}
                                 // `|| 1`, not `|| 0`, was the bug: `parseInt("0") || 1`
                                 // is 1, so typing a quantity of zero silently
@@ -913,11 +925,13 @@ export function PurchasingPage() {
                               />
                             </div>
                             <div className="w-28">
-                              <Label className="text-[10px] text-muted-foreground mb-1 block">تكلفة الوحدة</Label>
+                              <Label id={`purchase-cost-label-${idx}`} htmlFor={`purchase-cost-${idx}`} className="text-[10px] text-muted-foreground mb-1 block">تكلفة الوحدة</Label>
                               <Input
                                 type="number"
                                 min="0"
                                 step="0.01"
+                                id={`purchase-cost-${idx}`}
+                                aria-labelledby={`purchase-line-${idx} purchase-cost-label-${idx}`}
                                 value={line.unitCost}
                                 onChange={(e) => setDraft(prev => prev.map((l, i) => i === idx ? { ...l, unitCost: parseFloat(e.target.value) || 0 } : l))}
                                 className="h-8"
@@ -927,7 +941,7 @@ export function PurchasingPage() {
                               <Label className="text-[10px] text-muted-foreground mb-1 block">الإجمالي</Label>
                               <p className="font-medium text-sm pt-1">{formatMoney(line.quantity * line.unitCost)}</p>
                             </div>
-                            <Button aria-label="حذف سطر المرتجع"
+                            <Button aria-label="حذف سطر المشتريات"
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-destructive self-end"
@@ -956,8 +970,8 @@ export function PurchasingPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-1.5">
-                    <Label>المورد</Label>
-                    <select
+                    <Label htmlFor="purchase-supplier">المورد</Label>
+                    <select id="purchase-supplier"
                       value={supplierId}
                       onChange={(e) => setSupplierId(e.target.value)}
                       className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -975,16 +989,16 @@ export function PurchasingPage() {
                   {registeringNew && (
                     <div className="space-y-3 pt-2 border-t border-border mt-2">
                       <div className="space-y-1.5">
-                        <Label>اسم المورد</Label>
-                        <Input
+                        <Label htmlFor="purchase-supplier-name">اسم المورد</Label>
+                        <Input id="purchase-supplier-name"
                           value={newSupplierName}
                           onChange={(e) => setNewSupplierName(e.target.value)}
                           placeholder="مثال: شركة النور"
                         />
                       </div>
                       <div className="space-y-1.5">
-                        <Label>رقم التليفون (اختياري)</Label>
-                        <Input
+                        <Label htmlFor="purchase-supplier-phone">رقم التليفون (اختياري)</Label>
+                        <Input id="purchase-supplier-phone"
                           value={newSupplierPhone}
                           onChange={(e) => setNewSupplierPhone(e.target.value)}
                           dir="ltr"
@@ -1001,8 +1015,8 @@ export function PurchasingPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-1.5">
-                    <Label>دفع نقدي من خزينة</Label>
-                    <select
+                    <Label htmlFor="purchase-wallet">دفع نقدي من خزينة</Label>
+                    <select id="purchase-wallet"
                       value={wallet}
                       onChange={(e) => setWallet(e.target.value as any)}
                       className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -1016,8 +1030,8 @@ export function PurchasingPage() {
                   </div>
 
                   <div className="space-y-1.5">
-                    <Label>المدفوع نقداً</Label>
-                    <Input
+                    <Label htmlFor="purchase-paid">المدفوع نقداً</Label>
+                    <Input id="purchase-paid"
                       type="number"
                       min={0}
                       max={total}
@@ -1079,7 +1093,7 @@ export function PurchasingPage() {
         open={pendingVariantSelection !== null}
         onOpenChange={(open) => !open && setPendingVariantSelection(null)}
       >
-        <DialogContent className="sm:max-w-md z-[9999]" dir="rtl">
+        <DialogContent onCloseAutoFocus={variantFocus.restore} className="sm:max-w-md z-[9999]" dir="rtl">
           <DialogHeader>
             <DialogTitle>اختر الدرجة / اللون</DialogTitle>
             <DialogDescription>
@@ -1114,7 +1128,7 @@ export function PurchasingPage() {
 
     {/* Invoice Details & Print Dialog */}
     <Dialog open={!!selectedInvoice} onOpenChange={(open) => !open && setSelectedInvoice(null)}>
-      <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto print:[&>button]:hidden">
+      <DialogContent onCloseAutoFocus={invoiceFocus.restore} className="sm:max-w-3xl max-h-[90vh] overflow-y-auto print:[&>button]:hidden">
         <DialogHeader className="print:hidden">
           <DialogTitle>فاتورة مشتريات: {selectedInvoice?.invoiceNumber}</DialogTitle>
           <DialogDescription>
@@ -1134,7 +1148,7 @@ export function PurchasingPage() {
             <TableBody>
               {selectedInvoice?.items?.map((item: any) => (
                 <TableRow key={item.id}>
-                  <TableCell className="font-medium text-right px-4">{item.productName}</TableCell>
+                  <TableCell className="font-medium text-right px-4">{item.productName}{item.variantName && <span> — {item.variantName}</span>}</TableCell>
                   <TableCell className="text-center px-4 font-bold text-gray-900 dark:text-white">{item.quantity}</TableCell>
                   <TableCell className="text-center px-4">{formatMoney(item.unitCost)}</TableCell>
                   <TableCell className="text-left px-4 font-mono font-bold text-gray-900 dark:text-white">{formatMoney(item.total)}</TableCell>
@@ -1159,8 +1173,8 @@ export function PurchasingPage() {
 
     {/* Supplier 360 CRM Dialog */}
     <Dialog open={!!selectedSupplier} onOpenChange={(open) => !open && setSelectedSupplier(null)}>
-      <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent onCloseAutoFocus={supplierFocus.restore} className="sm:max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader id="purchasing-supplier-title" tabIndex={-1}>
           <DialogTitle>ملف المورد: {selectedSupplier?.companyName}</DialogTitle>
         </DialogHeader>
         <div className="space-y-6 mt-4">
@@ -1199,7 +1213,8 @@ export function PurchasingPage() {
                 // Pre-filling a payment from a balance that did not load would
                 // pre-fill nothing and look like "nothing owed".
                 disabled={statusOf(supplierDebt) !== "ready"}
-                onClick={() => {
+                onClick={(event) => {
+                  paymentFocus.remember(event.currentTarget);
                   // Pre-filled with the whole outstanding balance: paying in
                   // full is the common case, and a credit balance pre-fills
                   // nothing because there is nothing to pay.
@@ -1280,7 +1295,7 @@ export function PurchasingPage() {
 
     {/* تسوية المورد — the settlement the supplier account never had */}
     <Dialog open={isPayOpen} onOpenChange={(open) => { if (!paying) setIsPayOpen(open); }}>
-      <DialogContent className="sm:max-w-lg" dir="rtl">
+      <DialogContent onCloseAutoFocus={paymentFocus.restore} className="sm:max-w-lg" dir="rtl">
         <DialogHeader>
           <DialogTitle>تسجيل دفعة للمورد</DialogTitle>
           <DialogDescription>
@@ -1396,7 +1411,7 @@ export function PurchasingPage() {
           <tbody>
             {selectedInvoice.items?.map((item: any, i: number) => (
               <tr key={i} className="border-b border-gray-300">
-                <td className="py-2 px-2 font-medium">{item.productName}</td>
+                <td className="py-2 px-2 font-medium">{item.productName}{item.variantName && <span> — {item.variantName}</span>}</td>
                 <td className="py-2 px-2 text-center font-bold">{item.quantity}</td>
                 <td className="py-2 px-2 text-center">{item.unitCost.toLocaleString("ar-EG")}</td>
                 <td className="py-2 px-2 text-left font-mono font-bold">{item.total.toLocaleString("ar-EG")}</td>

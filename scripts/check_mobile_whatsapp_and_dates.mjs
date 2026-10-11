@@ -179,7 +179,7 @@ test("DATE 7/8 — reversed is refused with a message; one date alone is incompl
   // The sheet applies only a complete, ordered range; the screen never queries anything else.
   const sheet = read("src/mobile/components/OrderDateFilter.tsx");
   assert.match(sheet, /disabled=\{resolution\.status !== "ok"\}/);
-  assert.match(sheet, /role="alert">\{resolution\.messageAr\}/);
+  assert.match(sheet, /role="alert">\s*\{resolution\.messageAr\}/);
   const screen = read("src/mobile/screens/MobileOrdersScreen.tsx");
   assert.match(screen, /return resolved\.status === "ok" \? resolved\.bounds : \{\};/);
 });
@@ -235,7 +235,7 @@ test("DATE 13/14 — changing or clearing the range re-reads; the filter row kee
   const screen = read("src/mobile/screens/MobileOrdersScreen.tsx");
   assert.match(screen, /\{ search: query, queue: segment as "action" \| "today" \| "all", status, \.\.\.dateBounds \}/);
   assert.match(screen, /<FilterSheet label="حالة الطلب"[^>]*\/><OrderDateFilter value=\{dateFilter\} onChange=\{setDateFilter\} \/>/);
-  assert.match(read("src/mobile/components/OrderDateFilter.tsx"), /pick\(\{ preset: "all" \}\)\}>مسح التاريخ/);
+  assert.match(read("src/mobile/components/OrderDateFilter.tsx"), /pick\(\{ preset: "all" \}\)\}\s*>\s*مسح التاريخ/);
   assert.deepEqual(resolveOrderDateFilter({ preset: "all" }).bounds, {}, "cleared = no date constraint at all");
   // Today/الكل tabs untouched.
   assert.match(screen, /\{ id: "action", label: "تحتاج إجراء" \}, \{ id: "today", label: "اليوم" \}, \{ id: "all", label: "الكل" \}/);

@@ -43,6 +43,9 @@ const KINDS: Record<string, string> = {
   owner_contribution: "مساهمة إضافية",
   purchase: "توريد",
 };
+export function financeActivityLabel(row: Pick<LedgerEvent, "kind" | "refType">) {
+  return row.kind === "purchase" && row.refType === "supplier_return" ? "مرتجع مورد" : KINDS[row.kind];
+}
 const initial = () => ({
   amount: "",
   wallet: "inStoreSafe" as WalletType,
@@ -146,7 +149,7 @@ function FinanceActions({
     ])
       .then(([rows, draws]) => {
         if (alive) {
-          setActivity(rows.filter((row) => KINDS[row.kind]));
+          setActivity(rows.filter((row) => financeActivityLabel(row)));
           setSpent(draws ? ownerSpent(draws) : null);
         }
       })
@@ -671,7 +674,7 @@ function FinanceActions({
                 {activity.map((row) => (
                   <li key={row.id}>
                     <div className="mobile-finance-activity-heading">
-                      <strong>{KINDS[row.kind]}</strong>
+                      <strong>{financeActivityLabel(row)}</strong>
                       <time dateTime={row.occurredAt}>
                         {new Date(row.occurredAt).toLocaleDateString("ar-EG")}
                       </time>

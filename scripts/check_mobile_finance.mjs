@@ -33,6 +33,7 @@ function formHost({
   role = "ADMIN",
   record = async () => ({ success: true }),
   saved = new Map(),
+  activityRows = [],
 } = {}) {
   let cursor = 0,
     state = [],
@@ -82,7 +83,7 @@ function formHost({
       }),
     },
     "@/lib/ledger": {
-      events: async () => [],
+      events: async () => activityRows,
       balances: async () => [{ subjectId: "owner", amount: 4000 }],
     },
     "@/lib/ledger/ownerDraw": draw,
@@ -197,6 +198,20 @@ function formHost({
 test("ADMIN sees Mobile actions, MODERATOR renders none", () => {
   assert.ok(formHost().allowed());
   assert.equal(formHost({ role: "MODERATOR" }).allowed(), null);
+});
+
+test("PUR-UI-activity: rendered supplier return differs from receipt without changing ledger kind or payload", async () => {
+  const activityRows = [
+    { id: "return", kind: "purchase", refType: "supplier_return", refId: "FM-001", occurredAt: new Date().toISOString(), payload: {} },
+    { id: "receipt", kind: "purchase", refType: "supplier_invoice", refId: "FM-002", occurredAt: new Date().toISOString(), payload: {} },
+  ];
+  const original = JSON.stringify(activityRows);
+  const h = formHost({ activityRows });
+  h.render(); await flush(); h.render();
+  const headings = h.nodes().filter(n => n.type === "strong").map(n => h.text(n));
+  assert.ok(headings.includes("مرتجع مورد"));
+  assert.ok(headings.includes("توريد"));
+  assert.equal(JSON.stringify(activityRows), original);
 });
 test("budget 20000 minus authoritative owner draws 4000 leaves 16000", async () => {
   const h = formHost();

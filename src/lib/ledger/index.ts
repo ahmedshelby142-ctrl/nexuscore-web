@@ -22,6 +22,7 @@
 
 import { driver, toPiastres, type WireEvent } from "./driver";
 import { assertFiniteLines } from "./money";
+import { appendFinancialEvent } from "../financialCommand";
 import type {
   Balance,
   BalanceQuery,
@@ -59,6 +60,10 @@ export { fromPiastres, toPiastres } from "./driver";
  * that nothing was written. Financial commands use a stable retry envelope.
  */
 export async function appendEvent(event: NewEvent): Promise<string> {
+  // Financial stock writes retain their logical ID across a lost response.
+  // Every supported stock command updates persisted rows inside ledger_append.
+  if (event.lines.some(line => line.account === "stock"))
+    return appendFinancialEvent(event);
   const row = await prepareEvent(event);
   await driver.append(row);
 

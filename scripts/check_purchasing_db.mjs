@@ -1,3 +1,4 @@
+import {pathToFileURL} from "node:url";
 // Real captured public DDL/RLS/grants/functions, synthetic rows, loopback only.
 // auth.uid reads claims; this does not exercise JWT signing, GoTrue or PostgREST.
 import test, { before, after } from "node:test";
@@ -126,9 +127,11 @@ before(async () => {
     });
   });
   fs.mkdirSync("logs/purchasing-repair", { recursive: true });
-  dir = fs.mkdtempSync(path.resolve("logs/purchasing-repair/pg-"));
+  const dataRoot=path.resolve(process.env.NEXUS_QA_PG_DATA_ROOT || "logs/purchasing-repair");
+  fs.mkdirSync(dataRoot,{recursive:true});
+  dir = fs.mkdtempSync(path.join(dataRoot,"pg-"));
   if (process.platform === "win32") {
-    const bins = await import("@embedded-postgres/windows-x64");
+    const bins = await import(process.env.NEXUS_QA_PG17 === '1' ? pathToFileURL(path.resolve('logs/purchasing-r2/pg17-binaries/package/dist/index.js')).href : '@embedded-postgres/windows-x64');
     ctl = bins.pg_ctl;
     const init = spawnSync(
       bins.initdb,

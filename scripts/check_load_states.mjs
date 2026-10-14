@@ -311,7 +311,7 @@ test("a stock count is never booked against an unread ledger", () => {
   const s = src("../src/components/finance/StockAuditPage.tsx");
   const fn = s.slice(s.indexOf("const handleConfirmAudit"));
   const guard = fn.indexOf('if (statusOf(stock) !== "ready") {');
-  const append = fn.indexOf("appendEvent(");
+  const append = fn.indexOf("appendFinancialEvent(");
   assert.ok(guard > -1 && guard < append, "a جرد against qtyOf() = 0 books phantom surplus");
 });
 

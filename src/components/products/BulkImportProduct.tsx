@@ -12,9 +12,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useBusinessStore } from "@/store/useBusinessStore";
-import { resolvePendingOpeningBalance } from "@/lib/financialCommand";
-import { appendOpeningBalance } from "@/lib/ledger/openingBalance";
-import { appendEvent } from "@/lib/ledger";
+import { saveCatalogProduct, resolvePendingCatalog } from "@/lib/catalogStockCommand";
+
+
 import { useStock } from "@/lib/ledger/useStock";
 import {
   parseImportRows,
@@ -69,7 +69,7 @@ interface BulkImportProductProps {
 }
 
 export function BulkImportProduct({ onClose, onImported }: BulkImportProductProps) {
-  const { products, addProduct, updateProduct } = useBusinessStore();
+  const { products } = useBusinessStore();
   const { qtyOf } = useStock();
   const userRole = useAuthStore((s) => s.userRole);
   const isOwner = toAppRole(userRole) === "ADMIN";
@@ -143,7 +143,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
     let skipped = 0;
 
     try {
-      await resolvePendingOpeningBalance();
+      await resolvePendingCatalog();
       for (const row of rows) {
         const generatedSku = row.sku || autoSku();
         const price = Math.max(0, row.retail_price || 0);
@@ -186,58 +186,19 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
         };
 
         const existing = findImportedProduct(products, row);
-        if (existing) {
-          // UPDATE MODE: Update fields and adjust stock
-          await updateProduct(existing.id, {
-            ...fields,
-            sku: existing.sku,
-            barcode: existing.barcode,
-          });
-          
-          const currentStock = qtyOf(existing.id);
-          const delta = finalStockQty - currentStock;
-          
-          if (delta !== 0) {
-            await appendEvent({
-              kind: "stock_adjustment",
-              actor: "نظام الاستيراد",
-              refType: "product_edit",
-              payload: {
-                notes: "تسوية تلقائية لتحديث المخزون عبر الإكسل",
-              },
-              lines: [
-                {
-                  account: "stock",
-                  subjectId: existing.id,
-                  qty: delta,
-                  unitCost: 0,
-                }
-              ]
-            });
-            opened++; // We can reuse this counter to show modified/adjusted rows
-            units += delta;
-          }
-          
-          skipped++; // Keeping this as "Existing matched" for UI reporting
-          continue;
-        }
-
-        // Awaited: the opening-balance event below names this product by
-        // id, so it must exist in the database before the event is written.
-        const product = await addProduct(fields);
-        count++;
-
-        // INSERT MODE: One event per row that carries a quantity
-        const opening = openingBalanceOf(row);
-        opening.quantity = Math.max(0, finalStockQty); // Ensure the variants sum is used
-        const eventId = await appendOpeningBalance({
-          productId: product.id,
-          productName: product.name,
-          ...opening,
-        });
-        if (eventId) {
+        const previous = existing ? qtyOf(existing.id) : 0;
+        await saveCatalogProduct({
+          ...fields,
+          ...(existing ? { sku: existing.sku, barcode: existing.barcode } : {}),
+          // An omitted variant column preserves existing identities; quantity
+          // redistribution needs explicit counts rather than an inferred shade.
+          ...(!variants && existing ? { metadata: existing.metadata } : {}),
+        }, { existing, quantity: finalStockQty, unitCost: openingBalanceOf(row).unitCost });
+        if (existing) skipped++;
+        else count++;
+        if (finalStockQty !== previous) {
           opened++;
-          units += opening.quantity;
+          units += finalStockQty - previous;
         }
       }
     } catch (e) {

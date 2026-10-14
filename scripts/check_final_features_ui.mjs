@@ -15,6 +15,7 @@ const box = {
 };
 const order = {
   id: "replacement",
+  store_id: "test-store",
   orderNumber: "ECO-NEW",
   status: "pending",
   totalAmount: 60,
@@ -49,6 +50,9 @@ const business = {
   removeProduct: async () => {},
 };
 const stubs = {
+  "@/store/useAuthStore": { useAuthStore: selector => selector({ userRole: "ADMIN" }) },
+  "@/store/useOrderStore": { useOrderStore: { getState: () => ({ orders: [] }) } },
+  "@/services/api/storeContext": { getSyncIdentity: async () => ({ storeId: "test-store" }) },
   "@/lib/financialCommand": {
     resolvePendingFinancialCommand: async () => recovered,
     runFinancialCommand: async (command, input, scope) => {

@@ -21,9 +21,9 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useBusinessStore } from "@/store/useBusinessStore";
-import { appendOpeningBalance } from "@/lib/ledger/openingBalance";
-import { resolvePendingOpeningBalance } from "@/lib/financialCommand";
-import { appendEvent } from "@/lib/ledger";
+import { saveCatalogProduct } from "@/lib/catalogStockCommand";
+
+
 import { useStock } from "@/lib/ledger/useStock";
 import {
   StockSummaryCards,
@@ -105,7 +105,7 @@ const emptyForm: Omit<Product, "id" | "updated_at" | "isActive" | "quantity"> = 
 
 
 export function ProductsPage() {
-  const { products: allProducts, addProduct, updateProduct, restoreProduct } = useBusinessStore();
+  const { products: allProducts, restoreProduct } = useBusinessStore();
   // Archived products keep their record (their ledger events must still
   // resolve) but leave every active list, this one included. The المؤرشفة tab
   // below is the one place they are visible — and the way back.
@@ -256,68 +256,10 @@ export function ProductsPage() {
         ? form.metadata.variants.reduce((sum, v) => sum + (v.stock || 0), 0)
         : 0;
 
-      if (editingProduct) {
-        // `sellableStock` prefers the variants, but totalQuantity is what a
-        // plain product is read by and what sync carries — so on a variant
-        // product it is kept equal to their sum rather than left stale.
-        await updateProduct(editingProduct.id, {
-          ...data,
-          ...(hasVariants ? { totalQuantity: totalVariantStock } : {}),
-        });
-        
-        // STRICT SYNCHRONIZATION: Total stock must match sum of variants exactly.
-        const currentTotal = qtyOf(editingProduct.id);
-        if (hasVariants && totalVariantStock !== currentTotal) {
-          const difference = totalVariantStock - currentTotal;
-          await appendEvent({
-            kind: "stock_adjustment",
-            actor: "النظام",
-            refType: "product_edit",
-            payload: {
-              notes: "تسوية تلقائية لمطابقة مجموع مخزون الدرجات/الأنواع",
-            },
-            lines: [
-              {
-                account: "stock",
-                subjectId: editingProduct.id,
-                qty: difference,
-                unitCost: 0,
-              }
-            ]
-          });
-          refreshStock();
-        }
-
-        clearDrafts("product:");
-        setIsDialogOpen(false);
-        return;
-      }
-
-      const qty = hasVariants ? totalVariantStock : (parseFloat(openingQty) || 0);
-
-      // The opening quantity goes on the RECORD as well as into the ledger
-      // event below. Every selling screen reads the record through
-      // `sellableStock`, so a product created with 40 on the shelf and no
-      // `totalQuantity` would show up as نفد المخزون the moment it was saved.
-      await resolvePendingOpeningBalance();
-      const product = await addProduct({ ...data, totalQuantity: qty });
-
-      if (qty <= 0) {
-        // No opening balance entered — the product starts at zero, and stock
-        // arrives the normal way, through a توريد.
-        clearDrafts("product:");
-        setIsDialogOpen(false);
-        return;
-      }
-
-      // ONE event. The user is asserting a real fact — "I have 40 of these on
-      // the shelf right now" — so it is recorded as an event like any other,
-      // not written into a stored quantity. This is what makes it an opening
-      // balance rather than the invented seed data we deleted. The Excel
-      // importer records its quantity column through this same function.
-      await appendOpeningBalance({
-        productId: product.id,
-        productName: product.name,
+      const qty = hasVariants ? totalVariantStock
+        : editingProduct ? qtyOf(editingProduct.id) : (parseFloat(openingQty) || 0);
+      await saveCatalogProduct(data, {
+        existing: editingProduct ?? undefined,
         quantity: qty,
         unitCost: parseFloat(openingCost) || 0,
       });

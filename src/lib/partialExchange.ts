@@ -1,3 +1,4 @@
+import Decimal from "decimal.js";
 // Exchange selections use original sold-line identities, never today's recipe.
 export interface ExchangeSelection {
   lineId: string;
@@ -10,7 +11,21 @@ export interface ExchangeDetails {
   status: "pending" | "confirmed" | "cancelled";
   cause: "customer" | "shop" | "courier";
   refundPiastres: number;
+  credit?: {
+    version: 1;
+    eligiblePiastres: number;
+    allocatedPiastres: number;
+    excessPiastres: number;
+    refundedAllocationPiastres: number;
+    status: "reserved" | "applied" | "consumed" | "released" | "refund_due" | "refunded";
+    courierId: string | null;
+    excessDisposition?: "wallet" | "courier";
+    lastRefundEventId?: string;
+  };
   confirmationEventId?: string;
+  refundVia?: "wallet" | "courier";
+  returnFee?: number;
+  confirmedAt?: string;
   selections: {
     lineId: string;
     productId: string;
@@ -27,32 +42,33 @@ export function exchangeUnits(
   replacements: readonly any[] = [],
 ) {
   const items: any[] = order?.items ?? [];
-  const gross = items.reduce((n, i) => n + Number(i.quantity) * Number(i.unitPrice), 0);
-  let prefix = 0;
+  const gross = items.reduce((n, i) => n.plus(new Decimal(i.quantity).times(i.unitPrice)), new Decimal(0));
+  let prefix = new Decimal(0);
   return items.map((i, index) => {
     const lineId = String(i.id || `line:${index + 1}`),
       productId = String(i.bundleId || i.productId),
       quantity = Number(i.quantity);
-    const lineGross = quantity * Number(i.unitPrice),
-      total = Number(order.totalAmount);
-    const net = gross
-      ? Math.round(((prefix + lineGross) * total * 100) / gross) -
-        Math.round((prefix * total * 100) / gross)
+    const lineGross = new Decimal(quantity).times(i.unitPrice),
+      total = new Decimal(order.totalAmount ?? 0);
+    const net = !gross.isZero()
+      ? prefix.plus(lineGross).times(total).times(100).div(gross).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber() -
+        prefix.times(total).times(100).div(gross).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber()
       : 0;
-    prefix += lineGross;
+    prefix = prefix.plus(lineGross);
     const claimed = new Set<number>();
-    const legacy = prior
+    const ordinary = prior
       .filter(
-        (r) => r.original_order_id === order.id && !String(r.id ?? "").startsWith("exchange:"),
+        (r) => r.original_order_id === order.id && !r.deleted_at && !String(r.id ?? "").startsWith("exchange:"),
       )
       .flatMap((r) => r.returned_items ?? [])
       .filter((r) =>
         r.lineId
           ? r.lineId === lineId
           : r.product_id === productId && (r.variantName ?? "") === (i.variantName ?? ""),
-      )
-      .reduce((n, r) => n + Number(r.quantity), 0);
+      );
+    const legacy = ordinary.filter(r => !Array.isArray(r.unitNumbers)).reduce((n, r) => n + Number(r.quantity), 0);
     for (let n = 1; n <= legacy; n++) claimed.add(n);
+    for (const r of ordinary) for (const n of r.unitNumbers ?? []) claimed.add(n);
     for (const replacement of replacements) {
       const details: ExchangeDetails | undefined = replacement.exchangeDetails;
       if (
@@ -82,7 +98,8 @@ export function exchangeUnits(
           .slice(0, qty)
           .reduce(
             (sum, n) =>
-              sum + Math.round((n * net) / quantity) - Math.round(((n - 1) * net) / quantity),
+              sum + new Decimal(n).times(net).div(quantity).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber() -
+                new Decimal(n - 1).times(net).div(quantity).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber(),
             0,
           ) / 100,
     };

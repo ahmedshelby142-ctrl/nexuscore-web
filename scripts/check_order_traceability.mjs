@@ -53,7 +53,7 @@ test("the order number is allocated BEFORE the ledger event", () => {
   // browser invents from `Date.now()` is a device-clock reading that two tills
   // can produce at once. What this test has always been about is unchanged:
   // the number has to exist before the event that reserves the stock.
-  const allocAt = ECO.indexOf('nextDocumentNumber("ecommerce_order", "ECO-")');
+  const allocAt = ECO.indexOf('nextOrderDocumentNumber()');
   assert.ok(allocAt > 0, "the route must obtain the number from the counter");
   assert.ok(
     allocAt < placedAt,

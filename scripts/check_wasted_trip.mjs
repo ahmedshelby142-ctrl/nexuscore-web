@@ -138,11 +138,13 @@ test("CASE E — the debt flag is the old one, exactly, and is consumed in one p
   const callers = ["src/components/ecommerce/OrdersPage.tsx", "src/routes/ecommerce-orders.tsx", "src/routes/returns.tsx",
     "src/components/ecommerce/CourierLedgerPage.tsx", "src/store/useOrderStore.ts"]
     .flatMap((f) => [...read(f).matchAll(/settleWastedTrip\(/g)].map(() => f));
-  assert.deepEqual(callers, ["src/components/ecommerce/OrdersPage.tsx"]);
+  assert.deepEqual(callers, []);
   const page = read("src/components/ecommerce/OrdersPage.tsx");
-  assert.match(page, /if \(clearsShippingDebt\(order\) && customerId\) \{\s*await useCustomerStore\.getState\(\)\.settleWastedTrip\(customerId\);\s*await updateOrder\(order\.id, \{ shippingPenaltyApplied: false \}\);/);
-  // …and the counter moves by exactly one, never below zero.
-  assert.match(read("src/store/useCustomerStore.ts"), /returned_orders_count: Math\.max\(0, \(current\.returned_orders_count \?\? 0\) - 1\)/);
+  assert.match(page, /await commitOrderDelivery\(/);
+  const atomic = read("supabase/migrations/20261013015521_customer_trip_atomic_recovery.sql");
+  assert.match(atomic, /count_after:=c.returned_orders_count\+CASE p_action WHEN 'earn' THEN 1 ELSE -1 END/);
+  assert.match(atomic, /"shippingPenaltyApplied"=false/);
+  assert.doesNotMatch(read("src/store/useCustomerStore.ts"), /settleWastedTrip:|recordReturn:/);
 });
 
 test("CASE F — courier override 45: courier owed 45, compensation still 60", () => {
@@ -192,7 +194,7 @@ test("CASE I — cloud round-trip keeps shipping 60, compensation 60, courier 60
 
 test("every money path that totals an order includes the compensation", () => {
   const files = {
-    "src/routes/ecommerce-orders.tsx": [/total_price \+ shipping_fee \+ wastedTripCompensation - depositVal/, /full_prepaid"\) return total_price \+ shipping_fee \+ wastedTripCompensation/],
+    "src/routes/ecommerce-orders.tsx": [/exchangeCreditDraft\(total_price, shipping_fee, wastedTripCompensation, depositVal, isExchange \? returningValue : 0\)/, /full_prepaid"\) return Math\.max\(0, total_price \+ shipping_fee \+ wastedTripCompensation - \(isExchange \? returningValue : 0\)\)/],
     "supabase/migrations/20261011150322_final_v1_financial_integrity.sql": [/"expectedCod"=v_total\+"shippingFee"\+"wastedTripCompensation"-"depositAmount"/],
     "src/routes/returns.tsx": [/order\.totalAmount \+ order\.shippingFee \+ \(order\.wastedTripCompensation \?\? 0\)/],
     "src/mobile/screens/MobileOrderDetails.tsx": [/const collected = netGoods \+ shippingFee \+ wastedTripCompensation;/],

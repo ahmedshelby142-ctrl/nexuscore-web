@@ -1,4 +1,5 @@
 import { ArrowRight, Package } from "lucide-react";
+import {OrderFulfillmentPanel} from "@/components/ecommerce/OrderFulfillmentPanel";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { MobileAppBar } from "@/mobile/components/MobileAppBar";
@@ -114,7 +115,8 @@ export function MobileOrderDetails() {
 
   const netGoods = Math.max(0, goodsTotal - discountAmount);
   const collected = netGoods + shippingFee + wastedTripCompensation;
-  const depositPlusCod = depositAmount + expectedCod;
+  const allocatedCredit = Number(order.exchangeDetails?.credit?.allocatedPiastres ?? 0) / 100;
+  const depositPlusCod = depositAmount + expectedCod + allocatedCredit;
   const financialsMatch = Math.abs(collected - depositPlusCod) < 0.01;
 
   const customerName = order.customerName ?? "—";
@@ -155,6 +157,7 @@ export function MobileOrderDetails() {
         <strong>{formatArabicCurrency(totalAmount)}</strong>
       </div>
 
+      <OrderFulfillmentPanel fulfillment={order.fulfillment}/>
       {order.exchangeDetails && <Suspense fallback={<SkeletonState />}><ExchangeReturnPanel order={order} readOnly={!showInternal} onSaved={async()=>{reload();await loadTimeline();}}/></Suspense>}
 
       {caseTitle && (
@@ -251,7 +254,7 @@ export function MobileOrderDetails() {
         {showInternal && (
           <>
             <div className="mobile-detail-line" style={{ borderTop: "1px solid var(--border)", paddingBlockStart: "0.5rem" }}>
-              <span>مجموع المدفوع + المتبقي</span>
+              <span>{allocatedCredit > 0 ? "النقدي + رصيد الأصل + المتبقي" : "مجموع المدفوع + المتبقي"}</span>
               <strong>{formatArabicCurrency(depositPlusCod)}</strong>
             </div>
             <div className="mobile-detail-line" style={{ color: financialsMatch ? "var(--success)" : "var(--destructive)" }}>

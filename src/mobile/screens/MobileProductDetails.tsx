@@ -14,6 +14,7 @@ import { formatArabicCurrency, formatArabicDate, formatArabicQuantity } from "@/
 import { readMobileProduct, readMobileProductWaitingOrders } from "@/mobile/data/mobileReaders";
 import { useMobileEntity } from "@/mobile/data/useMobileEntity";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
+import { MobileBundleContents } from "@/mobile/components/MobileBundleContents";
 
 export function MobileProductDetails() {
   const navigate = useNavigate();
@@ -93,7 +94,6 @@ export function MobileProductDetails() {
   const variants = product.metadata?.variants ?? product.variants;
   const hasVariants = Array.isArray(variants) && variants.length > 0;
   const isBundle = product.isBundle === true || product.metadata?.isBundle === true;
-  const bundleItems = isBundle ? (product.bundleItems ?? product.metadata?.bundleItems ?? []) : [];
 
   return <section className="mobile-screen">
     <MobileAppBar title="تفاصيل المنتج" leadingAction={<button type="button" className="mobile-icon-button" onClick={() => navigate(-1)} aria-label="رجوع"><ArrowRight aria-hidden="true" /></button>} />
@@ -222,16 +222,7 @@ export function MobileProductDetails() {
         )}
       </MobileSection>
 
-      {isBundle && bundleItems.length > 0 && (
-        <MobileSection titleAr="مكونات الباقة">
-          {bundleItems.map((item: any) => (
-            <div className="mobile-detail-line" key={`${item.productId}-${item.variantName ?? ""}`}>
-              <span>{item.productName ?? item.productId}</span>
-              <strong>{formatArabicQuantity(item.quantity)}</strong>
-            </div>
-          ))}
-        </MobileSection>
-      )}
+      {isBundle && <MobileBundleContents components={product.mobileBundleComponents ?? []} />}
 
       {/* Record id and archive flag are internal to running the shop — the same
           `showInternal` gate as Order Details. Barcode, SKU and category stay

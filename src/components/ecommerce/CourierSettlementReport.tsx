@@ -88,15 +88,18 @@ export function CourierSettlementReport({ settlement, orders }: CourierSettlemen
           </div>
           
           <div className="flex justify-between text-lg mt-4">
-            <span>المبلغ المحول فعلياً:</span>
-            <span className="font-mono">{formatMoney(settlement.netReceived)}</span>
+            <span>{settlement.netReceived < 0 ? "دفعنا للمندوب فعليًا:" : "المبلغ المستلم فعليًا:"}</span>
+            <span className="font-mono">{formatMoney(Math.abs(settlement.netReceived))}</span>
           </div>
+          {settlement.netReceived === 0 && settlement.shortfall === 0 && (
+            <p className="text-sm">تسوية مستحقات مقابل خصومات — دون تحويل نقدي أو حركة خزنة.</p>
+          )}
 
           <div className={`flex justify-between text-xl font-bold border-t-2 border-gray-800 pt-4 ${settlement.shortfall > 0 ? 'text-red-700' : 'text-green-700'}`}>
             <span>الفارق / العجز:</span>
             <span className="font-mono">
               {settlement.shortfall > 0 
-                ? formatMoney(Math.abs(settlement.shortfall)) + " (عجز مطلوب سداده)"
+                ? formatMoney(Math.abs(settlement.shortfall)) + " (عجز مسجل كمصروف؛ ليس رصيدًا مفتوحًا)"
                 : settlement.shortfall === 0 
                   ? "تمت التسوية بالكامل" 
                   : formatMoney(Math.abs(settlement.shortfall)) + " (زيادة)"}

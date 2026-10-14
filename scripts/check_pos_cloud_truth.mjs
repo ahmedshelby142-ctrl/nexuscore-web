@@ -40,6 +40,7 @@ globalThis.localStorage = {
   removeItem: (k) => mem.delete(k),
 };
 globalThis.window ??= globalThis;
+globalThis.window.dispatchEvent ??= () => true;
 
 // ── a fake PostgREST that enforces the live `products` policies ─────────────
 globalThis.__db = { role: "POS_ECOMMERCE", requests: [], toasts: [], rows: new Map(), fail: new Set(), rpc: [] };
@@ -50,11 +51,12 @@ const STUBS = {
       "wholesale_price","minStockLevel","maxStockLevel","isActive","isBundle","bundleItems","deleted_at"];
     const RLS = { code: "42501", message: 'new row violates row-level security policy for table "products"' };
     function from(table) {
-      const q = { table, op: null, payload: null, id: null };
+      const q = { table, op: null, payload: null, id: null, ids: [] };
       const run = () => {
         const d = db();
         d.requests.push({ table, op: q.op, payload: q.payload, id: q.id });
         if (d.fail.has(table + ":" + q.op)) return { data: null, error: { message: "fetch failed" } };
+        if (q.op === "select") return { data: q.ids.map(id => d.rows.get(id)).filter(Boolean), error: null };
         const admin = d.role === "ADMIN" || d.role === "ACCOUNTANT";
         if (table === "products" && q.op === "upsert" && !admin) return { data: null, error: RLS };
         if (table === "products" && q.op === "update") {
@@ -71,8 +73,9 @@ const STUBS = {
       const chain = {
         upsert(p) { q.op = "upsert"; q.payload = p; return chain; },
         update(p) { q.op = "update"; q.payload = p; return chain; },
-        eq(_c, v) { q.id = v; return chain; },
-        select() { return chain; },
+        eq(c, v) { if(c === "id") q.id = v; return chain; },
+        in(_c, ids) { q.ids = ids; return chain; },
+        select() { if (!q.op) q.op = "select"; return chain; },
         single() { return Promise.resolve(run()); },
         then(ok, ko) { return Promise.resolve(run()).then(ok, ko); },
       };
@@ -123,35 +126,34 @@ const said = (text) => globalThis.__db.toasts.filter((t) => String(t.message).in
 
 // ── POS sale ────────────────────────────────────────────────────────────────
 
-test("POS SALE by a cashier: the stock mirror lands and no contradictory toast appears", async () => {
+test("POS SALE by a cashier: read committed server stock without another product write", async () => {
   reset("POS_ECOMMERCE");
+  globalThis.__db.rows.get("P1").quantity = 8;
   B().applyStockMoves([{ productId: "P1", delta: -2 }]); // exactly what CheckoutForm sends after the ledger
   await settle();
 
-  const writes = globalThis.__db.requests.filter((r) => r.table === "products");
-  assert.deepEqual(writes.map((w) => w.op), ["update"], "an UPDATE — never an INSERT the cashier's RLS refuses");
-  assert.equal(writes[0].id, "P1");
-  assert.equal(writes[0].payload.quantity, 8, "the shelf count, as an absolute value");
-  assert.deepEqual(Object.keys(writes[0].payload).sort(), ["quantity", "updated_at"], "cache columns only");
+  const reads = globalThis.__db.requests.filter((r) => r.table === "products");
+  assert.deepEqual(reads.map((r) => r.op), ["select"]);
   assert.deepEqual(globalThis.__db.toasts, [], "a committed sale shows no error at all");
   assert.equal(B().products.find((p) => p.id === "P1").totalQuantity, 8);
 });
 
-test("POS SALE of a variant: only quantity + metadata travel, and the guard trigger accepts it", async () => {
+test("POS SALE of a variant: persisted exact shade replaces stale local counts read-only", async () => {
   reset("POS_ECOMMERCE");
+  globalThis.__db.rows.set("P2", {...varied, quantity: 4, metadata: {variants: [{name: "M", stock: 2}, {name: "L", stock: 2}]}});
   B().applyStockMoves([{ productId: "P2", delta: -1, variantName: "M" }]);
   await settle();
-  const [w] = globalThis.__db.requests.filter((r) => r.table === "products");
-  assert.equal(w.op, "update");
-  assert.deepEqual(Object.keys(w.payload).sort(), ["metadata", "quantity", "updated_at"]);
-  assert.equal(w.payload.quantity, 4);
-  assert.equal(w.payload.metadata.variants.find((v) => v.name === "M").stock, 2);
+  const [r] = globalThis.__db.requests.filter((r) => r.table === "products");
+  assert.equal(r.op, "select");
+  assert.equal(B().products.find(p => p.id === "P2").totalQuantity, 4);
+  assert.equal(B().products.find(p => p.id === "P2").metadata.variants.find(v => v.name === "M").stock, 2);
   assert.deepEqual(globalThis.__db.toasts, []);
 });
 
 test("ADMIN and ACCOUNTANT keep working exactly as before", async () => {
   for (const role of ["ADMIN", "ACCOUNTANT"]) {
     reset(role);
+    globalThis.__db.rows.get("P1").quantity = 9;
     B().applyStockMoves([{ productId: "P1", delta: -1 }]);
     await settle();
     assert.deepEqual(globalThis.__db.toasts, [], role);
@@ -163,6 +165,7 @@ test("ADMIN and ACCOUNTANT keep working exactly as before", async () => {
 
 test("POS RETURN by a cashier: record saved, stock back, no contradictory toast", async () => {
   reset("POS_ECOMMERCE");
+  globalThis.__db.rows.get("P1").quantity = 11;
   // The order CheckoutForm uses after `ledger_append` answered 200.
   await B().addReturnRecord(
     { original_order_id: "pos_1", type: "return", customer_name: "عميل", customer_phone: "", governorate: "POS",
@@ -173,7 +176,7 @@ test("POS RETURN by a cashier: record saved, stock back, no contradictory toast"
   B().applyStockMoves([{ productId: "P1", delta: +1 }]);
   await settle();
 
-  assert.deepEqual(globalThis.__db.requests.map((r) => `${r.table}:${r.op}`), ["return_records:upsert", "products:update"]);
+  assert.deepEqual(globalThis.__db.requests.map((r) => `${r.table}:${r.op}`), ["return_records:upsert", "products:select"]);
   assert.equal(B().returnRecords.length, 1);
   assert.equal(globalThis.__db.rows.get("P1").quantity, 11);
   assert.deepEqual(globalThis.__db.toasts, []);
@@ -192,7 +195,7 @@ test("GENUINE failed write: «لم يتم حفظ أي شيء» and nothing commi
 
 test("SECONDARY failure (mirror) after a committed operation: truthful, non-financial, once", async () => {
   reset("POS_ECOMMERCE");
-  globalThis.__db.fail.add("products:update");
+  globalThis.__db.fail.add("products:select");
   B().applyStockMoves([{ productId: "P1", delta: -1 }, { productId: "P2", delta: -1, variantName: "L" }]);
   await settle();
 
@@ -230,19 +233,26 @@ test("standalone writes keep the «nothing saved» wording — it is true for th
 
 // ── no duplication ──────────────────────────────────────────────────────────
 
-test("RETRY cannot duplicate stock: the mirror is never retried and carries an absolute count", async () => {
+test("RETRY of the post-commit refresh cannot duplicate stock or resend financial commands", async () => {
   reset("POS_ECOMMERCE");
-  globalThis.__db.fail.add("products:update");
+  globalThis.__db.fail.add("products:select");
   B().applyStockMoves([{ productId: "P1", delta: -3 }]);
   await settle();
   assert.equal(globalThis.__db.requests.filter((r) => r.table === "products").length, 1, "no silent retry");
   assert.deepEqual(globalThis.__db.rpc, [], "the mirror never touches the ledger — money and stock movements are not re-sent");
 
-  // Replaying the same push twice leaves the same number, never a double move.
+  // The server already owns seven units; repeat calls read them, never
+  // recompute a decrement from stale local ten or send an absolute PATCH.
   globalThis.__db.fail.clear();
-  await cloud.updateMirror("products", "P1", { totalQuantity: 7 });
-  await cloud.updateMirror("products", "P1", { totalQuantity: 7 });
+  globalThis.__db.rows.get("P1").quantity = 7;
+  B().applyStockMoves([{productId: "P1", delta: -3}]);
+  await settle();
+  B().applyStockMoves([{productId: "P1", delta: -3}]);
+  await settle();
   assert.equal(globalThis.__db.rows.get("P1").quantity, 7);
+  assert.equal(B().products.find(p => p.id === "P1").totalQuantity, 7);
+  assert.ok(globalThis.__db.requests.filter(r => r.table === "products").every(r => r.op === "select"));
+  assert.deepEqual(globalThis.__db.rpc, []);
 });
 
 test("DOUBLE CLICK: the submit gate admits exactly one checkout", () => {

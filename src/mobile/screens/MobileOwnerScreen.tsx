@@ -234,7 +234,7 @@ export function MobileOwnerScreen() {
     setRefreshStamp((x) => x + 1);
     reloadSummary();
   };
-  const names = useSubjectNames(Boolean(data));
+  const names = useSubjectNames(Boolean(data), data);
   const offline = useIsOffline();
 
   const periodLabel = PERIODS.find((p) => p.id === preset)?.label ?? "";
@@ -369,9 +369,9 @@ export function MobileOwnerScreen() {
                   hint="قيمة المنتجات الموجودة بالتكلفة"
                 />
                 <AmountRow
-                  label="مستحقات عملاء الجملة"
+                  label="صافي أرصدة العملاء"
                   amount={data.receivableClient}
-                  hint="مبالغ لم تُحصّل بعد من عملاء الجملة"
+                  hint="الرصيد الموجب لنا؛ السالب رصيد مستحق للعملاء"
                   tone={data.receivableClient < 0 ? "negative" : undefined}
                 />
               </div>

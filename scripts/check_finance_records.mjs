@@ -236,7 +236,7 @@ test("CX.1 cancellation is ONE call: status, cause and event together", () => {
   assert.doesNotMatch(body, /await appendEvent\(/, "the event is not sent on its own");
   assert.doesNotMatch(body, /updateOrderStatus\(orderId, "cancelled"\)/, "the status is not sent on its own");
   assert.doesNotMatch(body, /updateOrder\(orderId, \{ return_cause/, "the cause is not sent on its own");
-  assert.match(read("src/store/useOrderStore.ts"), /sb\.rpc\("cancel_order"/);
+  assert.match(read("src/store/useOrderStore.ts"), /runFinancialCommand.*\("order_cancel"/);
 });
 
 test("CX.2 the RPC locks, refuses a repeat and a non-pending order, and never swallows a refusal", () => {

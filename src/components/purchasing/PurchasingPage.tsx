@@ -41,6 +41,8 @@ import { useSubmitGate } from "@/hooks/useSubmitGate";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useStock } from "@/lib/ledger/useStock";
 import { appendEvent, balancesByRef } from "@/lib/ledger";
+import { appendFinancialEvent } from "@/lib/financialCommand";
+import { refreshFeatureInvoices } from "@/services/featureStockMirror";
 import { buildPurchaseLines } from "@/lib/ledger/purchases";
 import { nextDocumentNumber } from "@/services/documentNumber";
 import { commitReceipt } from "@/lib/receiving";
@@ -390,7 +392,7 @@ export function PurchasingPage() {
       });
 
       const supplier = suppliers.find((sp) => sp.id === returnSupplierId);
-      await appendEvent({
+      await appendFinancialEvent({
         // Deliberately the EXISTING `purchase` kind, not a new one.
         //
         // Adding a kind means rebuilding `ledger_events` on every installed
@@ -421,6 +423,8 @@ export function PurchasingPage() {
           items: resolved.lines.map((l) => ({
             productId: l.productId,
             productName: l.productName,
+            variantName: l.variantName,
+            lineKey: l.lineKey,
             quantity: l.quantity,
             unitCost: l.unitCost,
           })),
@@ -448,7 +452,7 @@ export function PurchasingPage() {
       // here cannot let the same goods be returned twice. Best-effort for that
       // reason, with the operator told if it did not land.
       try {
-        await stampReturnOnInvoice(resolved);
+        await refreshFeatureInvoices(purchaseInvoices.filter(i => i.supplierId === returnSupplierId).map(i => i.id));
       } catch (e) {
         toast.error(
           `المرتجع اتسجل والحسابات اتظبطت، بس سجل الفاتورة مااتحدّثش. ${e instanceof Error ? e.message : String(e)}`,
@@ -467,52 +471,6 @@ export function PurchasingPage() {
       setReturning(false);
       returnGate.exit();
     }
-  }
-
-  /**
-   * Write what went back onto the purchase invoice itself.
-   *
-   * The return document the brief asks for (§10), built out of the receipt
-   * rather than a new table: `purchase_invoices` is already store-scoped,
-   * already synced, already writable by exactly the roles that do purchasing,
-   * and it is the one row that inherently names the supplier, the invoice, the
-   * product, the quantity and the original unit cost.
-   *
-   * `returnedQuantity` here is a RECORD, never the ceiling — the ledger is. A
-   * read-modify-write on jsonb is not atomic, so if this were load-bearing two
-   * concurrent returns could both read zero. Because it is not, the worst a
-   * lost update can do is make the screen understate what has gone back until
-   * the next read, while the ledger still refuses the over-return.
-   */
-  async function stampReturnOnInvoice(resolved: ResolvedSupplierReturn) {
-    const invoiceId = resolved.lines[0].invoiceId;
-    const invoice = purchaseInvoices.find((i: any) => i.id === invoiceId);
-    if (!invoice) return;
-
-    const byKey = new Map(resolved.lines.map((l) => [l.lineKey, l.quantity]));
-    await updatePurchaseInvoice(invoiceId, {
-      items: (invoice.items ?? []).map((line: any) => {
-        const back = byKey.get(purchaseLineKey(line)) ?? 0;
-        if (back <= 0) return line;
-        return {
-          ...line,
-          returnedQuantity: (Number(line.returnedQuantity) || 0) + back,
-          lastReturnedAt: new Date().toISOString(),
-        };
-      }),
-      // …and the open balance, which this write used to leave alone. Measured
-      // on QA-STORE: `payable_supplier` for محمود held 2,600 — a 3,000 فاتورة
-      // آجل less a 400 return — while FM-0003 still read «متبقي ٣٬٠٠٠». The
-      // ledger is the authority either way, but the invoice list was showing
-      // an amount that had already gone back.
-      //
-      // `resolved.returnValue` is the same rounded figure `buildSupplierReturnLines`
-      // credited to the ledger, so the two cannot differ by a piastre.
-      remainingAmount: Math.max(
-        0,
-        (Number(invoice.remainingAmount) || 0) - resolved.returnValue,
-      ),
-    });
   }
 
   async function receive() {

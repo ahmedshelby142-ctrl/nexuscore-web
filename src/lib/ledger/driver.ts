@@ -295,6 +295,12 @@ const supabaseDriver: LedgerDriver = {
   async events(query) {
     const sb = requireClient();
     const storeId = await requireStoreId();
+    if (query.receiptSearch !== undefined) {
+      const {data,error}=await sb.rpc("search_pos_receipts",{p_store:storeId,p_search:query.receiptSearch});
+      if (error) throw new Error(`[search_pos_receipts] ${error.message}`);
+      if (await requireStoreId() !== storeId) throw new Error("تغيّر المتجر؛ أعد البحث عن الفاتورة.");
+      return (data ?? []).map(rowToEvent);
+    }
 
     const { data, error } = await sb.rpc("ledger_events_page", {
       p_store: storeId,

@@ -136,10 +136,27 @@ test("the invoice reader is the canonical paged mobile reader", () => {
 // Tenant isolation
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("no mobile screen or reader carries a store_id", () => {
-  // Scope is `is_store_member(store_id)` inside Postgres. A client that names
-  // its own store is a client that can be asked to name a different one.
-  for (const [name, source] of Object.entries({ purchasing, preferences, readers })) {
+test("mobile purchasing never supplies a tenant; component reads may narrow RLS to the originating product store", () => {
+  // RLS remains the authorization boundary. The bundle resolver additionally
+  // narrows a referenced product read to the store on the RLS-returned box.
+  // It does not accept a tenant from a form or broaden database privileges.
+  const componentStart = readers.indexOf("export async function readMobileRawProduct(");
+  const componentEnd = readers.indexOf("export interface MobileOrderTimelineEvent", componentStart);
+  assert.ok(componentStart >= 0 && componentEnd > componentStart);
+  const componentReader = readers.slice(componentStart, componentEnd);
+  assert.match(componentReader, /if \(!storeId \|\| !id\) return null/);
+  assert.match(componentReader, /\.eq\("id", id\)/);
+  assert.match(componentReader, /\.eq\("store_id", storeId\)/);
+  assert.match(readers, /componentOf\(id, String\(product\.store_id \?\? ""\)\)/);
+  const timelineStart=readers.indexOf("export async function readMobileOrderTimeline(");
+  const timelineEnd=readers.indexOf("\nexport ",timelineStart+1);
+  assert.ok(timelineStart>=componentEnd&&timelineEnd>timelineStart);
+  const timelineReader=readers.slice(timelineStart,timelineEnd);
+  assert.match(timelineReader,/getActiveStoreId\(\)/);
+  assert.match(timelineReader,/\.eq\("store_id",storeId\)/);
+  assert.match(timelineReader,/readOrderActivity\(orderId,storeId\)/);
+  const otherReaders = readers.slice(0, componentStart) + readers.slice(componentEnd,timelineStart) + readers.slice(timelineEnd);
+  for (const [name, source] of Object.entries({ purchasing, preferences, readers: otherReaders })) {
     assert.ok(!/store_id\s*[:=]/.test(code(source)), `${name} must not set a store_id`);
     assert.ok(!/\.eq\("store_id"/.test(code(source)), `${name} must not filter by store_id`);
   }

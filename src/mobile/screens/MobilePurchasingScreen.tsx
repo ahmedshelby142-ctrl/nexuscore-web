@@ -238,7 +238,7 @@ function SuppliersTab() {
   const offline = useIsOffline();
   const [rows, setRows] = useState<Balance[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const names = useSubjectNames(true);
+  const names = useSubjectNames(true, rows);
   const storeName = useStoreName();
 
   const load = useCallback(async () => {

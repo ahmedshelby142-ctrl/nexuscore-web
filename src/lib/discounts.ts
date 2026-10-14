@@ -234,7 +234,7 @@ export function redemptionsFor(
   const fromPos: DiscountRedemption[] = posSales
     .filter((s) => (s?.payload as any)?.discountCodeId === codeId)
     .map((s) => ({
-      ref: String((s.payload as any)?.invoiceNumber ?? s.refId ?? s.id ?? ""),
+      ref: String((s.payload as any)?.documentNumber ?? (s.payload as any)?.invoiceNumber ?? s.refId ?? s.id ?? ""),
       at: s.occurredAt ?? s.createdAt,
       amount: round(num((s.payload as any)?.discountAmount)),
       channel: "pos" as const,

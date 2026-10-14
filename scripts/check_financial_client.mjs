@@ -217,7 +217,7 @@ test("ecommerce reload reuses the exact original order/event envelope before all
   assert.equal(JSON.stringify(calls[0].args), JSON.stringify(calls[2].args));
   assert.equal(await next.resolvePendingFinancialCommand("order_place"), null);
 });
-for (const [command,rpc] of [['bundle_edit','record_bundle_edit'],['exchange_place','record_exchange_place'],['exchange_return','record_exchange_return']]){
+for (const [command,rpc] of [['bundle_edit','record_bundle_edit'],['exchange_place','record_exchange_place'],['exchange_return','record_exchange_return'],['pos_exchange','record_pos_exchange'],['courier_batch','record_courier_batch'],['order_payment','record_order_payment']]){
  test(`${command}: lost replies recover the exact operation and command payload after reload`,async()=>{
   const saved=storage(),calls=[];const first=client(async(name,args)=>{calls.push({name,args});throw Error('lost response')},saved);
   await assert.rejects(first.runFinancialCommand(command,{originalOrderId:'original',selections:[{lineId:'line',quantity:1}]}));

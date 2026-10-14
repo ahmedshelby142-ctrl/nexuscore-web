@@ -1,3 +1,7 @@
+/** Forward model: demanded quantity is separate from actual reserved stock.
+ * Missing is authoritative and decreases only in the stock transaction.
+ * The historical floor/subtraction formula below applies ONLY to legacy rows.
+ */
 /**
  * النواقص — what has to be bought or manufactured, exactly.
  *
@@ -33,7 +37,7 @@
  * `shortages.selfcheck.ts` runs.
  */
 
-import { getActualStock } from "./product";
+import { getActualStock } from "./product.ts";
 
 /** Order states that still owe the customer goods. */
 const OPEN_STATUSES = new Set(["pending"]);
@@ -42,6 +46,8 @@ export interface ShortageRow {
   productId: string;
   productName: string;
   sku: string;
+  variantName?: string;
+  allocated?: number;
   /** On the shelf right now. */
   stock: number;
   /** Everything open orders have promised — context, not the deficit. */
@@ -55,7 +61,7 @@ export interface ShortageRow {
    * this توريد is for instead of just seeing that "4" of something is late.
    * Newest-known order last; the renderer decides how many to show.
    */
-  waitingOrders: { orderId: string; orderNumber: string; customerName: string }[];
+  waitingOrders: { orderId: string; orderNumber: string; customerName: string; customerPhone?: string; requested?: number; allocated?: number; missing?: number }[];
 }
 
 /**
@@ -73,7 +79,7 @@ function shortfallOf(line: any): number {
   return line?.backorder && Number.isFinite(quantity) ? Math.max(0, quantity) : 0;
 }
 
-export function computeShortages(orders: any[], products: any[]): ShortageRow[] {
+function computeLegacyShortages(orders: any[], products: any[]): ShortageRow[] {
   const owed = new Map<string, number>();
   const required = new Map<string, number>();
   // Keyed by order id so two lines of the same product on one order count the
@@ -130,4 +136,43 @@ export function computeShortages(orders: any[], products: any[]): ShortageRow[] 
 
   // Worst first — the owner acts top-down.
   return rows.sort((a, b) => b.deficit - a.deficit);
+}
+
+/** New forward rows carry CURRENT allocated/missing, not a historical floor.
+ * Keep legacy projections isolated; never subtract today's ATP from a saved
+ * authoritative missing quantity or interpret BLUE as supply for RED. */
+export function computeShortages(orders: any[], products: any[]): ShortageRow[] {
+  const live = orders.filter(o => !o.deleted_at);
+  const rows = computeLegacyShortages(live.filter(o => !o.fulfillment), products);
+  const grouped = new Map<string, ShortageRow>();
+  const catalog = new Map(products.map(p => [p.id, p]));
+  for (const order of live) {
+    if (order.status !== "pending" || order.fulfillment?.version !== 1) continue;
+    for (const d of order.fulfillment.demands ?? []) {
+      const key = JSON.stringify([d.productId, d.variantName || ""]);
+      const product = catalog.get(d.productId);
+      let row = grouped.get(key);
+      if (!row) {
+        const variantStock = product?.metadata?.variants?.find((v: any) => v.name === d.variantName)?.stock;
+        row = { productId: d.productId, productName: `${product?.name ?? d.productName ?? d.productId}${d.variantName ? ` — ${d.variantName}` : ""}`,
+          sku: product?.sku ?? "—", variantName: d.variantName,
+          stock: d.variantName ? Number(variantStock ?? 0) : getActualStock(product),
+          required: 0, allocated: 0, deficit: 0, orderCount: 0, waitingOrders: [] };
+        grouped.set(key, row);
+      }
+      row.required += Number(d.quantity);
+      row.allocated = (row.allocated ?? 0) + Number(d.allocated);
+      row.deficit += Number(d.missing);
+      const waiting = row.waitingOrders.find(w => w.orderId === order.id);
+      if (waiting) {
+        waiting.requested = (waiting.requested ?? 0) + Number(d.quantity);
+        waiting.allocated = (waiting.allocated ?? 0) + Number(d.allocated);
+        waiting.missing = (waiting.missing ?? 0) + Number(d.missing);
+      } else row.waitingOrders.push({ orderId: order.id, orderNumber: order.orderNumber ?? order.id,
+        customerName: order.customerName ?? "—", customerPhone: order.customerPhone,
+        requested: Number(d.quantity), allocated: Number(d.allocated), missing: Number(d.missing) });
+      row.orderCount = row.waitingOrders.length;
+    }
+  }
+  return [...rows, ...[...grouped.values()].filter(r => r.deficit > 0)].sort((a, b) => b.deficit - a.deficit);
 }

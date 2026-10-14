@@ -44,24 +44,6 @@ interface CustomerState {
   removeCustomer: (id: string) => Promise<void>;
   /** Tombstone, for a customer who DOES have history. */
   archiveCustomer: (id: string) => Promise<void>;
-  /**
-   * Record that this person sent an order back.
-   *
-   * Every future order of theirs is then quoted at double shipping. Called once
-   * per confirmed return, from the screens that confirm one.
-   */
-  recordReturn: (id: string) => Promise<void>;
-  /**
-   * ONE wasted trip has been paid for. Decrements the debt by exactly one.
-   *
-   * Called when an order that CHARGED the doubled fee is delivered. Three
-   * returns cost the shop three trips, so they take three doubled deliveries to
-   * settle — the customer pays back what was actually lost, one trip at a time,
-   * and returns to the normal rate the moment the last one is square.
-   *
-   * Not a reset: zeroing the count would recover one trip and forgive the rest.
-   */
-  settleWastedTrip: (id: string) => Promise<void>;
   /** Undo an archive. `null`, never `undefined`, so the field stays present. */
   restoreCustomer: (id: string) => Promise<void>;
   /**
@@ -103,31 +85,6 @@ export const useCustomerStore = create<CustomerState>()(
 
         const saved = await saveCustomer(set, draft);
         return saved.id;
-      },
-
-      recordReturn: async (id) => {
-        const current = get().customers.find((c) => c.id === id);
-        if (!current) return;
-        await saveCustomer(set, {
-          ...current,
-          returned_orders_count: (current.returned_orders_count ?? 0) + 1,
-          updated_at: Date.now(),
-        });
-      },
-
-      settleWastedTrip: async (id) => {
-        const current = get().customers.find((c) => c.id === id);
-        // Nothing owed, nothing to write — and no pointless `updated_at` bump
-        // that would beat a real edit from another device.
-        if (!current || (current.returned_orders_count ?? 0) <= 0) return;
-
-        await saveCustomer(set, {
-          ...current,
-          // `Math.max(0, …)` so a count corrupted below zero can never make the
-          // debt grow by settling it.
-          returned_orders_count: Math.max(0, (current.returned_orders_count ?? 0) - 1),
-          updated_at: Date.now(),
-        });
       },
 
       updateCustomer: async (id, updates) => {

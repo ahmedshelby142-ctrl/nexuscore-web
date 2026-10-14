@@ -1022,7 +1022,7 @@ test("an unknown kind never silently becomes an exchange", () => {
 
 // ── the cause belongs on the ORDER, not only on the return record ───────────
 
-test("the counter return stamps return_cause on the order", () => {
+test("the counter return carries cause into the atomic order/document command", () => {
   // Only the courier path used to do this, so a counter return for a
   // shop-caused reason left `orders.return_cause = 'unknown'` while its record
   // said `shop`. Two documents disagreeing about the same fact, and every
@@ -1032,9 +1032,13 @@ test("the counter return stamps return_cause on the order", () => {
   const counter = src.slice(src.indexOf("const handleReturn"));
   assert.match(
     counter,
-    /updateOrder\(\s*selectedOrder\.id,\s*\{\s*return_cause:\s*counterCause/,
-    "handleReturn must stamp the chosen cause onto the order",
+    /return_cause:\s*counterCause/,
+    "the immutable command must carry the selected cause",
   );
+  const sql = readFileSync(new URL("../supabase/migrations/20261012203014_catalog_return_compatibility.sql", import.meta.url), "utf8");
+  assert.match(sql, /UPDATE public\.orders SET return_cause=cause/);
+  assert.doesNotMatch(counter, /updateOrder\(\s*selectedOrder\.id/,
+    "cause must not be a separate post-financial PATCH; actual DB rollback/role tests cover this contract");
 });
 
 test("the counter return does NOT mark the whole order returned", () => {

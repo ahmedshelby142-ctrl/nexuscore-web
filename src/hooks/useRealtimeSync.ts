@@ -68,7 +68,10 @@ const TABLE_HANDLERS: Record<string, {
     getAll: () => useOrderStore.getState().orders,
     merge: (incoming: any) => {
       const existing = useOrderStore.getState().orders.find((o: any) => o.id === incoming.id);
-      if (existing && existing.updatedAt && incoming.updatedAt && new Date(existing.updatedAt).getTime() >= new Date(incoming.updatedAt).getTime()) {
+      const currentClock = Number(existing?.updated_at ?? 0), incomingClock = Number(incoming.updated_at ?? 0);
+      if (existing && (currentClock && incomingClock
+        ? currentClock >= incomingClock
+        : existing.updatedAt && incoming.updatedAt && new Date(existing.updatedAt).getTime() >= new Date(incoming.updatedAt).getTime())) {
         return;
       }
       useOrderStore.setState((state) => {
@@ -379,7 +382,11 @@ function handleChange(table: string, payload: RealtimePostgresChangesPayload<any
     return;
   }
 
-  if (isOwnEcho(payload)) return;
+  // Server receipts/settlements retain the row creator's device_id. That is
+  // not proof an UPDATE was performed by this tab. Merge these authoritative
+  // rows through the existing LWW handler even when their creator is local.
+  if (isOwnEcho(payload) && !(payload.eventType === 'UPDATE' &&
+      (table === 'products' || table === 'purchase_invoices' || table === 'orders'))) return;
 
   const incoming = (payload as any).new ?? (payload as any).old;
   const eventType = payload.eventType;

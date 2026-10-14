@@ -110,6 +110,37 @@ export interface BatchSummary {
   orderCount: number;
 }
 
+type SettlementOrder = Pick<EcommerceOrder, "expectedCod"> &
+  Partial<Pick<EcommerceOrder, "courierFee" | "shippingFee" | "exchangeDetails">> & {
+    courierObligation?: { codPiastres: number; feePiastres: number };
+  };
+
+/** The exchange return is a separate ledger leg, already booked against this courier. */
+export function courierSettlementAmounts(order: SettlementOrder): { cod: number; fee: number } {
+  if (order.courierObligation) return {
+    cod: order.courierObligation.codPiastres / 100,
+    fee: order.courierObligation.feePiastres / 100,
+  };
+  let cod = Math.round((order.expectedCod || 0) * 100);
+  // Match the established delivery ledger builder: a legacy/default zero
+  // courierFee falls back to the saved shipping fee, never today's rate.
+  let fee = Math.round((Number(order.courierFee) > 0 ? order.courierFee! : order.shippingFee ?? 0) * 100);
+  const exchange = order.exchangeDetails;
+  if (exchange?.cause === "courier")
+    cod += Math.max(0, fee - Math.round((order.shippingFee ?? 0) * 100));
+  if (exchange?.status === "confirmed") {
+    if (exchange.credit?.version === 1) {
+      // expectedCod already excludes allocated merchandise credit. Only the
+      // actual excess courier refund is additional to that customer balance.
+      if (exchange.credit.excessDisposition === "courier") cod -= exchange.credit.excessPiastres;
+    } else if (exchange.refundVia === "courier") cod -= exchange.refundPiastres;
+    const extraFee = Math.round((exchange.returnFee ?? 0) * 100);
+    fee += extraFee;
+    if (exchange.cause !== "shop") cod += extraFee;
+  }
+  return { cod: cod / 100, fee: fee / 100 };
+}
+
 /**
  * The numbers the screen must show BEFORE anything is written.
  *
@@ -121,23 +152,24 @@ export interface BatchSummary {
  * - shortfall: expectedNet - netReceived (highlighted in red if > 0).
  */
 export function batchSummary(
-  ticked: (Pick<EcommerceOrder, "expectedCod"> & { courierFee?: number; shippingFee?: number })[],
+  ticked: SettlementOrder[],
   netReceived: number,
 ): BatchSummary {
-  const codTotal = ticked.reduce((sum, order) => sum + (order.expectedCod || 0), 0);
-  const expectedFees = ticked.reduce(
-    (sum, order) => sum + (order.courierFee ?? order.shippingFee ?? 0),
-    0,
-  );
-  const expectedNet = codTotal - expectedFees;
-  const shortfall = expectedNet - netReceived;
+  const amounts = ticked.map(courierSettlementAmounts);
+  const codPiastres = amounts.reduce((sum, order) => sum + Math.round(order.cod * 100), 0);
+  const feePiastres = amounts.reduce((sum, order) => sum + Math.round(order.fee * 100), 0);
+  const receivedPiastres = Math.round(netReceived * 100);
+  const codTotal = codPiastres / 100;
+  const expectedFees = feePiastres / 100;
+  const expectedNet = (codPiastres - feePiastres) / 100;
+  const shortfall = (codPiastres - feePiastres - receivedPiastres) / 100;
   return {
     codTotal,
     expectedFees,
     expectedNet,
     netReceived,
     shortfall,
-    difference: codTotal - netReceived,
+    difference: (codPiastres - receivedPiastres) / 100,
     orderCount: ticked.length,
   };
 }

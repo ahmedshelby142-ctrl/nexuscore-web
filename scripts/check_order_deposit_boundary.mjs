@@ -152,7 +152,7 @@ const STUBS = {
   "@/services/api/storeContext": stub(`export const getSyncIdentity = async () => ({ storeId: "S1", deviceId: "D1" }); export const getActiveStoreId = async () => "S1";`),
   "@/lib/ledger": stub(`export const prepareEvent = async (e) => ({ id: "EV", store_id: "S1", kind: e.kind, ref_type: e.refType, ref_id: e.refId, lines: e.lines });`),
   "@/services/cloudData": stub(`export const writeThrough = async (t, r) => r;`),
-  "@/services/documentNumber": stub(`export const nextDocumentNumber = async () => "ECO-9999";`),
+  "@/services/documentNumber": stub(`export const nextDocumentNumber = async () => "ECO-9999"; export const nextOrderDocumentNumber = async () => "BS-O001";`),
   "./useBusinessStore": stub(`export const useBusinessStore = { getState: () => ({ products: [] }) };`),
   "./useCustomerStore": stub(`export const useCustomerStore = { getState: () => ({ upsertCustomerFromOrder: async () => "C1" }) };`),
   "./useCourierStore": stub(`export const useCourierStore = { getState: () => ({}) };`),

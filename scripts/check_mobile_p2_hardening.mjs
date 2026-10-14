@@ -219,10 +219,9 @@ test("P2-6 · the home screen is no longer named a placeholder", () => {
   assert.ok(!existsSync(new URL("../src/mobile/screens/MobileHomePlaceholder.tsx", import.meta.url)));
   let hits = [];
   try {
-    // `:!` excludes this file and the changelog: both NAME the old component
-    // in order to explain the rename, which is not a stale reference to it.
-    hits = execFileSync("git", ["grep", "-nl", "MobileHomePlaceholder", "--", ".",
-      ":!scripts/check_mobile_p2_hardening.mjs", ":!docs/NEXUSCORE_CHANGELOG.md"], { encoding: "utf8" })
+    // Runtime source owns imports/routes. Historical generated source maps
+    // and audit documents may retain the old name without importing it.
+    hits = execFileSync("git", ["grep", "-nl", "MobileHomePlaceholder", "--", "src/"], { encoding: "utf8" })
       .split("\n").filter(Boolean);
   } catch (e) {
     if (e.status !== 1) throw e;

@@ -1,4 +1,6 @@
+import { exchangeCreditDraft } from "@/lib/exchangeCredit";
 import {refreshFeatureStock} from "@/services/featureStockMirror";
+import { exchangeShippingFrom } from "@/lib/exchangeShipping";
 import { exchangeUnits, exchangeRefund } from "@/lib/partialExchange";
 import { stockIsAuthoritative } from "@/lib/ledger/stockSnapshot";
 import { useRunOnce } from "@/hooks/useSubmitGate";
@@ -63,7 +65,7 @@ import { productPrice, activeProducts, getVariantStock } from "@/lib/product";
 import { formatMoney, formatQty, discountAmountFor } from "@/lib/math";
 import { applyDiscountCode } from "@/lib/discounts";
 import { claimDiscountUse, releaseDiscountUse, refreshDiscountRow } from "@/services/discountUsage";
-import { nextDocumentNumber } from "@/services/documentNumber";
+import { nextOrderDocumentNumber } from "@/services/documentNumber";
 import { statusOf } from "@/lib/figure";
 import { useDraftState, clearDrafts } from "@/hooks/useDraftState";
 import type { EcommerceOrderItem, WalletType } from "@/types";
@@ -258,6 +260,7 @@ function EcommerceOrdersInner() {
   );
 
   useEffect(() => {
+    if (isExchange) return; // Exchange identity/address belongs to its source order.
     const digits = customer_phone.replace(/\D/g, "");
     if (digits.length === 11 && !customerId) {
       const match = resolveByPhone(customers, customer_phone);
@@ -273,9 +276,18 @@ function EcommerceOrdersInner() {
         if (parsed.det) setDetailedAddress(parsed.det);
       }
     }
-  }, [customer_phone, customers, customerId, setCustomerId, setCustomerName, setCustomerPhone, setDetailedAddress, setGovernorate, setCity]);
+  }, [isExchange, customer_phone, customers, customerId, setCustomerId, setCustomerName, setCustomerPhone, setDetailedAddress, setGovernorate, setCity]);
 
   const returnRecords = useBusinessStore((s) => s.returnRecords);
+  const prefillExchangeShipping = useCallback((origin: Parameters<typeof exchangeShippingFrom>[0]) => {
+    const shipping = exchangeShippingFrom(origin);
+    setCustomerId(shipping.customerId);
+    setCustomerName(shipping.customerName);
+    setCustomerPhone(shipping.customerPhone);
+    setGovernorate(shipping.governorate);
+    setCity(shipping.city);
+    setDetailedAddress(shipping.detailedAddress);
+  }, [setCustomerId, setCustomerName, setCustomerPhone, setGovernorate, setCity, setDetailedAddress]);
 
   /**
    * Arrived from an order's own استبدال button, which carries the order it is
@@ -308,16 +320,12 @@ function EcommerceOrdersInner() {
     }
     setIsExchange(true);
     setOriginalOrderId(origin.id);
-    setCustomerId(origin.customerId || "");
-    setCustomerName(origin.customerName || "");
-    setCustomerPhone(origin.customerPhone || "");
-    if (origin.governorate) setGovernorate(origin.governorate);
-    if (origin.city) setCity(origin.city);
+    prefillExchangeShipping(origin);
     setReturningLines([]);
     setExchangeCause("unknown");
     setSearchParams({}, { replace: true });
   }, [exchangeOf, allOrders, setSearchParams, setIsExchange, setOriginalOrderId,
-      setCustomerId, setCustomerName, setCustomerPhone, setGovernorate, setCity,
+      prefillExchangeShipping,
       setReturningLines, setExchangeCause]);
 
   const deliveredOrdersForCustomer = useMemo(() => {
@@ -444,13 +452,13 @@ function EcommerceOrdersInner() {
   );
 
   const depositVal = useMemo(() => {
-    if (paymentMethod === "full_prepaid") return total_price + shipping_fee + wastedTripCompensation;
+    if (paymentMethod === "full_prepaid") return Math.max(0, total_price + shipping_fee + wastedTripCompensation - (isExchange ? returningValue : 0));
     return parseFloat(deposit_amount) || 0;
-  }, [paymentMethod, deposit_amount, total_price, shipping_fee, wastedTripCompensation]);
+  }, [paymentMethod, deposit_amount, total_price, shipping_fee, wastedTripCompensation, returningValue, isExchange]);
 
   const remaining_balance = useMemo(
-    () => total_price + shipping_fee + wastedTripCompensation - depositVal,
-    [total_price, shipping_fee, wastedTripCompensation, depositVal],
+    () => exchangeCreditDraft(total_price, shipping_fee, wastedTripCompensation, depositVal, isExchange ? returningValue : 0).cod,
+    [total_price, shipping_fee, wastedTripCompensation, depositVal, returningValue, isExchange],
   );
 
   const addProductRow = useCallback(
@@ -747,38 +755,29 @@ function EcommerceOrdersInner() {
       unitCost: costOf(line.productId),
     }));
 
-    // Products the user accepted as نواقص are exempt — that confirmation IS
-    // the decision to sell short. Everything else still has to be on the shelf.
-    const backordered = new Set(
-      rows.filter((r) => r.backorder && r.product_id).map((r) => r.product_id as string),
-    );
-    // Against the LEDGER only. `getVariantStock` falls back to this device's
-    // `products.quantity` mirror until an aggregation lands, and an order
-    // accepted against that mirror is an order accepted against what this
-    // browser last happened to see — not against what is on the shelf.
     if (!stockIsAuthoritative()) {
-      setResult({
-        success: false,
-        message: "المخزون لسه بيتحمّل من السحابة. جرّب تاني بعد لحظة.",
-      });
+      setResult({ success: false, message: "المخزون لسه بيتحمّل من السحابة. جرّب تاني بعد لحظة." });
       return;
     }
-
-    const needed = new Map<string, number>();
+    const needed = new Map<string, {productId:string;variantName?:string;quantity:number;name:string}>();
     for (const line of stockItems) {
-      needed.set(line.productId, (needed.get(line.productId) ?? 0) + line.quantity);
+      const key = JSON.stringify([line.productId, line.variantName || ""]);
+      const existing = needed.get(key);
+      needed.set(key, { productId: line.productId, variantName: line.variantName,
+        quantity: (existing?.quantity ?? 0) + line.quantity, name: line.productName });
     }
-    for (const [productId, quantity] of needed) {
-      if (backordered.has(productId)) continue;
-      const onHand = getVariantStock(products.find((p) => p.id === productId));
-      if (quantity > onHand) {
-        const name = stockItems.find((l) => l.productId === productId)?.productName ?? productId;
-        setResult({
-          success: false,
-          message: `الكمية المطلوبة من "${name}" أكبر من المخزون (${onHand})`,
-        });
+    const shortages = [...needed.values()].map(line => ({...line,
+      available: getVariantStock(products.find(p => p.id === line.productId), line.variantName),
+    })).filter(line => line.quantity > line.available);
+    let allowBackorder = false;
+    if (shortages.length) {
+      if (isExchange) {
+        setResult({success:false,message:"استكمل مخزون بديل الاستبدال أولًا؛ حجز نواقص الاستبدال يحتاج مراجعة مستقلة."});
         return;
       }
+      const message = shortages.map(line => `${line.name}${line.variantName ? ` — ${line.variantName}` : ""}: مطلوب ${line.quantity}، المتاح ${line.available}، الناقص ${line.quantity-line.available}`).join("\n");
+      if (!window.confirm(`${message}\nهل تريد تسجيل الطلب ومتابعة النواقص؟ سيتم حجز المتاح فقط ولن يمكن شحن الطلب قبل استكماله.`)) return;
+      allowBackorder = true;
     }
 
     const cogsAmount = stockItems.reduce(
@@ -821,7 +820,7 @@ function EcommerceOrdersInner() {
       orderNumber = pendingPlacement.current.orderNumber;
     } else {
       try {
-        orderNumber = await nextDocumentNumber("ecommerce_order", "ECO-");
+        orderNumber = await nextOrderDocumentNumber();
       } catch (e) {
         // Nothing has moved yet except the discount claim, which goes back.
         if (claimedDiscount) {
@@ -872,6 +871,7 @@ function EcommerceOrdersInner() {
         shippingPenaltyApplied: shippingPenaltyApplied || undefined,
         items,
         stockItems,
+        ...(allowBackorder ? {fulfillment:{version:1 as const,allowBackorder:true as const}} : {}),
         cogsAmount,
         totalAmount: total_price,
         discountCodeId: appliedDiscount?.id,
@@ -1216,7 +1216,13 @@ function EcommerceOrdersInner() {
             <label className="text-sm font-medium">اختر الطلب المراد استبداله</label>
             <select
               value={originalOrderId}
-              onChange={(e) => setOriginalOrderId(e.target.value)}
+              onChange={(e) => {
+                setOriginalOrderId(e.target.value);
+                setReturningLines([]);
+                setExchangeCause("unknown");
+                const origin = allOrders.find((order) => order.id === e.target.value);
+                if (origin) prefillExchangeShipping(origin);
+              }}
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <option value="">-- اختر الطلب --</option>

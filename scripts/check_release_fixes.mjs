@@ -100,15 +100,13 @@ test("A.4 courier- or shop-caused returns, and exchanges, create no debt", () =>
 });
 
 test("A.5 the counters: +1 per trip, −1 per settled delivery, never below 0, consumed once", () => {
-  assert.match(
-    customerStore,
-    /returned_orders_count: \(current\.returned_orders_count \?\? 0\) \+ 1/,
-  );
-  assert.match(customerStore, /Math\.max\(0, \(current\.returned_orders_count \?\? 0\) - 1\)/);
+  const atomic = readFileSync(new URL("../supabase/migrations/20261013015521_customer_trip_atomic_recovery.sql", import.meta.url), "utf8");
+  assert.match(atomic, /count_after:=c.returned_orders_count\+CASE p_action WHEN 'earn' THEN 1 ELSE -1 END/);
+  assert.doesNotMatch(customerStore, /recordReturn:|settleWastedTrip:/);
   // Delivery consumes the debt only on the order that charged it, and clears
   // the flag so a replay cannot consume it twice.
-  assert.match(ordersPage, /clearsShippingDebt\(order\)/);
-  assert.match(ordersPage, /shippingPenaltyApplied: false/);
+  assert.match(ordersPage, /await commitOrderDelivery\(/);
+  assert.match(atomic, /"shippingPenaltyApplied"=false/);
   // Migration 050 counts the trip with exactly the same rule.
   assert.match(migration, /p_cause = 'customer' AND p_movement = 'return'/);
   assert.match(migration, /returned_orders_count = COALESCE\(returned_orders_count, 0\) \+ 1/);

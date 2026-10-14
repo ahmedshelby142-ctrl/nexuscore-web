@@ -18,18 +18,19 @@ import {
 } from "lucide-react";
 import { useCourierStore } from "@/store/useCourierStore";
 import { useOrderStore } from "@/store/useOrderStore";
+import { useAuthStore } from "@/store/useAuthStore";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { useCourierFees } from "@/services/useCourierFees";
-import { appendEvent, events } from "@/lib/ledger";
-import { buildCourierBatchSettlementLines } from "@/lib/ledger/orders";
+import { events } from "@/lib/ledger";
+import { commitCourierBatch, resolvePendingCourierBatch, readCourierObligations, type CourierObligation } from "@/lib/courierSettlement";
 import {
   listClaims,
-  advanceClaim,
   CLAIM_STATUS_LABELS,
   type CourierClaim,
 } from "@/services/courierClaims";
 import {
   batchSummary,
+  courierSettlementAmounts,
   courierIdOf,
   isLegacyCourier,
   LEGACY_COURIER_LABEL,
@@ -42,6 +43,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { CourierSettlementReport } from "./CourierSettlementReport";
+import { CourierClaimRecoveryPanel } from "./CourierClaimRecoveryPanel";
 import {
   Dialog,
   DialogContent,
@@ -81,6 +83,7 @@ interface SettlementRow {
   expectedNet: number;
   shortfall: number;
   orderNumbers: string[];
+  orderAmounts?: { orderNumber: string; expectedCod: number; fee: number }[];
   at: Date;
 }
 
@@ -98,14 +101,19 @@ function readSettlement(event: LedgerEvent): SettlementRow {
     expectedNet: num("expectedNet"),
     shortfall: num("shortfall"),
     orderNumbers: Array.isArray(payload.orderNumbers) ? payload.orderNumbers.map(String) : [],
+    orderAmounts: Array.isArray(payload.orders) ? payload.orders.map((row: any) => ({
+      orderNumber: String(row.orderNumber), expectedCod: Number(row.codPiastres) / 100,
+      fee: Number(row.feePiastres) / 100,
+    })) : undefined,
     at: new Date(event.occurredAt),
   };
 }
 
 export function CourierLedgerPage() {
+  const userRole = useAuthStore(state => state.userRole);
+  const canCloseClaims = userRole === "ADMIN" || userRole === "ACCOUNTANT";
   const accounts = useCourierStore((s) => s.accounts);
   const orders = useOrderStore((s) => s.orders);
-  const updateOrder = useOrderStore((s) => s.updateOrder);
 
   // Both sides of every courier, derived. `receivable_courier` is the COD they
   // are carrying for us; `payable_courier` is the fees we owe them. Neither is
@@ -136,6 +144,23 @@ export function CourierLedgerPage() {
   const [history, setHistory] = useState<SettlementRow[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyTick, setHistoryTick] = useState(0);
+  const [obligations, setObligations] = useState<CourierObligation[]>([]);
+  const [obligationError, setObligationError] = useState<string | null>(null);
+  const [obligationsReady, setObligationsReady] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setObligationsReady(false);
+    void readCourierObligations().then(rows => {
+      if (!cancelled) { setObligations(rows); setObligationError(null); setObligationsReady(true); }
+    }).catch(error => {
+      if (!cancelled) { setObligationError(error instanceof Error ? error.message : String(error)); setObligationsReady(false); }
+    });
+    return () => { cancelled = true; };
+  }, [orders, historyTick]);
+  const settlementOrders = useMemo(() => obligations.flatMap(obligation => {
+    const order = orders.find(row => row.id === obligation.orderId);
+    return order ? [{ ...order, courierObligation: obligation }] : [];
+  }), [orders, obligations]);
 
   const [printSettlement, setPrintSettlement] = useState<SettlementRow | null>(null);
 
@@ -239,12 +264,12 @@ export function CourierLedgerPage() {
 
   const openByCourier = useMemo(() => {
     const map = new Map<string, number>();
-    for (const order of unsettledDeliveries(orders)) {
+    for (const order of settlementOrders) {
       const id = courierIdOf(order);
       map.set(id, (map.get(id) ?? 0) + 1);
     }
     return map;
-  }, [orders]);
+  }, [settlementOrders]);
 
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -260,9 +285,11 @@ export function CourierLedgerPage() {
   const [claimNote, setClaimNote] = useState<string | null>(null);
   const [ticked, setTicked] = useState<Record<string, boolean>>({});
   const [received, setReceived] = useState("");
+  const [partial, setPartial] = useState<Record<string, { cod: string; fee: string }>>({});
   const [wallet, setWallet] = useState<WalletType>("inStoreSafe");
   const [isWorking, setIsWorking] = useState(false);
   const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchNotice, setBatchNotice] = useState<string | null>(null);
   /**
    * Claimed synchronously, before the first `await` — the guard §3.8 needed for
    * exactly the same reason. `isWorking` is React state, and a second click can
@@ -272,19 +299,24 @@ export function CourierLedgerPage() {
   const writing = useRef(false);
 
   const openOrders = useMemo(
-    () => (batchCourier ? unsettledDeliveries(orders, batchCourier.id) : []),
-    [orders, batchCourier],
+    () => (batchCourier ? settlementOrders.filter(order => order.courierId === batchCourier.id) : []),
+    [settlementOrders, batchCourier],
   );
   const tickedOrders = useMemo(
     () => openOrders.filter((order) => ticked[order.id]),
     [openOrders, ticked],
   );
-  const summary = batchSummary(tickedOrders, parseFloat(received) || 0);
+  const allocatedOrders = tickedOrders.map(order => ({ ...order, courierObligation: {
+    codPiastres: partial[order.id] ? Math.round(Number(partial[order.id].cod) * 100) : order.courierObligation.codPiastres,
+    feePiastres: partial[order.id] ? Math.round(Number(partial[order.id].fee) * 100) : order.courierObligation.feePiastres,
+  } }));
+  const summary = batchSummary(allocatedOrders, parseFloat(received) || 0);
 
   const openBatch = (courier: { id: string; name: string }) => {
     setBatchCourier(courier);
     setTicked({});
     setReceived("");
+    setPartial({});
     setBatchError(null);
   };
 
@@ -311,97 +343,59 @@ export function CourierLedgerPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [batchCourier]);
+  }, [batchCourier, historyTick]);
 
   const confirmBatch = async () => runOnce(async () => {
     if (!batchCourier || writing.current) return;
-    // Re-read from the store: this dialog can sit open while an order is
-    // settled elsewhere, and a stale list would clear a receivable twice.
-    const live = unsettledDeliveries(useOrderStore.getState().orders, batchCourier.id).filter(
-      (order) => ticked[order.id],
-    );
-    if (live.length === 0) {
-      setBatchError("علّم الطلبات اللي فلوسها وصلت في التحويلة دي.");
-      return;
-    }
-    const net = parseFloat(received);
-    if (!Number.isFinite(net) || net < 0) {
-      setBatchError("اكتب المبلغ اللي وصل فعلاً بالجنيه.");
-      return;
-    }
-
     writing.current = true;
     setIsWorking(true);
     setBatchError(null);
-    const settlementId = crypto.randomUUID();
     try {
-      // ONE event for the whole transfer, never one per order: the courier made
-      // one payment, and the books should show one payment.
-      const settlementEventId = await appendEvent({
-        kind: "courier_settlement",
-        actor: "حسابات الشحن",
-        refType: "courier_batch",
-        refId: settlementId,
-        payload: {
-          courierId: batchCourier.id,
-          courierName: batchCourier.name,
-          orderCount: live.length,
-          orderNumbers: live.map((order) => order.orderNumber),
-          codTotal: live.reduce((sum, order) => sum + order.expectedCod, 0),
-          expectedFees: summary.expectedFees,
-          expectedNet: summary.expectedNet,
-          netReceived: net,
-          shortfall: summary.shortfall,
-          wallet,
-        },
-        lines: buildCourierBatchSettlementLines({
-          courierId: batchCourier.id,
-          wallet,
-          orders: live.map((order) => ({
-            orderId: order.id,
-            cod: order.expectedCod,
-            fee: order.courierFee ?? order.shippingFee ?? 0,
-          })),
-          netReceived: net,
-          expectedFees: summary.expectedFees,
-        }),
-      });
+      // Resolve a lost response BEFORE consulting a possibly refreshed list
+      // that already excludes this batch's committed orders.
+      let result = await resolvePendingCourierBatch();
+      if (!result) {
+        if (!obligationsReady || obligationError) throw new Error("انتظر قراءة المستحقات الفعلية أو أعد تحديثها.");
+        const live = openOrders
+          .filter(order => ticked[order.id]);
+        const net = parseFloat(received);
+        if (!live.length) throw new Error("علّم الطلبات اللي فلوسها وصلت في التحويلة دي.");
+        if (!Number.isFinite(net)) throw new Error("اكتب المبلغ الفعلي بالجنيه؛ السالب يعني دفعًا للمندوب.");
+        if (live.some(order => order.courierObligation.reviewReason)) throw new Error("بعض الطلبات تحتاج رد رصيد للعميل أو مراجعة مصدر التسوية؛ راجع تفاصيلها قبل التسوية.");
+        const selected = allocatedOrders.filter(order => live.some(row => row.id === order.id));
+        const completelyCovered = selected.every(order => {
+          const baseline = live.find(row => row.id === order.id)!.courierObligation;
+          return order.courierObligation.codPiastres === baseline.codPiastres && order.courierObligation.feePiastres === baseline.feePiastres;
+        });
+        const expectedNet = selected.reduce((sum, order) => sum + order.courierObligation.codPiastres - order.courierObligation.feePiastres, 0);
+        const claimIds = canCloseClaims && completelyCovered && Math.round(net * 100) === expectedNet
+          ? claims.filter(claim => claimTicked[claim.id] && selected.some(order => order.id === claim.order_id && (order.courierObligation.codPiastres > 0 || Boolean(claim.source_event_id)))).map(claim => claim.id).sort()
+          : [];
+        result = await commitCourierBatch({ courierId: batchCourier.id, courierName: batchCourier.name,
+          orderIds: live.map(order => order.id).sort(), wallet, netReceived: net,
+          claimIds,
+          allocations: live.map(order => {
+            const selected = allocatedOrders.find(row => row.id === order.id)!.courierObligation;
+            return { orderId: order.id, codPiastres: selected.codPiastres, feePiastres: selected.feePiastres,
+              expectedCodPiastres: order.courierObligation.codPiastres, expectedFeePiastres: order.courierObligation.feePiastres };
+          }),
+        });
+      }
+      // Claims from a newly edited dialog must not attach to a recovered
+      // prior batch which may have named another courier/selection.
+      const recovered = result.replayed;
+      const partiallyCovered = !!result.closedOrderIds && result.closedOrderIds.length < result.orderIds.length;
+      setBatchNotice((partiallyCovered ? "تسوية جزئية؛ المستحقات المتبقية تظل مفتوحة. " : "") + (result.netPiastres === 0 && result.shortfallPiastres === 0
+        ? "تمت تسوية المستحقات والخصومات بنجاح — صافي التحويل 0 ج.م، دون حركة خزنة."
+        : result.netPiastres < 0 ? `تم تسجيل دفع ${formatMoney(-result.netPiastres / 100)} للمندوب.`
+        : result.closedOrderIds?.length === 0 ? "تم تسجيل التسوية الجزئية؛ بقيت المستحقات غير المغطاة مفتوحة."
+        : "تم تسجيل التسوية وإغلاق الطلبات المغطاة بنجاح."));
 
-      // The documents follow the ledger. Only the orders in THIS batch are
-      // stamped — everything left unticked stays open for the next transfer.
-      for (const order of live) {
-        // `codSettledAt` is the column that keeps an order out of the next
-        // batch. The link to THIS settlement is not stored on the order: the
-        // settlement's own ledger event lists its `orderNumbers`, and a reprint
-        // reads it from there (below).
-        await updateOrder(order.id, { codSettledAt: new Date() });
-      }
-
-      // ── the claims close against THIS transfer ──────────────────────────
-      //
-      // After the event, deliberately. The settlement is the financial fact;
-      // a claim is a note about it. If this half fails the money has still
-      // moved correctly and the claim stays `approved` — recoverable on the
-      // next transfer. The reverse order would mark a claim settled against
-      // an event that might never be written.
-      //
-      // The status is never set from a dropdown: it is a consequence of the
-      // transfer, and migration 040 refuses any event that did not move this
-      // courier's receivable.
-      const toSettle = claims.filter((c) => claimTicked[c.id]);
-      const failed: string[] = [];
-      for (const claim of toSettle) {
-        try {
-          await advanceClaim({ claimId: claim.id, to: "settled", settlementEventId });
-        } catch (e) {
-          failed.push(e instanceof Error ? e.message : String(e));
-        }
-      }
-      if (failed.length > 0) {
-        setClaimNote(
-          `التحويلة اتسجلت والفلوس اتحركت، لكن ${failed.length} مطالبة مقفلتش: ${failed[0]}`,
-        );
-      }
+      // The server closes only source-covered claims in the same transaction.
+      // Replay returns the original claim IDs; no edited dialog can attach a
+      // note to an unrelated recovered transfer or repeat a financial effect.
+      if (!recovered && claims.some(claim => claimTicked[claim.id] && !result.closedClaimIds?.includes(claim.id)))
+        setClaimNote("المطالبات غير المغطاة ما زالت معتمدة؛ لم تُغلق تلقائيًا مع تسوية جزئية أو عجز أو طلب آخر.");
 
       owedToUs.refresh();
       owedToThem.refresh();
@@ -413,7 +407,7 @@ export function CourierLedgerPage() {
       setBatchCourier(null);
     } catch (e) {
       setBatchError(
-        `التسوية متسجلتش ومفيش رصيد اتغيّر. ${e instanceof Error ? e.message : String(e)}`,
+        `تعذّر تأكيد التسوية. أعد المحاولة للتحقق من نفس العملية قبل تسجيل تسوية جديدة. ${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       writing.current = false;
@@ -458,6 +452,8 @@ export function CourierLedgerPage() {
 
   return (
     <div className="space-y-6">
+      {batchNotice && <p role="status" className="rounded-xl border p-3 text-sm">{batchNotice}</p>}
+      {obligationError && <p role="alert" className="rounded-xl border p-3 text-sm">{obligationError} <Button variant="outline" onClick={() => setHistoryTick(t => t + 1)}>إعادة القراءة</Button></p>}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-3xl font-display font-bold">حسابات شركات الشحن</h1>
@@ -503,18 +499,18 @@ export function CourierLedgerPage() {
           </div>
           <p className="text-2xl font-bold mt-3 text-amber-600">{moneyFigure(owedToThem.total, owedToThem)}</p>
           <p className="text-xs text-muted-foreground mt-2">
-            بتتخصم من التحويلة — مش هتدفعها من الخزنة
+            تتخصم من التحصيل، أو نسدد الفرق للمندوب لو المصاريف أكبر
           </p>
         </div>
         <div className="rounded-2xl border border-border bg-card p-6">
           <div className="flex items-center gap-2 text-muted-foreground">
-            <Wallet className="size-4" /> شحن مرتجعات دفعناه
+            <Wallet className="size-4" /> تكلفة مرتجعات تحملناها — تاريخي
           </div>
           {/* The ONLY shipping our shop pays for. Delivery and exchange fees
               are the customer's and pass through — they never land here. */}
           <p className="text-2xl font-bold mt-3 text-red-600">{moneyFigure(returnFeesBorne, expense)}</p>
           <p className="text-xs text-muted-foreground mt-2">
-            ده الشحن الوحيد اللي بيتحسب خسارة علينا
+            مصروف مسجل على المحل؛ لا يعني أنه دُفع نقدًا ولا يختفي بالتسوية
           </p>
         </div>
         <div className="rounded-2xl border border-amber-300 bg-amber-50 dark:bg-amber-950/20 p-6">
@@ -629,7 +625,7 @@ export function CourierLedgerPage() {
                       <TableCell className="text-center px-4">
                         <Button
                           size="sm"
-                          disabled={openCount === 0}
+                          disabled={isWorking}
                           onClick={() => openBatch(courier)}
                         >
                           <Wallet className="size-4 ml-2" />
@@ -640,7 +636,7 @@ export function CourierLedgerPage() {
                     {expanded === courier.id && (
                       <TableRow>
                         <TableCell colSpan={6} className="bg-muted/30 px-6 py-4">
-                          <p className="text-sm font-medium mb-3">العمولات دي جاية منين؟</p>
+                          <p className="text-sm font-medium mb-3">إجمالي رسوم الرحلات المسجلة — تاريخي، وليس الرصيد المفتوح</p>
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
                             <div className="rounded-xl border bg-card p-3">
                               <p className="text-muted-foreground text-xs">توصيل للعملاء</p>
@@ -648,7 +644,7 @@ export function CourierLedgerPage() {
                                 {moneyFigure(feeDelivery.amountOf(courier.id), feeDelivery)}
                               </p>
                               <p className="text-xs text-muted-foreground mt-1">
-                                العميل دفعها مع الطلب — بتعدّي مننا للمندوب
+                                رسوم تسليم مسجلة للمندوب؛ الأرصدة المفتوحة موضحة بالأعلى
                               </p>
                             </div>
                             <div className="rounded-xl border bg-card p-3">
@@ -657,14 +653,14 @@ export function CourierLedgerPage() {
                                 {moneyFigure(returns, feeReturnish, feeExchange)}
                               </p>
                               <p className="text-xs text-muted-foreground mt-1">
-                                دي اللي المحل بيدفعها من جيبه
+                                رسوم رحلة مرتجع؛ المسؤولية تحددها حالة الطلب وسبب الرجوع
                               </p>
                             </div>
                             <div className="rounded-xl border bg-card p-3">
                               <p className="text-muted-foreground text-xs">استبدال</p>
                               <p className="font-mono font-bold mt-1">{moneyFigure(exchange, feeExchange)}</p>
                               <p className="text-xs text-muted-foreground mt-1">
-                                العميل دفعها برضه — بيحصّلها المندوب لينا
+                                رسوم رحلة استبدال؛ قد يتحملها العميل أو المحل أو المندوب
                               </p>
                             </div>
                           </div>
@@ -735,10 +731,17 @@ export function CourierLedgerPage() {
                       <TableCell className="px-3 font-mono text-xs">{order.orderNumber}</TableCell>
                       <TableCell className="px-3">{order.customerName}</TableCell>
                       <TableCell className="px-3 text-center font-mono">
-                        {formatMoney(order.expectedCod)}
+                        {formatMoney(courierSettlementAmounts(order).cod)}
+                        {ticked[order.id] && !order.courierObligation.reviewReason && <Input type="number" step="0.01" aria-label={`تحصيل مغطى ${order.orderNumber}`}
+                          value={partial[order.id]?.cod ?? String(order.courierObligation.codPiastres / 100)}
+                          onChange={event => setPartial(current => ({ ...current, [order.id]: { fee: current[order.id]?.fee ?? String(order.courierObligation.feePiastres / 100), cod: event.target.value } }))} />}
+                        {order.courierObligation.reviewReason && <span className="block text-xs text-destructive">{order.courierObligation.reviewReason === "NEXUS_EXCHANGE_CUSTOMER_REFUND_DUE" ? "رصيد مستحق للعميل؛ افتح تفاصيل الطلب لتسجيل رده" : "يلزم مراجعة السجل السابق"}</span>}
                       </TableCell>
                       <TableCell className="px-3 text-center font-mono text-xs text-amber-600">
-                        {formatMoney(order.courierFee ?? order.shippingFee ?? 0)}
+                        {formatMoney(courierSettlementAmounts(order).fee)}
+                        {ticked[order.id] && !order.courierObligation.reviewReason && <Input type="number" min={0} step="0.01" aria-label={`عمولة مغطاة ${order.orderNumber}`}
+                          value={partial[order.id]?.fee ?? String(order.courierObligation.feePiastres / 100)}
+                          onChange={event => setPartial(current => ({ ...current, [order.id]: { cod: current[order.id]?.cod ?? String(order.courierObligation.codPiastres / 100), fee: event.target.value } }))} />}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -748,11 +751,11 @@ export function CourierLedgerPage() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label htmlFor="net-received">المبلغ الفعلي المستلم (التحويل)</Label>
+                <Label htmlFor="net-received">الصافي الفعلي — السالب دفع للمندوب</Label>
                 <Input
                   id="net-received"
                   type="number"
-                  min={0}
+                  step="0.01"
                   value={received}
                   onChange={(e) => setReceived(e.target.value)}
                   placeholder="0"
@@ -838,11 +841,13 @@ export function CourierLedgerPage() {
                 <p className="text-xs text-muted-foreground">
                   علّم اللي اتحصّل في التحويلة دي. مش بيزوّد المبلغ — بس بيقفل المطالبة.
                 </p>
+                {!canCloseClaims && <p className="text-xs text-muted-foreground">إغلاق المطالبات للمدير أو المحاسب؛ يمكنك تسوية مستحقات الشحن دون تغيير المطالبات.</p>}
                 {claims.map((claim) => (
                   <label key={claim.id} className="flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
                       checked={!!claimTicked[claim.id]}
+                      disabled={!canCloseClaims || isWorking}
                       onChange={(e) =>
                         setClaimTicked((t) => ({ ...t, [claim.id]: e.target.checked }))
                       }
@@ -862,6 +867,7 @@ export function CourierLedgerPage() {
               </div>
             )}
 
+            <CourierClaimRecoveryPanel claims={claims} history={history} orders={orders} onRecovered={() => setHistoryTick(value => value + 1)} />
             {claimNote && (
               <div className="rounded-lg p-3 bg-amber-50 border border-amber-200">
                 <p className="text-sm font-medium text-amber-900">{claimNote}</p>
@@ -881,10 +887,10 @@ export function CourierLedgerPage() {
             </Button>
             <Button
               onClick={() => void confirmBatch()}
-              disabled={isWorking || tickedOrders.length === 0}
+              disabled={isWorking}
             >
               <Wallet className="size-4 ml-2" />
-              سجّل التحويلة
+              تحقق وسجّل التسوية
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -939,7 +945,7 @@ export function CourierLedgerPage() {
       {printSettlement && (
         <CourierSettlementReport
           settlement={printSettlement}
-          orders={orders
+          orders={printSettlement.orderAmounts ?? orders
             // The orders this transfer covered, from its append-only ledger
             // event. It used to match `order.codSettlementId` — a field with no
             // column, dropped on every write — so after any reload a reprinted
@@ -947,8 +953,8 @@ export function CourierLedgerPage() {
             .filter((o) => printSettlement.orderNumbers.includes(o.orderNumber))
             .map((o) => ({
               orderNumber: o.orderNumber,
-              expectedCod: o.expectedCod,
-              fee: o.courierFee ?? o.shippingFee ?? 0,
+              expectedCod: courierSettlementAmounts(o).cod,
+              fee: courierSettlementAmounts(o).fee,
             }))}
         />
       )}

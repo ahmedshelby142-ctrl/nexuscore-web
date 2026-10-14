@@ -211,6 +211,8 @@ export interface OrderDeliveredInput {
    * `order_placed`; this field is no longer consumed by the builder.
    */
   wallet?: string;
+  /** Authoritative original merchandise credit, separate from cash deposit. */
+  exchangeCredit?: { id: string; amountPiastres: number };
   /** Cash the courier collects on delivery — they owe it to us until settled. */
   codAmount?: number;
   /** Omit for a guest order — no LTV line is written. */
@@ -282,7 +284,10 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
   // the resolution the books actually keep, so that is the resolution to
   // compare at; anything genuinely off by a piastre still throws.
   const collected = netGoodsTotal + shippingFee + wastedTripCompensation;
-  if (toPiastres(deposit + cod) !== toPiastres(collected)) {
+  const creditPiastres = order.exchangeCredit?.amountPiastres ?? 0;
+  if (!Number.isSafeInteger(creditPiastres) || creditPiastres < 0 || (creditPiastres > 0 && !order.exchangeCredit?.id))
+    throw new Error("order: invalid original exchange credit");
+  if (toPiastres(deposit + cod) + creditPiastres !== toPiastres(collected)) {
     throw new Error(
       `order: deposit (${deposit}) + COD (${cod}) must equal net goods (${netGoodsTotal}) + shipping (${shippingFee}) + compensation (${wastedTripCompensation}) = ${collected}`,
     );
@@ -298,6 +303,7 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
 
 
 
+  if (creditPiastres > 0) lines.push({ account: "receivable_client", subjectId: "exchange-credit:" + order.exchangeCredit!.id, amount: creditPiastres / 100 });
   // Revenue is the net goods. The delivery fee is not ours to book.
   lines.push({
     account: "revenue",

@@ -21,7 +21,8 @@ import {
   announceMirrorFailure,
   type WriteContext,
 } from "../services/cloudData";
-import { applyMovesToProducts, expandBundleMoves, stockMirrorPatch, type StockMove } from "../lib/stockMirror";
+import { expandBundleMoves, type StockMove } from "../lib/stockMirror";
+import { refreshFeatureStock } from "../services/featureStockMirror";
 
 /** Where a browser's pre-050 local partners wait for an explicit upload. */
 export const LEGACY_PARTNERS_KEY = "nexus-legacy-partners";
@@ -316,47 +317,17 @@ export const useBusinessStore = create<BusinessState>()(
       },
 
       /**
-       * The ONE way stock moves on the product record.
-       *
-       * The arithmetic — the variant branch, the plain branch, the floor at
-       * zero and why they must share a function — lives in `lib/stockMirror`,
-       * which is pure and has a self-check beside it. This is the store half:
-       * one `set` and one sync push per affected product, no matter how many
-       * lines the transaction had.
-       *
-       * Bundles are expanded HERE rather than in each selling screen. A بوكس
-       * has no shelf of its own, so a move naming one has to become its
-       * components before the mirror sees it — and doing that at the single
-       * choke point is what stops the next screen from forgetting, the way POS
-       * did while الطلبات remembered.
+       * Compatibility refresh after a committed server stock command.
+       * No local arithmetic or absolute product write is permitted here.
+       * Bundle expansion only identifies component rows to read again.
        */
       applyStockMoves: (rawMoves: StockMove[]) => {
         if (rawMoves.length === 0) return;
-
-        let touched: string[] = [];
-        set((state) => {
-          const moves = expandBundleMoves(rawMoves, state.products);
-          const result = applyMovesToProducts(state.products, moves);
-          touched = result.touched;
-          if (touched.length === 0) return state;
-          return { products: result.products };
-        });
-
-        // Sync AFTER the write, reading the stored row, so what goes out is
-        // what the shop now believes rather than what the caller asked for.
-        //
-        // Every caller runs this after its ledger event was accepted, so a push
-        // that does not land is a stale cache, not a lost sale: ONE truthful
-        // warning per operation, never «لم يتم حفظ أي شيء». Deliberately not
-        // awaited — the ledger is the authority every screen reads for stock.
-        const products = get().products;
-        const pushes = touched
-          .map((id) => products.find((p) => p.id === id))
-          .filter((p): p is Product => Boolean(p))
-          .map((p) => updateMirror('products', p.id, stockMirrorPatch(p)));
-        void Promise.all(pushes).then((landed) => {
-          if (landed.includes(false)) void announceMirrorFailure();
-        });
+        // Compatibility for existing callers AFTER a committed command.
+        // Deltas are identifiers for a read, never a second stock mutation.
+        const moves = expandBundleMoves(rawMoves, get().products);
+        void refreshFeatureStock(moves.map(move => move.productId))
+          .catch(() => void announceMirrorFailure());
       },
 
       // A real delete, allowed ONLY for a product the ledger has never

@@ -51,7 +51,7 @@ const EMPTY: SubjectNames = {
 };
 
 /**
- * Read both registries once.
+ * Re-read registries when the associated balance snapshot changes.
  *
  * Failure is deliberately silent: a name is a nicety, and a balance the owner
  * needs to see must not be withheld because the label lookup failed. The ids
@@ -62,11 +62,14 @@ const EMPTY: SubjectNames = {
  * the overflow fall back to «غير معروف» rather than go missing; resolve by id
  * if that ever becomes real.
  */
-export function useSubjectNames(enabled: boolean): SubjectNames {
+export function useSubjectNames(enabled: boolean, revision: unknown = 0): SubjectNames {
   const [names, setNames] = useState<SubjectNames>(EMPTY);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      setNames(EMPTY);
+      return;
+    }
     let cancelled = false;
 
     void (async () => {
@@ -97,7 +100,7 @@ export function useSubjectNames(enabled: boolean): SubjectNames {
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
+  }, [enabled, revision]);
 
   return names;
 }

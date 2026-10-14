@@ -382,22 +382,11 @@ export const useOrderStore = create<OrderState>()(
       cancelOrder: async ({ orderId, cause, event }) => {
         const sb = getSupabaseClient();
         if (!sb) throw new Error("لا يوجد اتصال بالسحابة");
-        const p_event = await prepareEvent(event);
-        const { data, error } = await sb.rpc("cancel_order", {
-          p_order_id: orderId,
-          p_cause: cause,
-          p_event,
-        });
-        // The cause-trigger codes pass through raw: the cancel dialog words
-        // them for a cancellation, not a return.
-        if (error) {
-          const m = error.message;
-          throw new Error(
-            m.includes("NEXUS_ORDER_ALREADY_CANCELLED") || m.includes("NEXUS_ORDER_NOT_CANCELLABLE")
-              ? returnErrorMessage(m)
-              : m,
-          );
-        }
+        const scope = "order_cancel:" + orderId;
+        const recovered = await resolvePendingFinancialCommand<{ order: any }>(scope);
+        const data = recovered ?? await runFinancialCommand<{ order: any }>("order_cancel", {
+          orderId, cause,
+        }, scope);
         const saved = fromRemoteRow("orders", (data as any).order) as EcommerceOrder;
         set((state: any) => ({
           orders: state.orders.map((o: EcommerceOrder) => (o.id === saved.id ? { ...o, ...saved } : o)),

@@ -9,7 +9,9 @@ import {
   buildOrderCancelledLines,
   buildReturnConfirmedLines,
   buildOrderPlacedLines,
+  buildCourierBatchSettlementLines,
 } from "../src/lib/ledger/orders.ts";
+import { batchSummary, courierSettlementAmounts } from "../src/lib/courierBatch.ts";
 let db, c, p, box, original;
 const migration = "supabase/migrations/20261011202254_final_features_bundle_exchange.sql";
 const snapshot = (p) =>
@@ -688,6 +690,19 @@ test("FEATURE-EX-02: lower/equal/higher replacement, deposit, courier settlement
         Number(await accountTotal("receivable_courier", undefined, [operation, ret, delivered.id])),
       (price - 45) * 100,
     );
+    if (price === 60) {
+      const confirmed = await row("orders", o.id);
+      const summary = batchSummary([confirmed], price - 45 - o.depositAmount);
+      assert.equal(summary.shortfall, 0);
+      const settlement = db.event("courier_settlement", "courier_batch", crypto.randomUUID(),
+        buildCourierBatchSettlementLines({ courierId: o.courierId, wallet: "inStoreSafe",
+          orders: [{ orderId: o.id, ...courierSettlementAmounts(confirmed) }],
+          netReceived: summary.expectedNet, expectedFees: summary.expectedFees }));
+      await c.query("select ledger_append($1)", [settlement]);
+      assert.equal(await accountTotal("receivable_courier", o.courierId, [ret, delivered.id, settlement.id]), "0");
+      assert.equal(await accountTotal("expense", undefined, [settlement.id]), "0");
+      assert.equal(await accountTotal("wallet", undefined, [operation, ret, delivered.id, settlement.id]), String((price - 45) * 100));
+    }
   }
 });
 test("FEATURE-EX-03: bundle→product and product→bundle return historical component recipe/cost", async () => {

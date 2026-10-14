@@ -58,6 +58,8 @@ export interface CourierClaim {
   amount_piastres: number;
   status: ClaimStatus;
   settlement_event_id: string | null;
+  /** Canonical return-phase evidence; null on preserved historical notes. */
+  source_event_id?: string | null;
   notes: string | null;
   created_at: string;
   submitted_at: string | null;
@@ -66,8 +68,12 @@ export interface CourierClaim {
 }
 
 const REFUSALS: Record<string, string> = {
+  NEXUS_CLAIM_SOURCE_REVIEW_REQUIRED: "مصدر المطالبة القديم يحتاج مراجعة سجل المرتجع والتسويات؛ لا تعِد حركة مالية لإغلاق الملاحظة.",
   NEXUS_CLAIM_MUST_START_PENDING: "المطالبة لازم تبدأ بحالة «لسه متقدّمتش».",
   NEXUS_CLAIM_BAD_TRANSITION: "الانتقال ده مش مسموح — راجع حالة المطالبة.",
+  NEXUS_CLAIM_NOT_COVERED: "التسوية لا تثبت تحصيل قيمة هذه المطالبة وطلبها بالكامل؛ ستظل المطالبة معتمدة.",
+  NEXUS_CLAIM_SOURCE_MISMATCH: "مرجع الطلب أو شركة الشحن لا يطابق متجر المطالبة.",
+  NEXUS_CLAIM_IDENTITY_IMMUTABLE: "هوية المطالبة ومبلغها محفوظان بعد تقديمها.",
   NEXUS_CLAIM_SETTLEMENT_NEEDS_EVENT:
     "مش ممكن تقفل المطالبة من غير تسوية حقيقية مع شركة الشحن.",
   courier_claims_one_open_per_order: "فيه مطالبة مفتوحة على الطلب ده بالفعل.",
@@ -91,25 +97,33 @@ function client() {
 
 /** Every claim for this store, newest first. */
 export async function listClaims(): Promise<CourierClaim[]> {
+  const identity = await getSyncIdentity();
+  if (!identity) throw new Error("لا يوجد متجر مسجل");
   const { data, error } = await client()
     .from("courier_claims")
     .select("*")
+    .eq("store_id", identity.storeId)
     .is("deleted_at", null)
     .order("created_at", { ascending: false });
   if (error) throw new Error(translate(error.message));
+  if ((await getSyncIdentity())?.storeId !== identity.storeId) throw new Error("تغيّر المتجر أثناء قراءة المطالبات.");
   return (data ?? []) as CourierClaim[];
 }
 
 /** The open claim on this order, if one exists. */
 export async function claimForOrder(orderId: string): Promise<CourierClaim | null> {
+  const identity = await getSyncIdentity();
+  if (!identity) throw new Error("لا يوجد متجر مسجل");
   const { data, error } = await client()
     .from("courier_claims")
     .select("*")
+    .eq("store_id", identity.storeId)
     .eq("order_id", orderId)
     .is("deleted_at", null)
     .neq("status", "rejected")
     .maybeSingle();
   if (error) throw new Error(translate(error.message));
+  if ((await getSyncIdentity())?.storeId !== identity.storeId) throw new Error("تغيّر المتجر أثناء قراءة المطالبة.");
   return (data as CourierClaim) ?? null;
 }
 
@@ -170,7 +184,10 @@ export async function advanceClaim(input: {
   to: ClaimStatus;
   settlementEventId?: string;
   notes?: string;
+  expectedStoreId?: string;
 }): Promise<CourierClaim> {
+  const identity = await getSyncIdentity();
+  if (!identity || (input.expectedStoreId && input.expectedStoreId !== identity.storeId)) throw new Error("تغيّر المتجر؛ راجع المطالبة قبل تعديلها.");
   const patch: Record<string, unknown> = { status: input.to };
   if (input.settlementEventId) patch.settlement_event_id = input.settlementEventId;
   if (input.notes !== undefined) patch.notes = input.notes;
@@ -179,8 +196,13 @@ export async function advanceClaim(input: {
     .from("courier_claims")
     .update(patch)
     .eq("id", input.claimId)
+    .eq("store_id", identity.storeId)
     .select()
     .single();
-  if (error) throw new Error(translate(error.message));
+  if (error) {
+    const refusal = new Error(translate(error.message)) as Error & { definite?: boolean };
+    refusal.definite = /^(23|42|P0001)/.test(error.code ?? "");
+    throw refusal;
+  }
   return data as CourierClaim;
 }

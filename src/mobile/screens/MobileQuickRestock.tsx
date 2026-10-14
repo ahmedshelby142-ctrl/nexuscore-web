@@ -40,7 +40,10 @@ export function MobileQuickRestock() {
   const [params] = useSearchParams();
   const [query, setQuery] = useState("");
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>(params.get("products")?.split(",").filter(Boolean) ?? []);
-  const [lines, setLines] = useState<Record<string, LineDraft>>({});
+  const [lines, setLines] = useState<Record<string, LineDraft>>(() => {
+    const id=params.get("products"),variant=params.get("variant");
+    return id && !id.includes(",") && variant ? {[id]:{quantity:"",unitCost:"",variantName:variant}} : {};
+  });
   const [wallet, setWallet] = useState<WalletType>("inStoreSafe");
   // Empty means "paid in full", exactly as the desktop invoice form reads it.
   // Any smaller number becomes آجل on the supplier. Deliberately NOT a
@@ -256,6 +259,7 @@ export function MobileQuickRestock() {
     // mobile is always 0 and therefore always collided with FM-0001.
     try {
       const result = await executeQuickRestock({
+        shortageOrderId: params.get("sourceOrder") || undefined,
         lines: received,
         supplier: {
           supplierId: registeringNew ? NEW_SUPPLIER : supplierId,

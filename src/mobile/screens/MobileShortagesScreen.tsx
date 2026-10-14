@@ -1,3 +1,6 @@
+import {SHORTAGE_FOLLOWUP_LABELS} from "@/lib/orderFulfillment";
+import {Dialog,DialogContent,DialogHeader,DialogTitle} from "@/components/ui/dialog";
+import {ShortageFollowupPanel} from "@/components/ecommerce/ShortageFollowupPanel";
 import { useCallback, useEffect, useState } from "react";
 import { ArrowRight, PackageX, RefreshCw, Plus, ShoppingCart } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -48,6 +51,8 @@ export function MobileShortagesScreen() {
   // MODERATOR reads this screen and buys nothing.
   const canRestock = useMobileCapabilities().has("purchasing");
   const [query, setQuery] = useState("");
+  const [followupState,setFollowupState]=useState("all");
+  const [followup,setFollowup]=useState<{orderId:string;orderNumber:string;customerName?:string;customerPhone?:string;demandSummary:string}|null>(null);
   const [rows, setRows] = useState<MobileShortageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -78,15 +83,17 @@ export function MobileShortagesScreen() {
   useRealtimeTables(["orders", "ledger_events"], () => { void load(true); });
 
   const needle = query.trim().toLowerCase();
-  const visible = needle
-    ? rows.filter(
-        (r) =>
-          String(r.product_name ?? "").toLowerCase().includes(needle) ||
-          String(r.sku ?? "").toLowerCase().includes(needle),
-      )
-    : rows;
-
-  const totalDeficit = rows.reduce((sum, r) => sum + Number(r.deficit || 0), 0);
+  const filtered=rows.map(row=>{
+    if(followupState==="all")return row;
+    const waiting=Array.isArray(row.waiting_orders)?row.waiting_orders as any[]:[];
+    if(waiting.every(w=>w.requested==null))return followupState==="legacy_review"?row:null;
+    const selected=waiting.filter(w=>(w.requested==null?"legacy_review":w.followupState??"waiting")===followupState);
+    if(!selected.length)return null;
+    return {...row,waiting_orders:selected,order_count:selected.length,
+      required:selected.reduce((n,w)=>n+Number(w.requested??row.required),0),deficit:selected.reduce((n,w)=>n+Number(w.missing??row.deficit),0)};
+  }).filter((r):r is MobileShortageRow=>!!r&&Number(r.deficit)>0);
+  const visible=needle?filtered.filter(r=>String(r.product_name??"").toLowerCase().includes(needle)||String(r.sku??"").toLowerCase().includes(needle)||JSON.stringify(r.waiting_orders??[]).toLowerCase().includes(needle)):filtered;
+  const totalDeficit=visible.reduce((n,row)=>n+Number(row.deficit||0),0);
 
   return (
     <section className="mobile-screen">
@@ -113,7 +120,10 @@ export function MobileShortagesScreen() {
           </div>
         )}
 
-        <MobileSearch value={query} onChange={setQuery} placeholder="ابحث عن صنف ناقص" />
+        <label>حالة المتابعة<select aria-label="تصفية حالة متابعة النواقص" value={followupState} onChange={e=>setFollowupState(e.target.value)} className="block w-full rounded border bg-background p-2">
+          <option value="all">كل الحالات</option>{Object.entries(SHORTAGE_FOLLOWUP_LABELS).map(([value,label])=><option key={value} value={value}>{label}</option>)}<option value="legacy_review">سجل قديم للمراجعة</option>
+        </select></label>
+        <MobileSearch value={query} onChange={setQuery} placeholder="ابحث بالطلب أو العميل أو الهاتف أو المنتج" />
 
         {offline ? (
           <OfflineState />
@@ -135,7 +145,7 @@ export function MobileShortagesScreen() {
             {visible.map((row) => {
               const waiting = Array.isArray(row.waiting_orders) ? row.waiting_orders : [];
               return (
-                <article className="mobile-shortage-card" key={row.product_id}>
+                <article className="mobile-shortage-card" key={JSON.stringify([row.product_id,(row.waiting_orders?.[0] as any)?.variantName || "",(row.waiting_orders?.[0] as any)?.requested==null])}>
                   <header className="mobile-shortage-card-head">
                     <div className="mobile-stock-card-icon" aria-hidden="true">
                       <PackageX />
@@ -184,8 +194,10 @@ export function MobileShortagesScreen() {
                               <span className="mobile-shortage-waiting-order" dir="ltr">
                                 {String(w?.orderNumber ?? w?.orderId ?? "")}
                               </span>
+                              <span>{w?.requested != null ? `مطلوب ${w.requested} / مخصص ${w.allocated} / ناقص ${w.missing} — ${SHORTAGE_FOLLOWUP_LABELS[(w.followupState??"waiting") as keyof typeof SHORTAGE_FOLLOWUP_LABELS]}` : "سجل قديم للمراجعة"}</span>
                               <span className="mobile-chevron" aria-hidden="true">‹</span>
                             </button>
+                            {w?.requested != null && <button type="button" className="mobile-inline-link" onClick={()=>setFollowup({...w,demandSummary:`${row.product_name}: مطلوب ${w.requested}، مخصص ${w.allocated}، ناقص ${w.missing}`})}>متابعة {w.orderNumber}</button>}
                           </li>
                         ))}
                       </ul>
@@ -210,6 +222,8 @@ export function MobileShortagesScreen() {
                         onClick={() =>
                           navigate(
                             `/restock?products=${encodeURIComponent(row.product_id)}` +
+                              ((row.waiting_orders?.[0] as any)?.variantName ? `&variant=${encodeURIComponent((row.waiting_orders[0] as any).variantName)}` : "") +
+                              (row.waiting_orders.length===1 ? `&sourceOrder=${encodeURIComponent(String((row.waiting_orders[0] as any).orderId))}` : "") +
                               (Number(row.deficit) > 0
                                 ? `&need=${encodeURIComponent(`${row.product_id}:${Number(row.deficit)}`)}`
                                 : ""),
@@ -227,6 +241,11 @@ export function MobileShortagesScreen() {
           </div>
         )}
       </div>
+      <Dialog open={!!followup} onOpenChange={open=>{if(!open)setFollowup(null)}}>
+        <DialogContent><DialogHeader><DialogTitle>متابعة نواقص الطلب</DialogTitle></DialogHeader>
+          {followup&&<ShortageFollowupPanel key={followup.orderId} {...followup} onSaved={()=>load(true)}/>}
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

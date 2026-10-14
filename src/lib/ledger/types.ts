@@ -156,6 +156,8 @@ export interface RefBalance {
 }
 
 export interface EventQuery {
+  /** POS saved-number/phone lookup, includes all prior returns for matched receipts. */
+  receiptSearch?: string;
   kind?: EventKind;
   refType?: string;
   refId?: string;

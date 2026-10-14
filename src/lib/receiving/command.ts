@@ -46,6 +46,8 @@ export interface QuickRestockInput {
   paidAmount?: number;
   /** Optional note for the invoice document */
   notes?: string;
+  /** Trace this procurement to a waiting order; FIFO allocation still applies. */
+  shortageOrderId?: string;
 
 }
 
@@ -116,6 +118,7 @@ export async function executeQuickRestock(input: QuickRestockInput): Promise<Qui
     notes: input.notes ?? "توريد سريع من شاشة المنتجات",
     actor: "توريد",
     via: "quick_restock",
+    ...(input.shortageOrderId ? {payloadExtra:{shortageOrderId:input.shortageOrderId}} : {}),
   });
 
   return {

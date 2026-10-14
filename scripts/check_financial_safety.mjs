@@ -1,3 +1,4 @@
+import {pathToFileURL} from "node:url";
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -28,11 +29,11 @@ before(async () => {
       s.close(() => resolve(p));
     });
   });
-  const testRoot = path.resolve("logs");
+  const testRoot = path.resolve(process.env.NEXUS_QA_PG_DATA_ROOT || "logs");
   fs.mkdirSync(testRoot, { recursive: true });
   dir = fs.mkdtempSync(path.join(testRoot, "financial-db-"));
   if (process.platform === "win32") {
-    const bins = await import("@embedded-postgres/windows-x64");
+    const bins = await import(process.env.NEXUS_QA_PG17 === '1' ? pathToFileURL(path.resolve('logs/purchasing-r2/pg17-binaries/package/dist/index.js')).href : '@embedded-postgres/windows-x64');
     ctl = bins.pg_ctl;
     const init = spawnSync(
       bins.initdb,

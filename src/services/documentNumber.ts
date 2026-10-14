@@ -1,5 +1,13 @@
 import { getSupabaseClient } from "@/lib/supabase";
 import { getActiveStoreId } from "./api/storeContext";
+import { runFinancialCommand } from "@/lib/financialCommand";
+
+/** Server derives the brand; the standard envelope preserves allocation on response loss. */
+export async function nextOrderDocumentNumber(): Promise<string> {
+  const result = await runFinancialCommand<{documentNumber:string}>("document_number", {kind:"order"}, "document-number:order");
+  if (!result?.documentNumber) throw new Error("لم يصل رقم الطلب المحفوظ من الخادم");
+  return result.documentNumber;
+}
 
 /**
  * The next document number for this store, allocated by Postgres.

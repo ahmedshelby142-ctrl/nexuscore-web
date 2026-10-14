@@ -36,6 +36,7 @@ export async function runFinancialCommand<T>(
   command: string,
   input: unknown,
   scope = command,
+  expectedStoreId?: string,
 ): Promise<T> {
   JSON.stringify(input, (_key, value) => {
     if (typeof value === "number" && !Number.isFinite(value))
@@ -45,6 +46,8 @@ export async function runFinancialCommand<T>(
   const sb = getSupabaseClient();
   const identity = await getSyncIdentity();
   if (!sb || !identity) throw new Error("لا يوجد اتصال بمتجر مسجل");
+  if (expectedStoreId && identity.storeId !== expectedStoreId)
+    throw new Error("تغيّر المتجر؛ راجع البيانات قبل إرسال العملية.");
   const key = PREFIX + identity.storeId + ":" + scope;
   if (running.has(key)) {
     const active = pending.get(key);
@@ -74,10 +77,28 @@ export async function runFinancialCommand<T>(
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const rpc =
-          op.command === "order_place"
+          op.command === "document_number"
+            ? "record_document_number"
+            : op.command === "order_place"
             ? "place_order"
+            : op.command === "product_catalog"
+              ? "record_product_catalog"
+            : op.command === "order_cancel"
+              ? "record_order_cancel"
+            : op.command === "exchange_credit_refund"
+              ? "record_exchange_credit_refund"
+            : op.command === "order_payment"
+              ? "record_order_payment"
             : op.command === "pos_sale"
               ? "record_pos_sale"
+            : op.command === "stock_event"
+              ? "record_stock_command"
+            : op.command === "order_delivery"
+              ? "record_order_delivery"
+              : op.command === "pos_exchange"
+                ? "record_pos_exchange"
+              : op.command === "courier_batch"
+                ? "record_courier_batch"
               : op.command === "order_edit"
                 ? "record_order_edit"
                 : op.command === "bundle_edit"
@@ -183,14 +204,20 @@ export async function resolvePendingFinancialCommand<T>(scope: string): Promise<
 }
 
 /** Ledger-only input retains the existing shared builders and EGP semantics. */
+export interface FinancialReceipt { eventId: string; documentNumber?: string; sourceDocumentNumber?: string }
+export function appendFinancialEvent(event: import("./ledger/types").NewEvent): Promise<string>;
+export function appendFinancialEvent(event: import("./ledger/types").NewEvent, options: { receipt: true }): Promise<FinancialReceipt>;
 export async function appendFinancialEvent(
   event: import("./ledger/types").NewEvent,
-): Promise<string> {
+  options?: { receipt: true },
+): Promise<string | FinancialReceipt> {
   assertFiniteLines(event.kind, event.lines);
-  const result = await runFinancialCommand<{ eventId: string }>(
-    event.kind === "sale" && event.refType === "pos_sale" ? "pos_sale" : "ledger",
+  const result = await runFinancialCommand<FinancialReceipt>(
+    event.kind === "sale" && event.refType === "pos_sale" ? "pos_sale"
+      : event.lines.some(line => line.account === "stock") && event.refType !== "opening_balance"
+        ? "stock_event" : "ledger",
     event,
     `ledger:${event.kind}`,
   );
-  return result.eventId;
+  return options?.receipt ? result : result.eventId;
 }

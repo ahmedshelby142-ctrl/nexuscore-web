@@ -63,10 +63,13 @@ test("F2: no mobile reader selects a column `orders` does not have", () => {
 });
 
 test("F2: the order timeline is read from the ledger, the only place it exists", () => {
-  // Since 047/048 through `mobile_order_timeline`: the same ledger events,
-  // by order NUMBER, without payload or lines (a Moderator cannot read
-  // `ledger_events` itself).
-  assert.match(readers, /rpc\("mobile_order_timeline", \{ p_order_number: orderNumber \}\)/, "the ledger's own events for this order");
+  // Forward scoped reader derives the stored ledger ref on the server; old
+  // one-membership API remains available for cached clients.
+  assert.match(readers,/await readOrderActivity\(orderId,storeId\)/,"the actual reader must use its saved order identity and active tenant");
+  const service=read("../src/services/orderActivity.ts");
+  assert.match(service,/rpc\("read_order_activity",\{p_store:storeId,p_order_id:orderId\}\)/);
+  const scoped=read("../supabase/migrations/20261013111632_scoped_order_activity.sql");
+  assert.match(scoped,/e\.store_id=p_store/);assert.match(scoped,/e\.ref_id=o\."orderNumber"/);
   const m047 = read("../docs/migrations/047_operational_read_projection.sql");
   assert.match(m047, /e\.ref_type = 'ecommerce_order'/, "the ledger ref type the order writers stamp");
   assert.match(m047, /e\.ref_id = p_order_number/, "by order number, never the uuid");

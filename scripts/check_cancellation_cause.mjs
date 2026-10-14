@@ -434,25 +434,23 @@ test("there is NO code path from a courier cause to an automatic refund", () => 
 const M041 = read("../docs/migrations/041_settled_claim_is_frozen.sql");
 const M041C = sql(M041);
 const LEDGERPAGE = strip(read("../src/components/ecommerce/CourierLedgerPage.tsx"));
+const ATOMIC_CLAIMS = sql(read("../supabase/migrations/20261012204812_courier_obligation_compatibility.sql"));
 
 test("no second settlement system — the existing event is reused", () => {
-  // One event kind settles a courier, and this migration adds no other. No new
-  // money, no new RPC that writes a settlement.
+  // One event kind settles a courier; claims remain notes about it.
   assert.ok(!/CREATE (OR REPLACE )?FUNCTION[\s\S]{0,200}settle_courier/i.test(M041C));
   assert.ok(!/INSERT INTO public\.ledger_/.test(M041C), "the guard writes no ledger row");
-  // The screen appends the SAME `courier_settlement` it always did, and simply
-  // keeps its id.
-  assert.match(LEDGERPAGE, /const settlementEventId = await appendEvent\(\{/);
-  assert.match(LEDGERPAGE, /kind: "courier_settlement"/);
+  // The atomic command now appends that existing kind AND closes documents.
+  assert.match(LEDGERPAGE, /commitCourierBatch/);
+  assert.match(ATOMIC_CLAIMS, /'kind','courier_settlement'/);
+  assert.doesNotMatch(ATOMIC_CLAIMS, /CREATE TABLE/i);
 });
 
-test("the UI never sets the status directly — it passes the real event", () => {
-  // There is no status dropdown on this screen. The only call names `settled`
-  // together with the id of the event that just moved the money.
-  assert.match(
-    LEDGERPAGE,
-    /advanceClaim\(\{ claimId: claim\.id, to: "settled", settlementEventId \}\)/,
-  );
+test("the UI never sets the status directly — the canonical batch owns covered claim IDs", () => {
+  assert.doesNotMatch(LEDGERPAGE, /advanceClaim\(/);
+  assert.match(LEDGERPAGE, /claimIds,/);
+  assert.match(ATOMIC_CLAIMS, /UPDATE public\.courier_claims SET status='settled',settlement_event_id=p_id/);
+  assert.match(ATOMIC_CLAIMS, /NEXUS_CLAIM_NOT_COVERED/);
   // …and only APPROVED claims are offered, because a claim the company has not
   // agreed to is not something a transfer closes.
   assert.match(LEDGERPAGE, /c\.status === "approved"/);
@@ -524,20 +522,12 @@ test("settling a claim does not touch the deposit, on the screen too", () => {
   assert.ok(!/deposit/i.test(M041C.replace(/NEXUS_CLAIM[A-Z_]*/g, "")));
 });
 
-test("the claim half fails safe — the money is recorded first", () => {
-  // The settlement is the financial fact; the claim is a note about it. If the
-  // claim update fails the transfer has still landed correctly and the claim
-  // stays `approved`, recoverable next time. The reverse order would mark a
-  // claim settled against an event that might never be written.
-  const confirm = LEDGERPAGE.slice(
-    LEDGERPAGE.indexOf("const confirmBatch"),
-    LEDGERPAGE.indexOf("const confirmBatch") + 4000,
-  );
-  assert.ok(
-    confirm.indexOf("await appendEvent") < confirm.indexOf("advanceClaim"),
-    "the event is written before any claim is closed",
-  );
-  assert.match(LEDGERPAGE, /التحويلة اتسجلت والفلوس اتحركت، لكن/, "and the operator is told");
+test("a selected claim and transfer share one transaction; unsupported coverage is never labelled collected", () => {
+  assert.ok(ATOMIC_CLAIMS.indexOf('PERFORM public.ledger_append(') < ATOMIC_CLAIMS.indexOf("UPDATE public.courier_claims SET status='settled'"));
+  assert.match(ATOMIC_CLAIMS, /NEXUS_CLAIM_DOCUMENT_REQUIRED/);
+  assert.match(LEDGERPAGE, /المطالبات غير المغطاة ما زالت معتمدة/);
+  // Actual late-failure rollback and missing-document behavior are executed
+  // on PG17.6 in check_catalog_return_compatibility_db, not inferred here.
 });
 
 test("the operator is told the two are unrelated, on the settlement screen", () => {

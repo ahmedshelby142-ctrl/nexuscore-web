@@ -172,6 +172,7 @@ export interface EcommerceOrder {
   /** The order this one replaces (an exchange's Order B points at Order A). */
   original_order_id?: string | null;
   exchangeDetails?: import("@/lib/partialExchange").ExchangeDetails | null;
+  fulfillment?: import("@/lib/orderFulfillment").OrderFulfillment | null;
   /** Set when the order is a trader's — the returns flow settles against it. */
   wholesaleClientId?: string | null;
   shippingPenaltyApplied: boolean;

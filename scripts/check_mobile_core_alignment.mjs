@@ -60,7 +60,10 @@ test("every receipt path goes through the shared commit", () => {
 test("the receipt carries variantName onto the invoice line", () => {
   // Desktop's supplier return is invoice-driven and needs the shade to know
   // which one came back.
-  assert.match(read("../src/lib/receiving/commitReceipt.ts"), /variantName: l\.variantName/);
+  const source=read("../src/lib/receiving/commitReceipt.ts");
+  assert.match(source,/\.\.\.input, items, stockMirrorVersion: 1/);
+  assert.doesNotMatch(source,/applyStockMoves/);
+  assert.match(source,/refreshFeatureStock\(items\.map/);
 });
 
 // ── M1: supplier resolution ─────────────────────────────────────────────────

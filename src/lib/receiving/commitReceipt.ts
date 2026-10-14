@@ -3,6 +3,7 @@ import { runFinancialCommand } from "@/lib/financialCommand";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
 import type { WalletType } from "@/types";
+import { refreshFeatureStock } from "@/services/featureStockMirror";
 
 /** One line of goods arriving, already costed by the caller. */
 export interface ReceiptItem {
@@ -53,7 +54,7 @@ export async function commitReceipt(input: ReceiptCommitInput): Promise<ReceiptC
   const items = input.items.filter(l => l.quantity > 0);
   if (!items.length) throw new Error("لا توجد أصناف للتوريد");
   const result = await runFinancialCommand<ReceiptCommitResult>("receipt", {
-    ...input, items,
+    ...input, items, stockMirrorVersion: 1,
     // null represents paid-in-full; JSON must not silently turn other invalid
     // numbers into a full payment.
     paidAmount: input.paidAmount === Number.POSITIVE_INFINITY ? null : input.paidAmount,
@@ -67,9 +68,9 @@ export async function commitReceipt(input: ReceiptCommitInput): Promise<ReceiptC
       purchaseInvoices: [...state.purchaseInvoices.filter(i => i.id !== invoice.id), invoice],
       suppliers: [...state.suppliers.filter(s => s.id !== supplier.id), supplier],
     }));
-    if (!result.replayed) useBusinessStore.getState().applyStockMoves(items.map(l => ({
-      productId: l.productId, delta: l.quantity, variantName: l.variantName,
-    })));
+    // The command credits exact variants atomically. Never write an increment
+    // from a stale Desktop catalog, or Mobile's deliberately empty catalog.
+    await refreshFeatureStock(items.map(l => l.productId));
     if (result.replayed) {
       const { cloudList } = await import("@/services/cloudData");
       const purchaseInvoices = await cloudList("purchase_invoices");

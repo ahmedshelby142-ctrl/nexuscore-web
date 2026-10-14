@@ -76,7 +76,7 @@ export interface ExchangeableOrder {
 /** A return already recorded against an order, as `return_records` stores it. */
 export interface PriorReturn {
   original_order_id?: string | null;
-  returned_items?: { product_id: string; quantity: number }[];
+  returned_items?: { product_id: string; variantName?: string; quantity: number; lineId?: string; unitNumbers?: number[] }[];
 }
 
 /**
@@ -358,7 +358,7 @@ export function returnTypeLabel(type: string | null | undefined): string {
  * untouched and keep keying on `productId`.
  */
 export interface ReturnableUnit {
-  /** `bundleId` for a بوكس, `productId` otherwise. What the ceiling keys on. */
+  /** Bundle/product identity plus exact shade, for independent UI ceilings. */
   key: string;
   productId: string;
   productName: string;
@@ -371,6 +371,23 @@ export interface ReturnableUnit {
   unitCost: number;
   isBundle?: boolean;
   bundleItems?: { productId: string; quantity: number; unitCost: number; variantName?:string }[];
+}
+
+export function returnUnitKey(productId: string, variantName?: string): string {
+  return variantName ? JSON.stringify([productId, variantName]) : productId;
+}
+
+/** Ordinary returns and exchanges consume the same original, priced units. */
+export function ordinaryReturnValue(order: any, lines: readonly { productId: string; variantName?: string; quantity: number }[], prior: readonly any[] = [], replacements: readonly any[] = []): number {
+  const units = exchangeUnits(order, prior, replacements);
+  return lines.reduce((sum, line) => {
+    if (line.variantName && prior.some(r => r.original_order_id === order.id && !r.deleted_at && (r.returned_items ?? []).some((i: any) => i.product_id === line.productId && !i.variantName))) {
+      throw new Error("متغير المرتجع القديم غير محدد؛ يلزم مراجعة السجل");
+    }
+    const matches = units.filter(u => u.productId === line.productId && (u.variantName ?? "") === (line.variantName ?? ""));
+    if (matches.length !== 1 || line.quantity > matches[0].remaining) throw new Error("البند الأصلي أو الكمية يحتاج مراجعة قبل الإرجاع");
+    return sum + Math.round(matches[0].refundFor(line.quantity) * 100);
+  }, 0) / 100;
 }
 
 /**
@@ -391,7 +408,7 @@ export function returnableUnits(order: any): ReturnableUnit[] {
     const bundleId = line?.bundleId;
     if (!bundleId) {
       units.push({
-        key: line.productId,
+        key: returnUnitKey(line.productId, line.variantName),
         productId: line.productId,
         productName: line.productName,
         variantName: line.variantName,
@@ -443,17 +460,26 @@ export function returnableUnits(order: any): ReturnableUnit[] {
 export function remainingUnits(
   order: any,
   priorReturns: readonly PriorReturn[],
+  replacements: readonly any[] = [],
 ): Map<string, number> {
   const remaining = new Map<string, number>();
+  if (order.items?.length) {
+    for (const unit of exchangeUnits(order, priorReturns, replacements)) {
+      const key = returnUnitKey(unit.productId, unit.variantName);
+      remaining.set(key, (remaining.get(key) ?? 0) + unit.remaining);
+    }
+    return remaining;
+  }
   for (const unit of returnableUnits(order)) {
     remaining.set(unit.key, (remaining.get(unit.key) ?? 0) + unit.quantity);
   }
   for (const record of priorReturns) {
     if (record.original_order_id !== order.id) continue;
     for (const item of record.returned_items ?? []) {
-      const left = remaining.get(item.product_id);
+      const key = returnUnitKey(item.product_id, item.variantName);
+      const left = remaining.get(key);
       if (left === undefined) continue;
-      remaining.set(item.product_id, Math.max(0, left - item.quantity));
+      remaining.set(key, Math.max(0, left - item.quantity));
     }
   }
   return remaining;

@@ -1,5 +1,10 @@
+import {PosReceiptDetails} from "@/components/sales/PosReceiptDetails";
+import {posCashLabel} from "@/lib/posHistory";
+import { refreshReturnDocuments } from "@/lib/returnDocuments";
+import { resolvePendingFinancialEvent } from "@/lib/financialCommand";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { format } from "date-fns";
 import {
   RotateCcw,
@@ -28,6 +33,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { printTableAsPdf } from "@/lib/pdfGenerator";
 import { appendEvent } from "@/lib/ledger";
+import type { NewEvent } from "@/lib/ledger/types";
 import { searchOrders } from "@/lib/orderSearch";
 import { ProductSearch } from "@/components/products/ProductSearch";
 import { productPrice, getActualStock, sellableStock } from "@/lib/product";
@@ -37,7 +43,7 @@ import { customerIdOf } from "@/lib/customers";
 import { OrderSearch } from "@/components/ecommerce/OrderSearch";
 import { buildReturnConfirmedLines, buildOrderRTOLines, buildOrderDeliveredLines } from "@/lib/ledger/orders";
 import {
-  returnedValue,
+  ordinaryReturnValue,
   priceDifference,
   remainingQuantities,
   remainingUnits,
@@ -80,6 +86,7 @@ function variantFromName(productName: string | undefined): string | undefined {
 }
 
 interface ReturnEntry {
+  line_key: string;
   product_id: string;
   product_name: string;
   /** How many the customer is sending back. */
@@ -96,11 +103,12 @@ interface ReturnEntry {
    * `unit_cost` is 0 for these; the recipe below carries the real cost.
    */
   is_bundle?: boolean;
-  bundle_items?: { productId: string; quantity: number; unitCost: number }[];
+  bundle_items?: { productId: string; variantName?: string; quantity: number; unitCost: number }[];
 }
 
 export function Returns() {
-  const { products, addReturnRecord } = useBusinessStore();
+  const navigate = useNavigate();
+  const { products } = useBusinessStore();
   // Subscribed, not read via getState(), so the pending-replacement banner
   // below reappears the moment one is recorded and after any reload.
   const returnRecords = useBusinessStore((s) => s.returnRecords);
@@ -115,6 +123,7 @@ export function Returns() {
   const { costOf, refresh: refreshStock } = useStock();
 
   const [searchQuery, setSearchQuery] = useState("");
+  const [receiptEventId,setReceiptEventId]=useState<string|null>(null);
   const [selectedOrder, setSelectedOrder] = useState<EcommerceOrder | null>(null);
   const [wallet, setWallet] = useState<WalletType>("inStoreSafe");
   const [isWorking, setIsWorking] = useState(false);
@@ -209,8 +218,9 @@ export function Returns() {
       const keepsDeposit = disposition === "forfeit";
       const holdsDeposit = disposition === "pending_resolution";
 
+      const events: NewEvent[] = [];
       if (returnType === "rto") {
-        await appendEvent({
+        events.push({
           kind: "rto_confirmed",
           actor: "شركة الشحن",
           refType: "ecommerce_order",
@@ -246,7 +256,7 @@ export function Returns() {
         });
       } else {
         if (!order.revenueLogged) {
-          await appendEvent({
+          events.push({
             kind: "order_delivered",
             actor: "شركة الشحن",
             refType: "ecommerce_order",
@@ -266,6 +276,7 @@ export function Returns() {
               depositAmount: order.depositAmount,
               wallet: "inStoreSafe",
               codAmount: order.expectedCod,
+              exchangeCredit: order.exchangeDetails?.credit ? { id: order.exchangeDetails.id, amountPiastres: order.exchangeDetails.credit.allocatedPiastres } : undefined,
               courierId: order.courierId ?? undefined,
               customerId: customerId ?? undefined,
               channel: "ecommerce",
@@ -273,7 +284,7 @@ export function Returns() {
           });
         }
         
-        await appendEvent({
+        events.push({
           kind: "return_confirmed",
           actor: "شركة الشحن",
           refType: "ecommerce_order",
@@ -303,22 +314,12 @@ export function Returns() {
         });
       }
 
-      // Their next order is quoted at double shipping — see `shippingFeeFor`.
-      // Unless this was an EXCHANGE, which wastes no trip: the courier carried
-      // the replacement out and this back in one journey. See
-      // `countsAsWastedTrip`. An RTO very much does waste one, and still counts.
-      // AWAITED, with a deliberate `.catch` — same reasoning as the identical
-      // call in OrdersPage: the return is already in the ledger, so a refused
-      // debt increment must not report the return as failed.
-      if (customerId && countsAsWastedTrip(cause, movement)) {
-        await useCustomerStore.getState().recordReturn(customerId).catch(() => {});
-      }
-
-      await useOrderStore.getState().updateOrder(order.id, {
-        returnConfirmedAt: new Date().toISOString() as unknown as Date,
-        return_cause: cause,
+      await useOrderStore.getState().confirmOrderReturn({
+        orderId: order.id, cause: cause as "customer" | "courier" | "shop",
+        movement, events, customerId,
       });
-      
+      // The server commits the confirmation stamp, optional delivery,
+      // returned stock and customer trip together. Only refresh afterwards.
       // Back on the shelf — every line, variant or plain. `variantName` now
       // rides on `stockItems`; the name split is the fallback for orders
       // recorded before it did.
@@ -330,6 +331,7 @@ export function Returns() {
         })),
       );
 
+      await refreshReturnDocuments();
       refreshStock();
       setConfirmDialog({ open: false, orderId: "" });
       setConfirmName("");
@@ -355,11 +357,12 @@ export function Returns() {
     // not its components at the `unitPrice: 0` they carry in `stockItems`.
     // Building from `stockItems` directly is what made a bundle return refund
     // nothing — see `returnableUnits`.
-    const left = remainingUnits(order, returnRecords);
+    const left = remainingUnits(order, returnRecords, orders);
     setReturnEntries(
       returnableUnits(order)
         .map((unit) => ({
-          product_id: unit.key,
+          line_key: unit.key,
+          product_id: unit.productId,
           product_name: unit.productName,
           variant_name: unit.variantName,
           quantity: 0,
@@ -376,10 +379,10 @@ export function Returns() {
     );
   };
 
-  const updateReturnQty = (product_id: string, qty: number) => {
+  const updateReturnQty = (line_key: string, qty: number) => {
     setReturnEntries((prev) =>
       prev.map((e) =>
-        e.product_id === product_id
+        e.line_key === line_key
           ? // Never more than are still with the customer — returning 5 of an
             // order of 2, or returning the same 2 twice, invents stock.
             { ...e, quantity: Math.min(Math.max(0, qty), e.ordered) }
@@ -393,21 +396,20 @@ export function Returns() {
   /**
    * What the customer actually PAID for the lines being returned.
    *
-   * The discount-scaling that used to live here inline is now
-   * `lib/exchange.returnedValue`, shared with the e-commerce screen — which had
-   * no scaling at all and refunded the list price, so the same swap was worth
-   * different money depending on which screen the operator happened to open.
+   * The original priced unit slots are shared with exchange reservations.
+   * Prefix allocation preserves every piastre across repeated partial returns;
+   * exact shade identities keep one variant from consuming another's ceiling.
    */
-  const totalReturnValue = round(
-    returnedValue(
+  const returnQuote = (() => { try { return { value: round(ordinaryReturnValue(
       selectedOrder ?? {},
-      returnEntries.map((e) => ({
+      returnEntries.filter(e => e.quantity > 0).map((e) => ({
         productId: e.product_id,
+        variantName: e.variant_name,
         quantity: e.quantity,
         unitPrice: e.unit_price,
-      })),
-    ),
-  );
+      })), returnRecords, orders,
+    )), error: null }; } catch (error) { return { value: 0, error: error instanceof Error ? error.message : String(error) }; } })();
+  const totalReturnValue = returnQuote.value;
   const exchangeTotal = exchangeProduct ? productPrice(exchangeProduct) * exchangeQty : 0;
   const priceDiff = priceDifference(exchangeTotal, totalReturnValue);
 
@@ -426,8 +428,29 @@ export function Returns() {
    */
 
   const handleReturn = async () => runOnce(async () => {
+    try {
+      const recovered = await resolvePendingFinancialEvent("return_confirmed");
+      if (recovered) {
+        await refreshReturnDocuments();
+        await refreshStock();
+        toast.success("تم تأكيد المرتجع السابق. راجع السجل قبل تسجيل مرتجع جديد.");
+        setSelectedOrder(null);
+        return;
+      }
+    } catch (error) {
+      toast.error(`تعذّر تأكيد المرتجع السابق. ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
     if (!selectedOrder) return;
+    if (exchangeMode) {
+      // The dedicated exchange command owns both legs and historical bundle
+      // selections. Never commit this legacy screen's refund before asking
+      // another request to reserve the replacement.
+      navigate(`/ecommerce-orders?exchangeOf=${encodeURIComponent(selectedOrder.id)}`);
+      return;
+    }
     const itemsToReturn = returnEntries.filter((e) => e.quantity > 0);
+    if (returnQuote.error) { toast.error(returnQuote.error); return; }
     if (itemsToReturn.length === 0) {
       toast.error("اختر منتج واحد على الأقل للإرجاع");
       return;
@@ -443,18 +466,20 @@ export function Returns() {
     const returned_items = itemsToReturn.map((e) => ({
       product_id: e.product_id,
       product_name: e.product_name,
+      variantName: e.variant_name,
       quantity: e.quantity,
       // Same valuation as `totalReturnValue` above, through the same function,
       // so the record and the ledger cannot state different refunds.
       refund_amount: round(
-        returnedValue(selectedOrder ?? {}, [
-          { productId: e.product_id, quantity: e.quantity, unitPrice: e.unit_price },
-        ]),
+        ordinaryReturnValue(selectedOrder ?? {}, [
+          { productId: e.product_id, variantName: e.variant_name, quantity: e.quantity },
+        ], returnRecords, orders),
       ),
     }));
 
     const returnLineItems = itemsToReturn.map((e) => ({
       productId: e.product_id,
+      variantName: e.variant_name,
       quantity: e.quantity,
       unitPrice: e.unit_price,
       unitCost: e.unit_cost,
@@ -504,6 +529,12 @@ export function Returns() {
           customerName: selectedOrder.customerName,
           type: exchangeMode ? "exchange" : "return",
           itemCount: itemsToReturn.length,
+          returnUnits: returnLineItems,
+          return_cause: counterCause,
+          notes: notes.trim(),
+          stockItems: returnLineItems.flatMap(item => item.isBundle
+            ? (item.bundleItems ?? []).map(part => ({ ...part, quantity: part.quantity * item.quantity }))
+            : [item]),
         },
         lines: buildReturnConfirmedLines({
           items: returnLineItems,
@@ -535,15 +566,15 @@ export function Returns() {
       });
     } catch (e) {
       toast.error(
-        `لم يُسجَّل المرتجع ولم يتغيّر المخزون. ${e instanceof Error ? e.message : String(e)}`
+        `تعذّر تأكيد المرتجع. أعد المحاولة للتحقق من نفس العملية دون تكرارها. ${e instanceof Error ? e.message : String(e)}`
       );
       setIsWorking(false);
       return;
     }
 
-    // The goods are back the moment that event lands — before the exchange
-    // leg, which has its own failure path that returns early. Restocking
-    // after it would lose the return on exactly the run that needs it kept.
+    try {
+    // The event, physical stock and required return document committed
+    // together. These are only display refreshes.
     useBusinessStore.getState().applyStockMoves(
       returned_items.map((item: any) => ({
         productId: item.product_id,
@@ -552,126 +583,7 @@ export function Returns() {
       })),
     );
 
-    if (exchangeMode) {
-      // The replacement going out is genuinely a second business event — goods
-      // back, then different goods out — so it is its own `sale`. If it fails
-      // the return above still stands on its own and stays correct; the
-      // message says exactly that so the operator knows what to redo.
-      try {
-        await appendEvent({
-          kind: "sale",
-          actor: "مرتجعات",
-          refType: "exchange",
-          refId: selectedOrder.orderNumber,
-          payload: { customerName: selectedOrder.customerName, channel: "exchange" },
-          lines: buildSaleLines({
-            items: [
-              {
-                productId: exchange_product_id,
-                quantity: exchangeQty,
-                unitPrice: productPrice(exchangeProduct),
-                unitCost: costOf(exchange_product_id),
-              },
-            ],
-            wallet,
-            customerId: customer?.id,
-            channel: "exchange",
-          }),
-        });
-      } catch (e) {
-        // The return already happened and the goods are back on the shelf, so
-        // it stays. What must not happen is the replacement being forgotten:
-        // record the return WITH the outstanding replacement on it, so the
-        // obligation survives this dialog, this screen and this session.
-        // AWAITED. The whole point of this branch is that the outstanding
-        // replacement must survive the dialog — an un-awaited write that RLS
-        // refuses would drop the obligation on the floor while the toast below
-        // told the user it had been recorded as pending.
-        await addReturnRecord({
-          original_order_id: selectedOrder.id,
-          type: "exchange",
-          customer_name: selectedOrder.customerName,
-          customer_phone: selectedOrder.customerPhone,
-          governorate: selectedOrder.governorate ?? "",
-          returned_items,
-          pending_replacement: {
-            product_id: exchange_product_id,
-            product_name: exchangeProduct?.name || "",
-            quantity: exchangeQty,
-            price: productPrice(exchangeProduct),
-          },
-          financial_difference: -totalReturnValue,
-          processed_by: "owner",
-          return_cause: counterCause,
-          notes: notes.trim(),
-        }, { afterCommit: true });
-        refreshStock();
-        toast.error(
-          `تم تسجيل الإرجاع، لكن المنتج البديل لم يُسجَّل. العملية مسجّلة كـ "بديل معلّق" تحت — لازم تسجّله كبيع. ${e instanceof Error ? e.message : String(e)}`
-        );
-        setIsWorking(false);
-        setSelectedOrder(null);
-        setReturnEntries([]);
-        return;
-      }
-
-      // The replacement left the shelf. The ledger recorded it as a sale
-      // above; this is the record catching up.
-      useBusinessStore.getState().applyStockMoves([
-        { productId: exchange_product_id, delta: -exchangeQty, variantName: exchangeVariantName },
-      ]);
-    }
-
-    // AWAITED, and the success toast + form reset below only run if the
-    // record actually landed. Previously a refused write still produced
-    // "تمت عملية الاستبدال بنجاح" and cleared the screen.
-    try {
-      await addReturnRecord({
-      original_order_id: selectedOrder.id,
-      type: exchangeMode ? "exchange" : "return",
-      customer_name: selectedOrder.customerName,
-      customer_phone: selectedOrder.customerPhone,
-      governorate: selectedOrder.governorate ?? "",
-      returned_items,
-      ...(exchangeMode
-        ? {
-            // Array-shaped, matching the POS writer. One item today — this
-            // picker offers a single replacement — but the two writers must
-            // not disagree about the shape of the same column.
-            exchanged_item: [
-              {
-                product_id: exchange_product_id,
-                product_name: exchangeProduct?.name || "",
-                quantity: exchangeQty,
-                price: productPrice(exchangeProduct),
-              },
-            ],
-          }
-        : {}),
-      financial_difference: exchangeMode ? priceDiff : -totalReturnValue,
-      processed_by: "owner",
-      return_cause: counterCause,
-      notes: notes.trim(),
-    }, { afterCommit: true });
-
-    // The cause the operator picked belongs on the ORDER too, not only on the
-    // return record. Only the courier path stamped it, so a counter return for
-    // a shop-caused reason left `orders.return_cause = 'unknown'` while its
-    // record said `shop` — two documents disagreeing about the same fact, and
-    // every "who caused our returns" report reading the order under-counted.
-    //
-    // Deliberately NOT `status` or `returnConfirmedAt`: this screen returns
-    // individual LINES, so a partial return must not mark the whole order
-    // returned. The quantity ceiling is derived from the records
-    // (`remainingUnits`), not from a flag on the order.
-    //
-    // `.catch` and not awaited into the main try: the return is already in the
-    // ledger and the goods are already back, so a refused stamp must not report
-    // the return as failed.
-    await useOrderStore
-      .getState()
-      .updateOrder(selectedOrder.id, { return_cause: counterCause } as never, { afterCommit: true })
-      .catch(() => {});
+    await refreshReturnDocuments();
 
     refreshStock();
     toast.success(
@@ -694,15 +606,6 @@ export function Returns() {
       // Back to "unknown", so the next return starts unclassified rather than
       // inheriting the last operator's answer.
       setCounterCause("unknown");
-    } catch (e) {
-      // The ledger already has the return — the goods ARE back on the shelf.
-      // Only the record document failed, so the screen must not claim success
-      // and must not clear what the user entered.
-      toast.error(
-        `المخزون رجع فعلاً، لكن سجل المرتجع متسجّلش. متعملش الإرجاع تاني. ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
     } finally {
       setIsWorking(false);
     }
@@ -884,7 +787,7 @@ export function Returns() {
             {returnEntries.map((entry) => {
               return (
                 <div
-                  key={entry.product_id}
+                  key={entry.line_key}
                   className="flex items-center justify-between p-3 rounded-xl border border-border bg-muted/30"
                 >
                   <div className="flex-1">
@@ -907,7 +810,7 @@ export function Returns() {
                       max={entry.ordered}
                       value={entry.quantity}
                       onChange={(e) =>
-                        updateReturnQty(entry.product_id, parseInt(e.target.value) || 0)
+                        updateReturnQty(entry.line_key, parseInt(e.target.value) || 0)
                       }
                       className="w-16 h-8 text-center rounded border border-input bg-background text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
                     />
@@ -1095,6 +998,8 @@ export function Returns() {
                         </span>
                       )}
                     </p>
+                    {rec.id.startsWith("pos-exchange:")&&<><p>{posCashLabel(rec.financial_difference)}{rec.financial_difference?`: ${Math.abs(rec.financial_difference).toLocaleString("ar-EG")} ج.م`:""}</p><Button size="sm" variant="outline" onClick={()=>setReceiptEventId(rec.id.slice("pos-exchange:".length))}>عرض إيصال الاستبدال</Button></>}
+                    {rec.governorate==="POS"&&rec.id.startsWith("return:")&&<Button size="sm" variant="outline" onClick={()=>setReceiptEventId(rec.id.slice("return:".length))}>عرض إيصال المرتجع</Button>}
                   </div>
                   <span className="text-xs text-muted-foreground shrink-0">
                     {new Date(rec.created_at).toLocaleDateString("ar-EG")}
@@ -1138,6 +1043,7 @@ export function Returns() {
           </div>
         </TabsContent>
       </Tabs>
+    <Dialog open={!!receiptEventId} onOpenChange={open=>{if(!open)setReceiptEventId(null);}}><DialogContent dir="rtl" className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>الإيصال المالي المحفوظ</DialogTitle><DialogDescription>قراءة فقط من دفتر العملية الأصلية دون تسجيل أي حركة جديدة.</DialogDescription></DialogHeader>{receiptEventId&&<PosReceiptDetails eventId={receiptEventId}/>}</DialogContent></Dialog>
       
       <Dialog open={confirmDialog.open} onOpenChange={(open) => !open && setConfirmDialog({ open: false, orderId: "" })}>
         <DialogContent>

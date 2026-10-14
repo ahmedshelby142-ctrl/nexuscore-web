@@ -1,9 +1,14 @@
+import {orderManagementSummary} from "@/lib/orderManagement";
+import {OrderQueueWorkspace,OrderOperationPanel} from "./OrderQueueWorkspace";
+import {fulfillmentSummary} from "@/lib/orderFulfillment";
 import {expandPendingOrderItems} from "@/lib/pendingOrderItems";
+import { commitOrderPayment, resolvePendingOrderPayment } from "@/lib/orderPayment";
 import {ExchangeReturnPanel} from "./ExchangeReturnPanel";
+import {OrderFulfillmentPanel} from "./OrderFulfillmentPanel";
 import {refreshFeatureStock} from "@/services/featureStockMirror";
 import { bundleAvailableStock } from "@/lib/product";
 import { useRunOnce } from "@/hooks/useSubmitGate";
-import { useCallback, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import {
   ShoppingBag,
   Truck,
@@ -41,7 +46,6 @@ import { useCustomerStore } from "@/store/useCustomerStore";
 import { useShippingRatesStore } from "@/store/useShippingRatesStore";
 import {
   rateFor,
-  clearsShippingDebt,
   depositDispositionOn,
   depositRefundEligible,
   depositResolutionState,
@@ -74,11 +78,9 @@ import { appendEvent, balancesByRef, type NewEvent } from "@/lib/ledger";
 import {
   buildOrderDeliveredLines,
   buildReturnPendingLines,
-  buildCourierSettlementLines,
   buildOrderCancelledLines,
   buildReturnConfirmedLines,
   buildOrderRTOLines,
-  buildOrderPaymentLines,
   orderItemsTotal,
 } from "@/lib/ledger/orders";
 import { useStock } from "@/lib/ledger/useStock";
@@ -99,6 +101,8 @@ import {
 } from "@/lib/ledger/wholesale";
 import { commitWholesaleReturn, WHOLESALE_RETURN_FORBIDDEN } from "@/lib/wholesaleReturnDoc";
 import { runFinancialCommand, resolvePendingFinancialCommand } from "@/lib/financialCommand";
+import { commitOrderDelivery, resolvePendingOrderDelivery } from "@/lib/courierSettlement";
+import { courierSettlementAmounts } from "@/lib/courierBatch";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
 import { refreshDiscountRow } from "@/services/discountUsage";
 import { WholesaleReturnPanel } from "@/components/wholesale/WholesaleReturnPanel";
@@ -173,6 +177,8 @@ function statusBadge(status: EcommerceOrderStatus) {
   );
 }
 
+const OrderActivityPanel=lazy(()=>import("./OrderActivityPanel").then(m=>({default:m.OrderActivityPanel})));
+
 export function OrdersPage() {
   const { orders, updateOrderStatus, updateOrder } = useOrderStore();
   const products = useBusinessStore((s) => s.products);
@@ -197,6 +203,8 @@ export function OrdersPage() {
   const shippingRates = useShippingRatesStore((s) => s.rows);
   const { reconcileCourierOrder } = useFinancialStore();
   const [filter, setFilter] = useState<EcommerceOrderStatus>("pending");
+  const [selectedOrderId,setSelectedOrderId]=useState<string|null>(null);
+  const [detailsOpen,setDetailsOpen]=useState(false);
   const [reconcileDialog, setReconcileDialog] = useState<{ orderId: string; open: boolean }>({
     orderId: "",
     open: false,
@@ -478,6 +486,8 @@ export function OrdersPage() {
   const editingOrder = orders.find((o) => o.id === editOrderId) ?? null;
   /** The order the deliver dialog is about, for display only. */
   const deliverOrder = orders.find((o) => o.id === reconcileDialog.orderId) ?? null;
+  const deliverAmounts = deliverOrder ? courierSettlementAmounts(deliverOrder) : null;
+  const deliveryNet = deliverAmounts ? round(deliverAmounts.cod - deliverAmounts.fee, 2) : null;
 
   /**
    * The order the return dialog is about, and its trader if it had one.
@@ -1040,6 +1050,7 @@ export function OrdersPage() {
               depositAmount: order.depositAmount,
               wallet: targetWallet,
               codAmount: order.expectedCod,
+              exchangeCredit: order.exchangeDetails?.credit ? { id: order.exchangeDetails.id, amountPiastres: order.exchangeDetails.credit.allocatedPiastres } : undefined,
               courierId: courierIdOf(order),
               customerId: customerId ?? undefined,
               channel: "ecommerce",
@@ -1236,7 +1247,7 @@ export function OrdersPage() {
           }),
         });
       }
-      
+
       // ONE transaction: the events above, the order's `returnConfirmedAt` +
       // `return_cause`, and — when the customer caused a plain return — +1 owed
       // trip (`countsAsWastedTrip`; an exchange is not a wasted trip). It used
@@ -1386,6 +1397,15 @@ export function OrdersPage() {
    * so the Treasury shows the cash under the account it really arrived in.
    */
   const confirmPayment = async () => runOnce(async () => {
+    try {
+      if (await resolvePendingOrderPayment()) {
+        refreshWallets(); setPayOrderId(null);
+        return;
+      }
+    } catch (error) {
+      setActionError(`تعذّر تأكيد الدفعة السابقة؛ أعد المحاولة للتحقق من نفس العملية. ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
     const order = currentOrder(payOrderId ?? "");
     if (!order) return;
 
@@ -1403,36 +1423,13 @@ export function OrdersPage() {
     setIsWorking(true);
     setActionError(null);
     try {
-      await appendEvent({
-        // The existing kind for "a customer paid us". Deliberately NOT
-        // `order_placed`: the dashboard counts those as عمليات, so a top-up
-        // would invent an order that never happened.
-        kind: "client_payment",
-        actor: "أونلاين",
-        refType: "ecommerce_order",
-        refId: order.orderNumber,
-        payload: {
-          type: "order_additional_payment",
-          customerName: order.customerName,
-          wallet: payWallet,
-          amount: payValue,
-        },
-        lines: buildOrderPaymentLines({ wallet: payWallet, amount: payValue }),
-      });
-
-      await useOrderStore.getState().updateOrder(order.id, {
-        depositAmount: round((order.depositAmount ?? 0) + payValue),
-        expectedCod: round(Math.max(0, (order.expectedCod ?? 0) - payValue)),
-        // Remember the till of the FIRST money in, so an order that was never
-        // topped up reads exactly as it did before.
-        depositWallet: canonicalWallet(order.depositWallet ?? payWallet),
-      });
+      await commitOrderPayment(order, payValue, payWallet);
 
       refreshWallets();
       setPayOrderId(null);
     } catch (e) {
       setActionError(
-        `لم تُسجَّل الدفعة ولم يتغيّر أي رصيد. ${e instanceof Error ? e.message : String(e)}`,
+        `تعذّر تأكيد الدفعة؛ أعد المحاولة للتحقق من نفس العملية دون تكرارها. ${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       setIsWorking(false);
@@ -1440,6 +1437,18 @@ export function OrdersPage() {
   });
 
   const confirmDeliver = async () => runOnce(async () => {
+    // Recover the original transaction before a refreshed delivered status
+    // makes the old dialog ineligible. Never deliver or settle it a second time.
+    try {
+      if (await resolvePendingOrderDelivery()) {
+        refreshStock(); refreshWallets(); refreshDebt();
+        setReconcileDialog({ orderId: "", open: false });
+        return;
+      }
+    } catch (error) {
+      setActionError(`تعذّر تأكيد العملية السابقة؛ أعد المحاولة بنفس العملية. ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
     const order = currentOrder(reconcileDialog.orderId);
     if (!order) return;
     if ((saleMode === "wholesale" || soldOnWholesaleInvoice(order)) && !maySellWholesale) {
@@ -1497,36 +1506,10 @@ export function OrdersPage() {
       if (saleMode === "retail") {
         // ONE event for the delivery. This is where the sale is booked: the
         // stock already left at order_placed, so no stock line here.
-        await appendEvent({
-          kind: "order_delivered",
-          actor: "أونلاين",
-          refType: "ecommerce_order",
-          refId: order.orderNumber,
-          payload: { customerName: order.customerName, channel: "ecommerce" },
-          lines: buildOrderDeliveredLines({
-            items: (order.stockItems ?? []).map((line) => ({
-              productId: line.productId,
-              quantity: line.quantity,
-              unitPrice: line.unitPrice,
-              // The cost snapshotted when the stock was reserved, not today's.
-              unitCost: line.unitCost ?? 0,
-            })),
-            // Goods and shipping are kept apart on purpose: only the goods are
-            // our revenue. The delivery fee the customer paid passes through to
-            // the courier as `payable_courier`.
-            goodsTotal: order.totalAmount,
-            shippingFee: order.shippingFee,
-            wastedTripCompensation: order.wastedTripCompensation ?? 0,
-            courierFee: order.courierFee,
-              courierCompensation: order.exchangeDetails?.cause === "courier",
-            depositAmount: order.depositAmount,
-            wallet: targetWallet,
-            codAmount: order.expectedCod,
-            courierId: courierIdOf(order),
-            customerId: customerId ?? undefined,
-            channel: "ecommerce",
-          }),
-        });
+        const amounts = courierSettlementAmounts(order);
+        await commitOrderDelivery({ orderId: order.id, settle: deliverMode === "settle",
+          wallet: targetWallet, netReceived: round(amounts.cod - amounts.fee, 2) });
+        if (deliverMode === "settle") reconcileCourierOrder(order.id, targetWallet);
       } else {
         // The toggle is hidden for these roles; this is the guard that stops a
         // stale mode booking the ledger event whose invoice RLS will refuse.
@@ -1645,58 +1628,12 @@ export function OrdersPage() {
         } as never, { afterCommit: true });
       }
 
-      const expectedCod = saleMode === "wholesale" ? (parseFloat(wholesalePaidAmount) || 0) : order.expectedCod;
-
-      // A separate click-through: the courier hands the COD over now. Its own
-      // event, because collecting the cash is a different moment from
-      // delivering the goods even when they happen a second apart.
-      if (deliverMode === "settle" && expectedCod > 0) {
-        await appendEvent({
-          kind: "courier_settlement",
-          actor: "أونلاين",
-          refType: "ecommerce_order",
-          refId: order.orderNumber,
-          payload: { courierName: order.courierName ?? null },
-          lines: buildCourierSettlementLines({
-            courierId: courierIdOf(order),
-            wallet: targetWallet,
-            amount: expectedCod,
-            commission: order.courierFee,
-          }),
-        });
-        reconcileCourierOrder(reconcileDialog.orderId, targetWallet);
-        // The COD is in our hands, so this order is no longer part of any
-        // batch the courier owes us (§3.9). Stamped with the same field the
-        // batch settlement uses, so "settled" has ONE meaning.
-        await updateOrder(order.id, { codSettledAt: new Date() });
-      }
-
       // `wholesaleClientId` is stamped alongside the invoice link, up in the
       // wholesale branch — one write for both, so the return path can never
       // find a trader's order without the invoice that prices it.
 
-      // The order that carried the doubled fee has landed and been paid for, so
-      // ONE wasted trip is recovered. A customer who returned three orders owes
-      // three, and settles them one delivery at a time.
-      //
-      // The flag is CONSUMED in the same breath, and that is what makes this
-      // exactly-once. `shippingPenaltyApplied` means "this order charged a
-      // penalty that has not yet been credited back"; once it has, the order no
-      // longer holds a claim. Without that, any replay of this path — an edit,
-      // a re-delivery after a status correction, a stale tab — would credit the
-      // same trip again and hand the customer free shipping they never earned.
-      // The audit trail survives regardless: base shipping and the recovered
-      // compensation remain separately recorded on the order.
-      //
-      // Until migration 026 this branch was unreachable: the flag was in no
-      // column and no sync whitelist, so `clearsShippingDebt` was always false
-      // and the debt never cleared at all — a permanent surcharge.
-      if (clearsShippingDebt(order) && customerId) {
-        await useCustomerStore.getState().settleWastedTrip(customerId);
-        await updateOrder(order.id, { shippingPenaltyApplied: false });
-      }
-
-      await updateOrderStatus(reconcileDialog.orderId, "delivered");
+      // Retail trip recovery commits inside record_order_delivery, including replay.
+      if (saleMode !== "retail") await updateOrderStatus(reconcileDialog.orderId, "delivered");
 
       // The delivery moved stock, cash and — in وضع الجملة — the trader's debt.
       // None of those were re-read, so every balance this screen had was stale
@@ -1715,7 +1652,7 @@ export function OrdersPage() {
       setReconcileDialog({ orderId: "", open: false });
     } catch (e) {
       setActionError(
-        `لم تُسجَّل العملية ولم يتغيّر أي رصيد. ${e instanceof Error ? e.message : String(e)}`,
+        `تعذّر تأكيد العملية؛ راجع الحالة وأعد المحاولة للتحقق من نفس العملية دون تكرارها. ${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       releaseOrder(order.id);
@@ -1723,183 +1660,22 @@ export function OrdersPage() {
     }
   });
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-3xl font-display font-bold">صفحة الطلبات</h1>
-          <p className="text-muted-foreground mt-1">
-            حلقة الطلبات المتصلة بالمخزون والعملاء وشركات الشحن والأرباح
-          </p>
-          {/* Errors from actions outside the dialog (مرتجع) surface here. */}
-          {actionError && !reconcileDialog.open && (
-            <div className="mt-3 rounded-lg p-3 bg-red-50 border border-red-200">
-              <p className="text-sm font-medium text-red-900">{actionError}</p>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
-            <Badge variant="secondary">انتظار: {totals.pending}</Badge>
-            <Badge>مع المندوب: {totals.shipped}</Badge>
-            <Badge variant="outline">تم التسليم: {totals.delivered}</Badge>
-            <Badge variant="destructive">مرتجع: {totals.returned}</Badge>
-            <Badge variant="outline">ملغي: {totals.cancelled}</Badge>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExportPdf}
-            title="تصدير كل الطلبات إلى PDF"
-          >
-            <Printer className="size-4 ml-2" />
-            تصدير PDF
-          </Button>
-          <Button asChild size="sm">
-            {/* @ts-ignore */}
-            <Link to="/ecommerce-orders">
-              <ShoppingBag className="size-4 ml-2" />
-              إضافة طلب جديد
-            </Link>
-          </Button>
-          {/* "إنشاء طلب استبدال" used to sit here, as a bare
-              `<Link to="/ecommerce-orders">` — the SAME destination as "إضافة
-              طلب جديد" beside it, carrying no order, no customer and not even
-              the exchange flag. It opened an empty form. An exchange is an
-              action ON an order, so it now lives on the order's own row, where
-              it can also be hidden for the orders that are not eligible. */}
-        </div>
-      </div>
 
-      <OrderSearch
-        value={query}
-        onChange={setQuery}
-        resultCount={filteredOrders.length}
-        totalCount={ordersInTab.length}
-      />
-
-      {/* Native date inputs — the platform already has a date picker in every
-          locale, including this one. The counters above follow these bounds,
-          so the badges and the table always describe the same period. */}
-      <div className="flex items-end gap-3 flex-wrap">
-        <div className="space-y-1">
-          <Label htmlFor="orders-from" className="text-xs">
-            من تاريخ
-          </Label>
-          <Input
-            id="orders-from"
-            type="date"
-            value={fromDate}
-            max={toDate || undefined}
-            onChange={(e) => setFromDate(e.target.value)}
-            className="w-40"
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="orders-to" className="text-xs">
-            إلى تاريخ
-          </Label>
-          <Input
-            id="orders-to"
-            type="date"
-            value={toDate}
-            min={fromDate || undefined}
-            onChange={(e) => setToDate(e.target.value)}
-            className="w-40"
-          />
-        </div>
-        {(fromDate || toDate) && (
-          <>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setFromDate("");
-                setToDate("");
-              }}
-            >
-              كل الفترات
-            </Button>
-            <p className="text-xs text-muted-foreground pb-2">
-              الأرقام فوق بتحسب الفترة دي بس ({ordersInPeriodList.length} طلب)
-            </p>
-          </>
-        )}
-      </div>
-
-      <Tabs value={filter} onValueChange={(value) => setFilter(value as EcommerceOrderStatus)}>
-        <TabsList>
-          {(Object.keys(STATUS_META) as EcommerceOrderStatus[]).map((status) => {
-            const meta = STATUS_META[status];
-            const Icon = meta.icon;
-            return (
-              <TabsTrigger key={status} value={status}>
-                <Icon className="size-4 ml-2" />
-                {meta.label}
-              </TabsTrigger>
-            );
-          })}
-        </TabsList>
-
-        <TabsContent value={filter} className="space-y-4">
-          <div className="rounded-2xl border border-border bg-card overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-right px-4">رقم الطلب</TableHead>
-                  <TableHead className="text-right px-4">العميل</TableHead>
-                  <TableHead className="text-right px-4">العنوان</TableHead>
-                  <TableHead className="text-right px-4">العناصر</TableHead>
-                  <TableHead className="text-center px-4">الإجمالي</TableHead>
-                  <TableHead className="text-center px-4">COD المستحق</TableHead>
-                  <TableHead className="text-center px-4">الحالة</TableHead>
-                  <TableHead className="text-center px-4">إجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredOrders.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-12">
-                      <CollectionGate tables={["orders"]}>
-                      <EmptyState
-                        icon={query || fromDate || toDate ? Search : Inbox}
-                        title={
-                          query || fromDate || toDate
-                            ? "لا توجد نتائج مطابقة للبحث"
-                            : "لا توجد طلبات في هذا التصنيف"
-                        }
-                        description={
-                          query || fromDate || toDate
-                            ? "جرب بحث تاني أو غيّر التواريخ"
-                            : "طلباتك هتظهر هنا لما تتنقل للتصنيف ده"
-                        }
-                      />
-                      </CollectionGate>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filteredOrders.map((order) => {
+  const selectedOrder=orders.find(order=>order.id===selectedOrderId);
+  const renderOrderDetails=(order:EcommerceOrder)=>{
                     // The courier is holding money only if this order had COD.
                     // This used to ask a `courierReceivables` document written
                     // at SHIP time, whose `amountDue` is `totalAmount −
                     // courierFee` — not the COD, and created even for a fully
                     // prepaid order where the courier carries nothing.
-                    const hasCod = order.expectedCod > 0;
+                    const hasCourierObligation = order.expectedCod > 0 || (order.courierFee || order.shippingFee || 0) > 0;
                     const actions = !wholesaleEnabled && (order.wholesaleClientId || soldOnWholesaleInvoice(order)) ? [] : actionsFor(order.status);
                     // One answer for the button and for the explanation beside
                     // it, so a hidden action always has a reason on screen.
                     const exBlock = exchangeBlock(order, returnRecords, orders);
-                    return (
-                      <TableRow key={order.id}>
-                        <TableCell className="font-mono px-4 whitespace-nowrap">
-                          {order.orderNumber}
-                          {order.isExchange && (
-                            <Badge variant="secondary" className="mr-2 border-red-200 bg-red-50 text-red-700">
-                              استبدال
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="px-4">
+    const summary=orderManagementSummary(order);
+    return <div className="space-y-4 [overflow-wrap:anywhere]">
+      <section aria-label="بيانات العميل" className="space-y-2 rounded-lg border p-3"><h3 className="font-semibold">العميل والعنوان</h3>
                           <div className="flex items-center gap-2">
                             <User className="size-4 text-muted-foreground" />
                             <div>
@@ -1907,39 +1683,19 @@ export function OrdersPage() {
                               <p className="text-xs text-muted-foreground">{order.customerPhone}</p>
                             </div>
                           </div>
-                        </TableCell>
-                        <TableCell className="px-4 max-w-[220px]">
+
                           <div className="flex items-center gap-1.5 text-muted-foreground">
                             <MapPin className="size-4 shrink-0" />
-                            <span className="truncate">{order.address}</span>
+                            <span className="break-words">{order.address}</span>
                           </div>
-                        </TableCell>
-                        <TableCell className="px-4">
-                          <div className="space-y-1 max-w-[220px]">
-                            {order.items.map((item) => (
-                              <div key={item.id} className="flex items-center gap-1.5 text-xs">
-                                <Package className="size-3 text-muted-foreground shrink-0" />
-                                <span className="truncate">
-                                  {item.bundleName
-                                    ? `${item.bundleName} × ${item.quantity}`
-                                    : `${item.productName} × ${item.quantity}`}
-                                </span>
-                              </div>
-                            ))}
-                            {order.stockItems && order.stockItems.length > 0 && (
-                              <p className="text-[10px] text-muted-foreground pr-5">
-                                خصم المخزون:{" "}
-                                {order.stockItems
-                                  .map((item) => `${item.productName} (${item.quantity})`)
-                                  .join("، ")}
-                              </p>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-center px-4 font-mono whitespace-nowrap">
-                          {formatMoney(order.totalAmount)}
-                        </TableCell>
-                        <TableCell className="text-center px-4 font-mono whitespace-nowrap text-amber-600">
+                        <p className="text-xs">{[order.governorate,order.city].filter(Boolean).join(" — ")}</p></section>
+      <section aria-label="ملخص حساب الطلب" className="rounded-lg border p-3 text-sm"><h3 className="font-semibold">الحسابات</h3>
+        <dl className="grid grid-cols-2 gap-2"><dt>قيمة المنتجات بعد الخصم</dt><dd>{formatMoney(order.totalAmount)}</dd><dt>شحن العميل</dt><dd>{formatMoney(order.shippingFee)}</dd>
+          {order.wastedTripCompensation>0&&<><dt>تعويض رحلة العميل</dt><dd>{formatMoney(order.wastedTripCompensation)}</dd></>}
+          <dt>إجمالي التزام العميل</dt><dd>{summary.total==null?"يحتاج مراجعة":formatMoney(summary.total)}</dd><dt>عربون نقدي مدفوع</dt><dd>{formatMoney(order.depositAmount)}</dd>
+          {order.depositAmount>0&&<><dt>خزينة العربون</dt><dd>{order.depositWallet?(WALLET_LABELS[canonicalWallet(order.depositWallet) as WalletType]??"خزينة غير مسجلة"):"خزينة غير مسجلة"}</dd></>}
+          {order.exchangeDetails?.credit&&<><dt>{order.exchangeDetails.credit.status==="refund_due"?"رصيد الأصل مستحق للعميل":"رصيد الأصل المخصص"}</dt><dd>{formatMoney(order.exchangeDetails.credit.allocatedPiastres/100)}</dd>{order.exchangeDetails.credit.refundedAllocationPiastres>0&&<><dt>رد نقدي مسجل من رصيد الأصل</dt><dd>{formatMoney(order.exchangeDetails.credit.refundedAllocationPiastres/100)}</dd></>}</>}
+          <dt>المتبقي / حالة التحصيل</dt><dd>
                           {(() => {
                             // Outstanding only while the customer still owes it —
                             // see `codState`. A returned order owes nothing here.
@@ -1952,11 +1708,10 @@ export function OrdersPage() {
                               </span>
                             );
                           })()}
-                        </TableCell>
-                        <TableCell className="text-center px-4">
-                          {statusBadge(order.status)}
-                        </TableCell>
-                        <TableCell className="text-center px-4">
+                        </dd>
+        </dl>
+      </section>
+      <section aria-label="إجراءات الطلب" className="space-y-2"><h3 className="font-semibold">الإجراءات المتاحة</h3>
                           {/* Only the actions legal for THIS status are
                               rendered. Nothing relies on `disabled` to hide an
                               illegal transition — an action that cannot happen
@@ -1966,7 +1721,7 @@ export function OrdersPage() {
                               <Button
                                 variant="outline"
                                 size="sm"
-                                disabled={isWorking}
+                                disabled={isWorking || fulfillmentSummary(order.fulfillment)?.ready === false}
                                 onClick={() => updateOrderStatus(order.id, "shipped")}
                               >
                                 تسليم للمندوب
@@ -1976,20 +1731,20 @@ export function OrdersPage() {
                             {/* The two ways a delivery can end, named for what
                                 actually happens to the money. "تسليم وتوريد"
                                 said neither. */}
-                            {actions.includes("settle") && hasCod && (
+                            {actions.includes("settle") && hasCourierObligation && (
                               <Button
                                 size="sm"
                                 disabled={isWorking}
                                 onClick={() => openDeliver(order.id, "settle")}
                               >
-                                تم التسليم واستلمنا الفلوس
+                                تم التسليم وتسوية المندوب
                               </Button>
                             )}
                             {actions.includes("deliver") && (
                               <Button
                                 variant="outline"
                                 size="sm"
-                                disabled={isWorking}
+                                disabled={isWorking || fulfillmentSummary(order.fulfillment)?.ready === false}
                                 onClick={() => openDeliver(order.id, "deliver")}
                               >
                                 تم التسليم والفلوس لسه مع المندوب
@@ -2155,10 +1910,11 @@ export function OrdersPage() {
                                 </Button>
                               )}
 
-                            {order.exchangeDetails && <ExchangeReturnPanel order={order} onSaved={saved=>{
+
+                            {order.exchangeDetails && <OrderOperationPanel revision={order.updated_at} title="إدارة الاستبدال" summary={`الأصل ${order.exchangeDetails.originalOrderNumber} — ${order.exchangeDetails.selections.reduce((n,s)=>n+s.quantity,0)} وحدة — قيمة المرتجع ${formatMoney(order.exchangeDetails.refundPiastres/100)} — ${{pending:"ينتظر الاستلام الفعلي",confirmed:"تم استلام الأصل",cancelled:"استبدال ملغى"}[order.exchangeDetails.status]} — قيمة المرتجع منفصلة عن التسوية النهائية`}> <ExchangeReturnPanel order={order} onSaved={saved=>{
                               useOrderStore.setState(state=>({orders:state.orders.map(o=>o.id===saved.id?saved:o)}));
                               refreshStock();
-                            }}/>}
+                            }}/> </OrderOperationPanel>}
 
                             {/* Money sent before the courier arrives. Only
                                 offered while something is still owed. */}
@@ -2213,13 +1969,179 @@ export function OrdersPage() {
                               </span>
                             )}
                           </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-                )}
-              </TableBody>
-            </Table>
+                        </section>
+      <details className="rounded-lg border p-3"><summary className="cursor-pointer font-semibold">المنتجات — {summary.quantity} وحدة/بوكس</summary><div className="mt-3">
+                          <div className="space-y-1 min-w-0">
+                            {order.items.map((item) => (
+                              <div key={item.id} className="flex items-center gap-1.5 text-xs">
+                                <Package className="size-3 text-muted-foreground shrink-0" />
+                                <span className="break-words">
+                                  {item.bundleName
+                                    ? `${item.bundleName} × ${item.quantity}`
+                                    : `${item.productName} × ${item.quantity}`}
+                                </span>
+                              </div>
+                            ))}
+                            {order.stockItems && order.stockItems.length > 0 && (
+                              <p className="text-[10px] text-muted-foreground pr-5">
+                                خصم المخزون:{" "}
+                                {order.stockItems
+                                  .map((item) => `${item.productName} (${item.quantity})`)
+                                  .join("، ")}
+                              </p>
+                            )}
+                          </div>
+                        </div></details>
+      {order.fulfillment&&<details className="rounded-lg border p-3"><summary className="cursor-pointer font-semibold">الحجز والنواقص</summary><OrderFulfillmentPanel fulfillment={order.fulfillment}/></details>}
+      {(order.courierName||order.courierId)&&<details className="rounded-lg border p-3"><summary className="cursor-pointer font-semibold">الشحن والمندوب</summary><p>{order.courierName||"مندوب مسجل"}</p><p>شحن العميل {formatMoney(order.shippingFee)} — تكلفة المندوب {formatMoney(order.courierFee||order.shippingFee)}</p></details>}
+      <OrderOperationPanel title="سجل حركة الطلب" summary="العمليات المرتبطة بالطلب من السجل المحفوظ؛ لا تُنشئ أي حركة جديدة."><Suspense fallback={<p role="status">جارٍ فتح السجل…</p>}><OrderActivityPanel orderId={order.id} revision={order.updated_at}/></Suspense></OrderOperationPanel>
+    </div>;
+  };
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-3xl font-display font-bold">صفحة الطلبات</h1>
+          <p className="text-muted-foreground mt-1">
+            حلقة الطلبات المتصلة بالمخزون والعملاء وشركات الشحن والأرباح
+          </p>
+          {/* Errors from actions outside the dialog (مرتجع) surface here. */}
+          {actionError && !reconcileDialog.open && (
+            <div className="mt-3 rounded-lg p-3 bg-red-50 border border-red-200">
+              <p className="text-sm font-medium text-red-900">{actionError}</p>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+            <Badge variant="secondary">انتظار: {totals.pending}</Badge>
+            <Badge>مع المندوب: {totals.shipped}</Badge>
+            <Badge variant="outline">تم التسليم: {totals.delivered}</Badge>
+            <Badge variant="destructive">مرتجع: {totals.returned}</Badge>
+            <Badge variant="outline">ملغي: {totals.cancelled}</Badge>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportPdf}
+            title="تصدير كل الطلبات إلى PDF"
+          >
+            <Printer className="size-4 ml-2" />
+            تصدير PDF
+          </Button>
+          <Button asChild size="sm">
+            {/* @ts-ignore */}
+            <Link to="/ecommerce-orders">
+              <ShoppingBag className="size-4 ml-2" />
+              إضافة طلب جديد
+            </Link>
+          </Button>
+          {/* "إنشاء طلب استبدال" used to sit here, as a bare
+              `<Link to="/ecommerce-orders">` — the SAME destination as "إضافة
+              طلب جديد" beside it, carrying no order, no customer and not even
+              the exchange flag. It opened an empty form. An exchange is an
+              action ON an order, so it now lives on the order's own row, where
+              it can also be hidden for the orders that are not eligible. */}
+        </div>
+      </div>
+
+      <OrderSearch
+        value={query}
+        onChange={setQuery}
+        resultCount={filteredOrders.length}
+        totalCount={ordersInTab.length}
+      />
+
+      {/* Native date inputs — the platform already has a date picker in every
+          locale, including this one. The counters above follow these bounds,
+          so the badges and the table always describe the same period. */}
+      <div className="flex items-end gap-3 flex-wrap">
+        <div className="space-y-1">
+          <Label htmlFor="orders-from" className="text-xs">
+            من تاريخ
+          </Label>
+          <Input
+            id="orders-from"
+            type="date"
+            value={fromDate}
+            max={toDate || undefined}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="w-40"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="orders-to" className="text-xs">
+            إلى تاريخ
+          </Label>
+          <Input
+            id="orders-to"
+            type="date"
+            value={toDate}
+            min={fromDate || undefined}
+            onChange={(e) => setToDate(e.target.value)}
+            className="w-40"
+          />
+        </div>
+        {(fromDate || toDate) && (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setFromDate("");
+                setToDate("");
+              }}
+            >
+              كل الفترات
+            </Button>
+            <p className="text-xs text-muted-foreground pb-2">
+              الأرقام فوق بتحسب الفترة دي بس ({ordersInPeriodList.length} طلب)
+            </p>
+          </>
+        )}
+      </div>
+
+      <Tabs value={filter} onValueChange={(value) => setFilter(value as EcommerceOrderStatus)}>
+        <TabsList>
+          {(Object.keys(STATUS_META) as EcommerceOrderStatus[]).map((status) => {
+            const meta = STATUS_META[status];
+            const Icon = meta.icon;
+            return (
+              <TabsTrigger key={status} value={status}>
+                <Icon className="size-4 ml-2" />
+                {meta.label}
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+
+        <TabsContent value={filter} className="space-y-4">
+          <div className="rounded-2xl border border-border bg-card overflow-hidden">
+            <OrderQueueWorkspace entries={filteredOrders.map(order=>{
+              const summary=orderManagementSummary(order);
+              const allowed=!wholesaleEnabled&&(order.wholesaleClientId||soldOnWholesaleInvoice(order))?[]:actionsFor(order.status);
+              return {id:order.id,number:order.orderNumber||"طلب بلا رقم",customer:order.customerName||"عميل غير مسجل",location:[order.governorate,order.city].filter(Boolean).join(" — "),
+                products:summary.products,quantity:summary.quantity,total:summary.total==null?"مراجعة المبلغ":formatMoney(summary.total),outstanding:summary.outstanding==null?"مراجعة المبلغ":formatMoney(summary.outstanding),
+                status:<span className="text-muted-foreground">{STATUS_META[order.status].label}</span>,badges:summary.badges,collectionLabel:summary.codLabel,
+                actions:[...(allowed.includes("edit")?[{label:"تعديل الطلب",run:()=>openEdit(order),disabled:isWorking}]:[]),...(allowed.includes("pay")&&order.expectedCod>0?[{label:"تسجيل دفعة إضافية",run:()=>openPayment(order),disabled:isWorking}]:[])]};
+            })} selectedId={selectedOrder?.id??null} onSelect={id=>{setSelectedOrderId(id);setDetailsOpen(true);}} onClose={()=>setDetailsOpen(false)} detailsOpen={detailsOpen}
+              title={selectedOrder?.orderNumber??""} status={selectedOrder?statusBadge(selectedOrder.status):null}
+              suspended={reconcileDialog.open||!!payOrderId||confirmDialog.open||resolutionDialog.open||cancelDialog.open||claimDialog.open||!!editOrderId||!!pendingVariantSelection}
+              detail={detailsOpen&&selectedOrder?renderOrderDetails(selectedOrder):null} empty={<CollectionGate tables={["orders"]}>
+                      <EmptyState
+                        icon={query || fromDate || toDate ? Search : Inbox}
+                        title={
+                          query || fromDate || toDate
+                            ? "لا توجد نتائج مطابقة للبحث"
+                            : "لا توجد طلبات في هذا التصنيف"
+                        }
+                        description={
+                          query || fromDate || toDate
+                            ? "جرب بحث تاني أو غيّر التواريخ"
+                            : "طلباتك هتظهر هنا لما تتنقل للتصنيف ده"
+                        }
+                      />
+                      </CollectionGate>}/>
           </div>
         </TabsContent>
       </Tabs>
@@ -2237,13 +2159,13 @@ export function OrdersPage() {
           <DialogHeader>
             <DialogTitle>
               {deliverMode === "settle"
-                ? "المندوب سلّم الطلب واستلمنا الفلوس"
-                : "المندوب سلّم الطلب — الفلوس لسه معاه"}
+                ? "تأكيد التسليم وتسوية المندوب"
+                : "تأكيد تسليم الطلب"}
             </DialogTitle>
             <DialogDescription>
               {deliverMode === "settle"
-                ? "العميل استلم الطلب، والمندوب ورّد المبلغ. اختر الخزينة اللي الفلوس هتدخلها — هيتخصم منها عمولة الشحن."
-                : "العميل استلم الطلب، بس المبلغ لسه مع المندوب ومحسوب عليه. هيتسجّل كمستحق عليه لحد ما يورّده."}
+                ? "راجع الصافي واختر الخزينة. الصافي الموجب تحصيل، والسالب دفع للمندوب، والصفر مقاصة دون حركة خزينة."
+                : "سيُسجّل تسليم الطلب والإيراد والتكلفة، وتبقى مستحقات المندوب مفتوحة للتسوية لاحقًا."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -2309,7 +2231,7 @@ export function OrdersPage() {
             <div className="space-y-2">
               <Label>
                 {deliverMode === "settle"
-                  ? "الفلوس تدخل في أي خزينة؟"
+                  ? "خزينة التسوية — تحصيل أو دفع"
                   : "خزينة العربون المدفوع مقدماً"}
               </Label>
               <Select value={targetWallet} onValueChange={(v) => setTargetWallet(v as WalletType)}>
@@ -2336,11 +2258,15 @@ export function OrdersPage() {
               <div className="p-3 rounded-lg bg-blue-50 border border-blue-200">
                 <p className="text-sm text-blue-900">تفاصيل التوريد:</p>
                 <p className="text-xs text-blue-700 mt-1">
-                  محصّل مع المندوب: {formatMoney(deliverOrder.expectedCod)}
+                  تحصيل العميل عند التسليم: {formatMoney(deliverOrder.expectedCod)}
                 </p>
                 <p className="text-xs text-blue-700 mt-1">
-                  عمولة المندوب على الطلب: {formatMoney(deliverOrder.courierFee)}
+                  التزام المندوب بعد المرتجعات والتعويضات: {formatMoney(deliverAmounts?.cod ?? 0)}
                 </p>
+                <p className="text-xs text-blue-700 mt-1">رسوم المندوب المسجلة: {formatMoney(deliverAmounts?.fee ?? 0)}</p>
+                {deliverMode === "settle" && <p className="text-xs text-blue-700 mt-1">
+                  {deliveryNet === 0 ? "مقاصة بدون حركة خزينة" : (deliveryNet ?? 0) < 0 ? `دفع للمندوب: ${formatMoney(-(deliveryNet ?? 0))}` : `تحصيل من المندوب: ${formatMoney(deliveryNet ?? 0)}`}
+                </p>}
               </div>
             )}
             {actionError && (
@@ -2362,7 +2288,7 @@ export function OrdersPage() {
               {isWorking
                 ? "جاري التسجيل..."
                 : deliverMode === "settle"
-                  ? "تأكيد: تم التسليم والفلوس دخلت الخزينة"
+                  ? deliveryNet === 0 ? "تأكيد التسليم والمقاصة بدون حركة خزينة" : "تأكيد التسليم وتسجيل صافي التسوية"
                   : "تأكيد: تم التسليم والفلوس مع المندوب"}
             </Button>
           </DialogFooter>
@@ -2485,7 +2411,7 @@ export function OrdersPage() {
                     editingOrder?.items?.find((l) => l.productId === line.productId && l.variantName===line.variantName)
                       ?.quantity ?? 0;
                   // What this order already holds counts as available to it.
-                  const componentRows=(editingOrder?.stockItems??[]).filter(l=>l.bundleId===line.productId);
+                  const componentRows=(editingOrder?.fulfillment?.demands??editingOrder?.stockItems??[]).filter(l=>l.bundleId===line.productId);
                   const ceiling = line.bundleId && componentRows.length && original>0
                     ? original + Math.min(...componentRows.map(c=>Math.floor(qtyOf(c.productId)/(c.quantity/original))))
                     : (products.find(p=>p.id===line.productId)?.isBundle

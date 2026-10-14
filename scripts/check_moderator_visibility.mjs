@@ -47,6 +47,7 @@ globalThis.__rows = {
 
 const STORE = (name, extra = "") => stub(`export const ${name} = { setState() {}, getState() { return { ${extra} }; } };`);
 const STUBS = {
+  "@/services/api/storeContext": stub(`export const getActiveStoreId = async () => "qa-store";`),
   "@/store/useAuthStore": stub(`export const useAuthStore = { getState: () => globalThis.__auth };`),
   "@/lib/supabase": stub(`
     const q = (table) => {
@@ -71,7 +72,7 @@ const STUBS = {
     const rpc = async (name, args) => {
       globalThis.__rpc.push(name);
       if (name === "mobile_stock_quantities") return { data: args.p_product_ids.map((id) => ({ product_id: id, qty: 3 })), error: null };
-      if (name === "mobile_order_timeline") return { data: [{ id: "e1", kind: "order_placed", occurred_at: "2026-09-27T00:00:00Z" }], error: null };
+      if (name === "read_order_activity") return { data: [{ id: "e1", kind: "order_placed", occurred_at: "2026-09-27T00:00:00Z" }], error: null };
       return { data: null, error: { message: "unknown rpc " + name } };
     };
     export const getSupabaseClient = () => ({ from: q, rpc });
@@ -197,7 +198,7 @@ test("the order timeline reads events without payload, for every role", async ()
   as("MODERATOR");
   globalThis.__rpc = [];
   const timeline = await readers.readMobileOrderTimeline("o1");
-  assert.deepEqual(globalThis.__rpc, ["mobile_order_timeline"]);
+  assert.deepEqual(globalThis.__rpc, ["read_order_activity"]);
   assert.equal(timeline.find((e) => e.status === "order_placed")?.labelAr, "تم إنشاء الطلب");
 });
 

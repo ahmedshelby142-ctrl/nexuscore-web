@@ -1,10 +1,13 @@
 import { getSupabaseClient } from "@/lib/supabase";
+import {readOrderActivity} from "@/services/orderActivity";
+import {getActiveStoreId} from "@/services/api/storeContext";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
 import { balanceOf } from "@/lib/ledger";
 import { buildableFromRecipe, variantStockFrom } from "@/lib/product";
 import { mobileVisibilityFor } from "@/mobile/navigation/mobileVisibility";
 import { useAuthStore } from "@/store/useAuthStore";
 import { formatArabicCurrency } from "@/mobile/viewmodels/formatters";
+import { bundleComponentDetails } from "@/lib/bundleDetails";
 
 export const MOBILE_PAGE_SIZE = 25;
 
@@ -87,7 +90,7 @@ const ORDER_COLUMNS = [
   "codSettledAt", "returnConfirmedAt", "returnType", "return_cause", "isExchange",
   "original_order_id", "wholesaleClientId", "shippingPenaltyApplied", "store_id", "deleted_at",
   // 054: customer-facing (not a cost), exposed by `orders_operational` to every member.
-  "wastedTripCompensation", "exchangeDetails",
+  "wastedTripCompensation", "exchangeDetails", "fulfillment",
 ].join(",");
 
 /**
@@ -311,9 +314,23 @@ export async function readMobileProducts(query: MobileListQuery = {}) {
   // Availability for a box is how many are BUILDABLE — the same
   // `buildableFromRecipe` rule desktop uses, fed from the ledger instead of
   // from hydrated product records.
+  // Deduplicate within this read only. A tab-lifetime cache pinned renamed
+  // products and variant stock indefinitely and could outlive a store switch.
+  const components = new Map<string, Promise<{ row: any; stock: number }>>();
+  const componentOf = (id: string, storeId: string) => {
+    const key = `${storeId}:${id}`;
+    let result = components.get(key);
+    if (!result) {
+      result = Promise.all([stockOf(id), readMobileRawProduct(id, storeId)])
+        .then(([balance, row]) => ({ row, stock: Math.max(0, balance.qty) }));
+      components.set(key, result);
+    }
+    return result;
+  };
   const rows = await Promise.all(page.rows.map(async (product: any) => {
     const stockBalance = await stockOf(String(product.id));
-    const recipe = product?.isBundle ? (product.bundleItems ?? product.metadata?.bundleItems) : null;
+    const isBundle = product?.isBundle === true || product?.metadata?.isBundle === true;
+    const recipe = isBundle ? (product.bundleItems ?? product.metadata?.bundleItems ?? []) : null;
 
     if (!recipe?.length) {
       return {
@@ -325,7 +342,8 @@ export async function readMobileProducts(query: MobileListQuery = {}) {
         mobileStock: Math.max(0, stockBalance.qty),
         // The shelf's COST. Held only for roles that may see it.
         mobileCost: viewerSeesCost() ? stockBalance.amount : undefined,
-        mobileIsBundle: false,
+        mobileIsBundle: isBundle,
+        ...(isBundle ? { mobileBundleComponents: [] } : {}),
       };
     }
 
@@ -339,14 +357,9 @@ export async function readMobileProducts(query: MobileListQuery = {}) {
     const componentProducts = new Map<string, any>();
     const componentStock = new Map<string, number>();
     await Promise.all(
-      recipe.map(async (c: any) => {
-        const id = String(c.productId);
-        if (componentStock.has(id)) return;
-        const [b, row] = await Promise.all([
-          stockOf(id),
-          readMobileRawProduct(id),
-        ]);
-        componentStock.set(id, Math.max(0, b.qty));
+      [...new Set<string>(recipe.map((c: any) => String(c.productId)))].map(async (id) => {
+        const { row, stock } = await componentOf(id, String(product.store_id ?? ""));
+        componentStock.set(id, stock);
         componentProducts.set(id, row);
       }),
     );
@@ -364,6 +377,7 @@ export async function readMobileProducts(query: MobileListQuery = {}) {
       // its components', derived at the moment of a movement, never stored.
       mobileCost: 0,
       mobileIsBundle: true,
+      mobileBundleComponents: bundleComponentDetails(recipe, componentProducts, String(product.store_id ?? "")),
     };
   }));
   return { ...page, rows };
@@ -389,31 +403,25 @@ export async function readMobileProduct(id: string) {
  * for each bundle component would recurse through the bundle resolver. This is
  * only ever the source of `metadata.variants`, the درجة mirror.
  *
- * Cached for the life of the tab. A recipe's components repeat across boxes and
- * across pages, and the mirror does not move between two renders of one list.
+ * Queries only the saved component identity in the originating store. Reads
+ * are deduplicated by the calling page, never retained across refresh/login.
  */
-const rawProductCache = new Map<string, Promise<any>>();
-export function readMobileRawProduct(id: string): Promise<any> {
-  const hit = rawProductCache.get(id);
-  if (hit) return hit;
-  const request = (async () => {
+export async function readMobileRawProduct(id: string, storeId: string): Promise<any> {
+  if (!storeId || !id) return null;
     try {
       const { data, error } = await clientOrThrow()
         .from("products")
-        .select("id, name, sku, metadata")
+        .select("id, name, sku, metadata, store_id")
         .eq("id", id)
+        .eq("store_id", storeId)
         .is("deleted_at", null)
         .maybeSingle();
       if (error) throw error;
       return data ? fromRemoteRow("products", data) : null;
     } catch {
-      // Not cached: a transient failure must not pin `null` for the tab's life.
-      rawProductCache.delete(id);
+      // The details view labels missing metadata explicitly; refresh retries.
       return null;
     }
-  })();
-  rawProductCache.set(id, request);
-  return request;
 }
 
 export interface MobileOrderTimelineEvent {
@@ -441,7 +449,7 @@ const TIMELINE_LABELS: Record<string, { labelAr: string; entity: "order" | "ship
   return_confirmed: { labelAr: "تأكد استلام المرتجع في المخزن", entity: "return" },
   rto_confirmed: { labelAr: "رفض الاستلام (مرتجع شحن)", entity: "return" },
   order_cancelled: { labelAr: "تم إلغاء الطلب", entity: "order" },
-  courier_settlement: { labelAr: "توريد المندوب (استلمنا الكاش)", entity: "courier" },
+  courier_settlement: { labelAr: "تسوية مع المندوب", entity: "courier" },
   client_payment: { labelAr: "دفعة من العميل", entity: "payment" },
   // تسوية العميلة on Desktop (038) — read-only here. Also what Order Details
   // reads the deposit's state from (`depositOutcome`).
@@ -473,14 +481,18 @@ const TIMELINE_LABELS: Record<string, { labelAr: string; entity: "order" | "ship
  */
 export async function readMobileOrderTimeline(orderId: string): Promise<MobileOrderTimelineEvent[]> {
   const client = clientOrThrow();
+  const storeId=await getActiveStoreId();
+  if(!storeId)throw new Error("تعذّر تحديد متجر الطلب.");
 
   const { data: order, error: orderError } = await client
     .from(ORDERS_SOURCE)
     .select("id, orderNumber, createdAt, courierId, depositAmount")
+    .eq("store_id",storeId)
     .eq("id", orderId)
     .maybeSingle();
 
   if (orderError) throw new Error(`[orders] ${orderError.message}`);
+  if(await getActiveStoreId()!==storeId)throw new Error("تغيّر المتجر أثناء قراءة الطلب.");
   if (!order) return [];
 
   // The ledger's `ref_id` for an order is its ORDER NUMBER, not its uuid —
@@ -489,7 +501,9 @@ export async function readMobileOrderTimeline(orderId: string): Promise<MobileOr
   // database, where the order rows read `ECO-…`, never a uuid. Asking with the
   // uuid returns nothing at all, which looks exactly like "this order has no
   // history" and is the quietest possible way to be wrong.
-  const events = order.orderNumber ? await ledgerEventsFor(String(order.orderNumber)) : [];
+  // The scoped API resolves this UUID to that original stored number on the server.
+  const events = await readOrderActivity(orderId,storeId);
+  if(await getActiveStoreId()!==storeId)throw new Error("تغيّر المتجر أثناء قراءة السجل.");
 
   const timeline: MobileOrderTimelineEvent[] = [];
 
@@ -498,8 +512,8 @@ export async function readMobileOrderTimeline(orderId: string): Promise<MobileOr
     if (!mapped) continue;
     timeline.push({
       id: event.id,
-      labelAr: mapped.labelAr,
-      timestamp: event.occurredAt,
+      labelAr: event.label || mapped.labelAr,
+      timestamp: event.occurred_at,
       status: event.kind,
       source: "ledger_events",
       relatedEntity: {
@@ -547,18 +561,6 @@ export async function readMobileOrderTimeline(orderId: string): Promise<MobileOr
  * الطلب»: a delivered, settled order drawn as one nothing had happened to.
  * The detail screen reads this separately and renders its own retry.
  */
-async function ledgerEventsFor(orderNumber: string): Promise<{ id: string; kind: string; occurredAt: string }[]> {
-  // `mobile_order_timeline` (047): which lifecycle events happened and when —
-  // no payload, no lines, no money — for every role, from the caller's own
-  // store. A Moderator cannot read `ledger_events` since 048.
-  const { data, error } = await clientOrThrow().rpc("mobile_order_timeline", { p_order_number: orderNumber });
-  if (error) throw new Error(`[mobile_order_timeline] ${error.message}`);
-  return ((data ?? []) as { id: string; kind: string; occurred_at: string }[]).map((e) => ({
-    id: String(e.id),
-    kind: String(e.kind),
-    occurredAt: String(e.occurred_at),
-  }));
-}
 
 export interface MobileProductWaitingOrder {
   orderId: string;

@@ -1,3 +1,7 @@
+import { useAuthStore } from "@/store/useAuthStore";
+import { useOrderStore } from "@/store/useOrderStore";
+import { getSyncIdentity } from "@/services/api/storeContext";
+import { ExchangeCreditPanel } from "./ExchangeCreditPanel";
 import { useState } from "react";
 import { runFinancialCommand, resolvePendingFinancialCommand } from "@/lib/financialCommand";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
@@ -21,9 +25,11 @@ export function ExchangeReturnPanel({
   const [physical, setPhysical] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
-  const [refundVia, setRefundVia] = useState("courier"),
+  const [refundVia, setRefundVia] = useState(order.courierId ? "courier" : "wallet"),
     [wallet, setWallet] = useState("inStoreSafe"),
     [fee, setFee] = useState("0");
+  const role = useAuthStore(state => state.userRole);
+  const canChange = !readOnly && ["ADMIN", "POS_ECOMMERCE", "ECOMMERCE_ONLY"].includes(role ?? "");
   const details = order.exchangeDetails;
   const runOnce = useRunOnce();
   if (!details) return null;
@@ -31,7 +37,10 @@ export function ExchangeReturnPanel({
     runOnce(async () => {
       setBusy(true);
       setError("");
+      let committed = false;
       try {
+        const identity = await getSyncIdentity();
+        if (!identity) throw new Error("لا يوجد متجر مسجل");
         const scope = "exchange_return:" + details.id;
         const recovered = await resolvePendingFinancialCommand<{
           order: any;
@@ -50,13 +59,19 @@ export function ExchangeReturnPanel({
               returnFee: Number(fee),
             },
             scope,
+            identity.storeId,
           ));
+        committed = true;
         const saved = fromRemoteRow("orders", result.order) as EcommerceOrder;
-        await onSaved(saved);
-        await refreshFeatureStock(result.affectedProductIds ?? []);
+        const current = useOrderStore.getState().orders.find(o => o.id === saved.id);
+        if (result.order.store_id === identity.storeId && (await getSyncIdentity())?.storeId === identity.storeId) {
+          if (!current || Number(current.updated_at ?? 0) <= Number(saved.updated_at ?? 0)) await onSaved(saved);
+          await refreshFeatureStock(result.affectedProductIds ?? []);
+        }
+        setPhysical(false);
         window.dispatchEvent(new Event("ledger-sync-pulled"));
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(committed ? "تم تأكيد استلام الأصل وتسوية رصيده؛ حدّث الصفحة لقراءة النتيجة، ولا تسجل استلامًا آخر." : e instanceof Error ? e.message : String(e));
       } finally {
         setBusy(false);
       }
@@ -66,6 +81,7 @@ export function ExchangeReturnPanel({
       className="rounded-xl border p-3 space-y-3 text-sm"
       aria-label={`وحدات استبدال ${order.orderNumber}`}
     >
+      <ExchangeCreditPanel order={order} onSaved={onSaved} readOnly={!canChange} />
       <p>
         الطلب الأصلي: <strong>{details.originalOrderNumber}</strong>
       </p>
@@ -90,11 +106,11 @@ export function ExchangeReturnPanel({
         السابق لا يُصادر في الاستبدال.
       </p>
       {details.status === "confirmed" ? (
-        <p role="status">تم تأكيد استلام الوحدات ورد قيمتها. تسليم البديل له إجراء مستقل.</p>
+        <p role="status">تم تأكيد استلام الوحدات وتسوية رصيدها حسب التفاصيل. تسليم البديل له إجراء مستقل.</p>
       ) : details.status === "cancelled" || order.status === "cancelled" ? (
         <p role="status">الاستبدال ملغي؛ حجز الوحدات الأصلية أُفرج عنه.</p>
       ) : (
-        !readOnly && (
+        canChange && (
           <>
             <label className="flex items-center gap-2">
               <input
@@ -106,7 +122,7 @@ export function ExchangeReturnPanel({
               استلمت الوحدات المحددة فعليًا
             </label>
             <label className="block">
-              طريقة رد قيمة الوحدات
+              {details.credit ? "طريقة رد فائض الرصيد فقط" : "طريقة رد قيمة الوحدات"}
               <select
                 aria-label="طريقة رد قيمة الاستبدال"
                 value={refundVia}

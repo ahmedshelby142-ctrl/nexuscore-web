@@ -8,6 +8,7 @@ import { useFinancialStore } from "@/store/useFinancialStore";
 import { add, subtract, formatQty, formatMoney } from "@/lib/math";
 import { activeProducts } from "@/lib/product";
 import { appendEvent, events as fetchLedgerEvents } from "@/lib/ledger";
+import { appendFinancialEvent } from "@/lib/financialCommand";
 import {
   buildStockAdjustmentLines,
   countDiscrepancies,
@@ -280,7 +281,7 @@ export function StockAuditPage() {
       // ONE event for the whole جرد. Every discrepancy lands together or none
       // does — a half-applied audit would leave some products corrected and
       // others not, with no way to tell which pass a number belongs to.
-      await appendEvent({
+      await appendFinancialEvent({
         kind: "stock_adjustment",
         actor: "جرد",
         refType: "stock_audit",
@@ -288,6 +289,11 @@ export function StockAuditPage() {
           countedProducts: items.length,
           discrepancies: countDiscrepancies(items),
           netValue: auditNetValue(items),
+          stockCounts: countedRows.map(result => ({
+            productId: result.product.id, variantName: result.variantName,
+            systemQty: result.mirrorQty ?? result.systemQty,
+            countedQty: parseInt(result.actualQty as any) || 0,
+          })),
         },
         lines: buildStockAdjustmentLines({ items }),
       });

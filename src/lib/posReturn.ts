@@ -71,6 +71,19 @@ export interface PosSaleEventLike {
   payload?: unknown;
 }
 
+/** Identity is the saved receipt's ID, never a name/phone match in today's CRM. */
+export function originalPosCustomer(event: PosSaleEventLike): {
+  id: string; name: string; phone: string;
+} {
+  const payload = event.payload && typeof event.payload === "object"
+    ? event.payload as Record<string, unknown> : {};
+  return {
+    id: typeof payload.customerId === "string" ? payload.customerId : "",
+    name: typeof payload.customerName === "string" ? payload.customerName : "",
+    phone: typeof payload.customerPhone === "string" ? payload.customerPhone : "",
+  };
+}
+
 /**
  * A line's address: product plus shade.
  *

@@ -107,6 +107,8 @@ const stubs = {
     CollectionGate: ({ children }) => children,
   },
   "@/lib/ledger": { appendEvent: forbidden, balancesByRef: async () => [] },
+  "@/lib/financialCommand": { appendFinancialEvent: forbidden },
+  "@/services/featureStockMirror": { refreshFeatureInvoices: forbidden },
   "@/services/documentNumber": { nextDocumentNumber: forbidden },
   "@/lib/receiving": { commitReceipt: forbidden },
   "@/lib/supplierPaymentCommand": {

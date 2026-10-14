@@ -30,7 +30,12 @@ export async function openBusinessDb({ migrate = true, baselineOnly = false } = 
   });
   const evidence = path.join(ROOT, "logs/final-v1-sprint");
   fs.mkdirSync(evidence, { recursive: true });
-  const dir = fs.mkdtempSync(path.join(evidence, "pg-"));
+  // Optional local storage override for NEW disposable databases only. Existing
+  // databases/evidence stay in place; no connection URL or cloud credentials.
+  const dataRoot=process.env.NEXUS_QA_PG_DATA_ROOT
+    ? path.resolve(process.env.NEXUS_QA_PG_DATA_ROOT) : evidence;
+  fs.mkdirSync(dataRoot,{recursive:true});
+  const dir = fs.mkdtempSync(path.join(dataRoot, "pg-"));
   const clients = [];
   let control, server, admin;
   const connect = async () => {
@@ -159,7 +164,7 @@ export async function openBusinessDb({ migrate = true, baselineOnly = false } = 
         });
       else await server.stop();
     }
-    return { admin, client, insert, event, store, device, users, version, close };
+    return { admin, client, insert, event, store, device, users, version, dataDir:dir, close };
   } catch (error) {
     await Promise.allSettled(clients.map((c) => c.end()));
     if (control)

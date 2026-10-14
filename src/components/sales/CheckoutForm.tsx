@@ -1,3 +1,4 @@
+import { refreshReturnDocuments } from "@/lib/returnDocuments";
 import { stockIsAuthoritative } from "@/lib/ledger/stockSnapshot";
 import { moneyFigure, statusOf } from "@/lib/figure";
 import { LoadError } from "@/components/ui/load-error";
@@ -27,8 +28,10 @@ import { useCustomerStore } from "@/store/useCustomerStore";
 import { activeCustomers } from "@/lib/customers";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { appendEvent } from "@/lib/ledger";
-import { appendFinancialEvent, resolvePendingFinancialEvent } from "@/lib/financialCommand";
+import { appendFinancialEvent, resolvePendingFinancialCommand } from "@/lib/financialCommand";
+import { refreshFeatureStock } from "@/services/featureStockMirror";
 import { buildSaleLines } from "@/lib/ledger/sales";
+import { commitPosExchange, posCartLineKey, posStockAfterReturns } from "@/lib/posExchange";
 import {
   buildWholesaleInvoiceLines,
   buildWholesaleReturnLines,
@@ -84,6 +87,22 @@ interface CartItem {
   variantName?: string;
 }
 
+interface PosReceiptView {
+  lines: CartItem[];
+  total: number;
+  paid: number;
+  customer: string;
+  receiptId?: string;
+  documentNumber?: string;
+  exchange?: { sourceDocumentNumber?: string; replacementDocumentNumber?: string; sourceEventId: string; returnEventId: string; replacementEventId: string; refundPiastres: number; replacementPiastres: number; netPiastres: number; wallet: string };
+}
+
+function exchangeCashText(exchange: NonNullable<PosReceiptView["exchange"]>): string {
+  return exchange.netPiastres > 0 ? `استلمنا من العميل: ${formatCurrency(exchange.netPiastres / 100)} ج.م`
+    : exchange.netPiastres < 0 ? `رددنا للعميل: ${formatCurrency(-exchange.netPiastres / 100)} ج.م`
+    : "فرق السعر صفر — دون حركة خزنة";
+}
+
 // Bare number (the "ج.م" is in the surrounding markup here), but still routed
 // through the shared guard so a non-finite total can never print "NaN".
 const formatCurrency = formatQty;
@@ -100,27 +119,27 @@ const formatCurrency = formatQty;
  * are entered as the final selling price and the total is already in the
  * ledger, so the receipt may only break the tax out, never change the amount.
  */
-function printPosInvoice(sold: {
-  lines: CartItem[];
-  total: number;
-  paid: number;
-  customer: string;
-  receiptId?: string;
-}): void {
+function printPosInvoice(sold: PosReceiptView): void {
   const { vatRate } = storeIdentity();
   const vat = includedVat(sold.total, vatRate);
   const footer = [
     `الإجمالي: ${formatCurrency(sold.total)} ج.م`,
     vat > 0 ? `منها ضريبة ${vatRate}%: ${formatCurrency(vat)} ج.م` : "",
-    `المدفوع: ${formatCurrency(sold.paid)} ج.م`,
+    ...(sold.exchange ? [
+      `الفاتورة الأصلية: ${sold.exchange.sourceDocumentNumber ?? sold.exchange.sourceEventId}`,
+      `قيمة المرتجع بعد الخصم: ${formatCurrency(sold.exchange.refundPiastres / 100)} ج.م`,
+      `قيمة البديل بعد الخصم: ${formatCurrency(sold.exchange.replacementPiastres / 100)} ج.م`,
+      exchangeCashText(sold.exchange),
+      sold.exchange.netPiastres !== 0 ? `الخزينة: ${WALLET_LABELS[sold.exchange.wallet as WalletType] ?? sold.exchange.wallet}` : "",
+    ] : [`المدفوع: ${formatCurrency(sold.paid)} ج.م`]),
     sold.total - sold.paid > 0 ? `المتبقي: ${formatCurrency(sold.total - sold.paid)} ج.م` : "",
   ]
     .filter(Boolean)
     .join(" — ");
 
   printTableAsPdf({
-    title: sold.total < 0 ? "فاتورة مرتجع" : "فاتورة بيع",
-    subtitle: `العميل: ${sold.customer}${sold.receiptId ? ` — رقم الفاتورة: ${sold.receiptId}` : ""}`,
+    title: sold.exchange ? "فاتورة استبدال" : sold.total < 0 ? "فاتورة مرتجع" : "فاتورة بيع",
+    subtitle: `العميل: ${sold.customer}${sold.receiptId ? ` — رقم الفاتورة: ${sold.documentNumber ?? sold.receiptId}` : ""}`,
     columns: [
       {
         label: "الصنف",
@@ -249,6 +268,9 @@ export default function CheckoutForm() {
   // A half-built basket is the most expensive thing on this screen to lose —
   // the customer is standing there. It survives a trip to another screen.
   const [cart, setCart] = useDraftState<CartItem[]>("pos:cart", []);
+  const returnCustomerLocked = cart.some((item: any) => Boolean(item.returnOfEventId));
+  const isPosExchange = saleMode === "retail" && returnCustomerLocked && cart.some(i => i.quantity > 0) && cart.some(i => i.quantity < 0)
+    && cart.filter(i => i.quantity < 0).every((i: any) => i.returnOfEventId && i.returnOfEventId === (cart.find(row => row.quantity < 0) as any)?.returnOfEventId);
   const [selectedProductId, setSelectedProductId] = useState("");
   const [pendingVariantSelection, setPendingVariantSelection] = useState<{ product: any, qty: number } | null>(null);
   const [quantity, setQuantity] = useState(1);
@@ -263,7 +285,7 @@ export default function CheckoutForm() {
     profitDistribution?: any;
     /** Snapshot of what was just sold, kept so the فاتورة can still be
      * printed after the cart is cleared. */
-    sold?: { lines: CartItem[]; total: number; paid: number; customer: string; receiptId?: string };
+    sold?: PosReceiptView;
   } | null>(null);
 
   const barcodeRef = useRef<HTMLInputElement>(null);
@@ -328,18 +350,18 @@ export default function CheckoutForm() {
     product: any,
     qty: number,
     variantName?: string,
-    historical?: { unitPrice: number; productName: string; sourceEventId: string; unitCost?: number; isBundle?: boolean; bundleItems?: { productId: string; quantity: number; unitCost: number }[]; netPiastres?: number; sold?: number; returned?: number; remaining?: number },
+    historical?: { unitPrice: number; productName: string; sourceEventId: string; sourceDocumentNumber?: string; unitCost?: number; isBundle?: boolean; bundleItems?: { productId: string; quantity: number; unitCost: number }[]; netPiastres?: number; sold?: number; returned?: number; remaining?: number },
   ) => {
-    if (!product) return;
+    if (!product) return false;
     if (saleMode === "retail" && qty < 0 && !historical) {
-      setResult({success:false,message:"اختر المرتجع من استرجاع بفاتورة لتأكيد السعر والتكلفة والكمية."});return;
+      setResult({success:false,message:"اختر المرتجع من استرجاع بفاتورة لتأكيد السعر والتكلفة والكمية."});return false;
     }
-    if (historical && cart.some((i:any) => i.returnOfEventId && i.returnOfEventId!==historical.sourceEventId)) {
-      setResult({success:false,message:"أكمل مرتجع الفاتورة الحالية قبل اختيار فاتورة أخرى."});return;
-    }
-    if (saleMode === "retail" && cart.some((i) => (i.quantity < 0) !== (qty < 0))) {
+    const switchingReceipt=!!historical && cart.some((i:any)=>i.returnOfEventId && i.returnOfEventId!==historical.sourceEventId);
+    if (switchingReceipt && !window.confirm("تغيير الفاتورة الأصلية سيمسح بنود المرتجع والبدائل الحالية من المسودة فقط. هل تريد المتابعة؟")) return false;
+    const workingCart=switchingReceipt ? [] : cart;
+    if (saleMode === "retail" && workingCart.some((i) => (i.quantity < 0) !== (qty < 0)) && !(returnCustomerLocked && qty > 0)) {
       setResult({ success: false, message: "أكمل مرتجع الفاتورة أولاً، ثم سجّل البيع الجديد بفاتورة مستقلة." });
-      return;
+      return false;
     }
 
     // A trader's return is proved against their invoice, never typed into the
@@ -350,7 +372,7 @@ export default function CheckoutForm() {
         success: false,
         message: "مرتجع الجملة بيتعمل من فاتورة التاجر — اختر التاجر وافتح وضع المرتجع.",
       });
-      return;
+      return false;
     }
 
     // Intercept if product has variants but none is selected yet
@@ -370,7 +392,8 @@ export default function CheckoutForm() {
     const isReturn = qty < 0;
     // `sellableStock` is bundle-aware; `getVariantStock` was not, which is why
     // every بوكس reported نفد المخزون and could never reach the basket.
-    const onHand = sellableStock(product, products, variantName);
+    const onHand = returnCustomerLocked && qty > 0
+      ? posStockAfterReturns(product, products, workingCart, variantName) : sellableStock(product, products, variantName);
     
     // For normal sales, block if out of stock
     if (!isReturn && onHand <= 0) {
@@ -379,21 +402,22 @@ export default function CheckoutForm() {
     }
     
     const requestedQty = isReturn ? qty : Math.min(qty, onHand);
-    const existingItem = cart.find((item) => item.productId === product.id && item.variantName === variantName);
+    const key = posCartLineKey({ productId: product.id, variantName, returnOfEventId: historical?.sourceEventId });
+    const existingItem = workingCart.find((item) => posCartLineKey(item) === key);
     
     if (existingItem) {
       const totalInCart = existingItem.quantity + requestedQty;
       if (historical) {
-        updateCartQuantity(product.id,variantName,totalInCart);
-        return;
+        updateCartQuantity(product.id,variantName,totalInCart,historical.sourceEventId);
+        return true;
       }
       const allowed = totalInCart < 0 ? totalInCart : Math.min(totalInCart, onHand);
       setCart(
-        cart.map((item) => (item.productId === product.id && item.variantName === variantName ? { ...item, quantity: allowed } : item)),
+        workingCart.map((item) => (posCartLineKey(item) === key ? { ...item, quantity: allowed } : item)),
       );
     } else {
       setCart([
-        ...cart,
+        ...workingCart,
         {
           productId: product.id,
           // The receipt's own name and price win over the catalog's whenever
@@ -407,6 +431,7 @@ export default function CheckoutForm() {
       ]);
     }
     setPendingVariantSelection(null);
+    return true;
   };
 
   /**
@@ -445,13 +470,13 @@ export default function CheckoutForm() {
 
     // Existing line → quantity goes up, no duplicate row. `addItemToCart`
     // already does that, and caps at what the ledger says is on hand.
-    addItemToCart(match, isReturnMode ? -1 : 1);
+    addItemToCart(match, returnCustomerLocked ? 1 : isReturnMode ? -1 : 1);
     setResult(null);
   };
 
   const addManuallyPicked = () => {
     if (!selectedProduct) return;
-    addItemToCart(selectedProduct, isReturnMode ? -quantity : quantity);
+    addItemToCart(selectedProduct, returnCustomerLocked ? Math.abs(quantity) : isReturnMode ? -quantity : quantity);
     setQuantity(1);
     setSelectedProductId("");
     barcodeRef.current?.focus();
@@ -465,22 +490,31 @@ export default function CheckoutForm() {
   const [pendingRemoval, setPendingRemoval] = useState<CartItem | null>(null);
 
   const confirmRemoval = () => {
-    if (pendingRemoval) removeFromCart(pendingRemoval.productId, pendingRemoval.variantName);
+    if (pendingRemoval) removeFromCart(pendingRemoval.productId, pendingRemoval.variantName, (pendingRemoval as any).returnOfEventId);
     setPendingRemoval(null);
     barcodeRef.current?.focus();
   };
 
-  const removeFromCart = (productId: string, variantName?: string) => {
-    setCart(cart.filter((item) => !(item.productId === productId && item.variantName === variantName)));
+  const removeFromCart = (productId: string, variantName?: string, returnOfEventId?: string) => {
+    const key = posCartLineKey({productId,variantName,returnOfEventId});
+    const next = cart.filter((item) => posCartLineKey(item) !== key);
+    setCart(next);
+    if (returnCustomerLocked && !next.some((item: any) => item.returnOfEventId)) {
+      setSelectedCustomerId(""); setCustomerName(""); setCustomerPhone("");
+      setIsReturnMode(false);
+    }
   };
 
-  const updateCartQuantity = (productId: string, variantName: string | undefined, newQuantity: number) => {
+  const updateCartQuantity = (productId: string, variantName: string | undefined, newQuantity: number, returnOfEventId?: string) => {
+    if (newQuantity === 0) { removeFromCart(productId,variantName,returnOfEventId); return; }
+    if (returnOfEventId && newQuantity > 0) return;
     const product = products.find((p) => p.id === productId);
-    const maxQty = sellableStock(product, products, variantName);
+    const maxQty = returnCustomerLocked ? posStockAfterReturns(product, products, cart, variantName) : sellableStock(product, products, variantName);
+    const key = posCartLineKey({productId,variantName,returnOfEventId});
       
     setCart(
       cart.map((item) =>
-        item.productId === productId && item.variantName === variantName ? (() => {
+        posCartLineKey(item) === key ? (() => {
           const historical=(item as any).historicalCost;
           const quantity = newQuantity < 0 ? -Math.min(Math.abs(newQuantity),historical?.remaining ?? Math.abs(newQuantity)) : Math.min(newQuantity,maxQty);
           return {...item,quantity,...(historical && quantity<0 ? {unitPrice:posRefundValue(historical,Math.abs(quantity))/Math.abs(quantity)} : {})};
@@ -490,20 +524,21 @@ export default function CheckoutForm() {
   };
 
   const subtotal = cart.reduce((total, item) => add(total, multiply(item.unitPrice, item.quantity)), 0);
+  const discountSubtotal = returnCustomerLocked ? cart.filter(i => i.quantity > 0).reduce((sum,i) => add(sum,multiply(i.unitPrice,i.quantity)),0) : subtotal;
 
   // Shared with the ledger — see `discountAmountFor`. Capped at the subtotal,
   // so a 500% code can never drive the total (or the till) negative.
   const discountAmount = useMemo(
     () =>
       appliedDiscount
-        ? discountAmountFor(subtotal, appliedDiscount.type, appliedDiscount.value)
+        ? discountAmountFor(discountSubtotal, appliedDiscount.type, appliedDiscount.value)
         : 0,
-    [appliedDiscount, subtotal],
+    [appliedDiscount, discountSubtotal],
   );
 
   // `subtract` not `-`: this number goes into the ledger, and the discount is
   // already capped at the subtotal, so the result cannot be negative.
-  const calculateTotal = () => isReturnMode ? subtotal : Math.max(0, subtract(subtotal, discountAmount));
+  const calculateTotal = () => returnCustomerLocked ? subtract(subtotal,discountAmount) : isReturnMode ? subtotal : Math.max(0, subtract(subtotal, discountAmount));
 
   // ── مرتجع جملة: driven by the trader's invoice, not by the cart ───────────
   //
@@ -582,13 +617,19 @@ export default function CheckoutForm() {
     if (saleMode === "retail") {
       if (!gate.enter()) return;
       try {
-        const confirmedId = await resolvePendingFinancialEvent("sale");
-        if (confirmedId) {
+        const confirmed = await resolvePendingFinancialCommand<{eventId:string;documentNumber?:string;sourceDocumentNumber?:string;replacementDocumentNumber?:string;affectedProductIds?:string[]}>("ledger:sale");
+        if (confirmed) {
+          await refreshReturnDocuments();
+          if (confirmed.affectedProductIds) {
+            try { await refreshFeatureStock(confirmed.affectedProductIds); }
+            catch { console.warn("تم تأكيد العملية السابقة؛ تعذّر تحديث عرض المخزون."); }
+          }
           clearDrafts("pos:");
           setCart([]);
           setAppliedDiscount(null);
           setIsReturnMode(false);
-          setResult({ success: true, message: `تم تأكيد العملية السابقة (${confirmedId}). راجع السجل قبل بيع جديد.` });
+          setSelectedCustomerId(""); setCustomerName(""); setCustomerPhone("");
+          setResult({ success: true, message: `تم تأكيد العملية السابقة (${confirmed.replacementDocumentNumber ?? confirmed.documentNumber ?? confirmed.sourceDocumentNumber ?? confirmed.eventId}). راجع السجل قبل بيع جديد.` });
           await Promise.all([refreshStock(), refreshWallets()]);
           return;
         }
@@ -617,12 +658,13 @@ export default function CheckoutForm() {
     // is reporting this device's `products.quantity` mirror, which is as old as
     // the last time this browser moved stock itself — so the check below would
     // be comparing the cart against a number another till has already spent.
-    if (!isReturnMode && !stockIsAuthoritative()) {
+    if ((!isReturnMode || isPosExchange) && !stockIsAuthoritative()) {
       setResult({ success: false, message: "المخزون لسه بيتحمّل من السحابة. جرّب تاني بعد لحظة." });
       return;
     }
     const stockOfLine = (item: (typeof cart)[number]) =>
-      sellableStock(products.find((p) => p.id === item.productId), products, item.variantName);
+      returnCustomerLocked ? posStockAfterReturns(products.find((p) => p.id === item.productId), products, cart, item.variantName)
+        : sellableStock(products.find((p) => p.id === item.productId), products, item.variantName);
     const short = cart.find((item) => item.quantity > stockOfLine(item));
     if (short) {
       setResult({
@@ -636,7 +678,8 @@ export default function CheckoutForm() {
     setIsProcessing(true);
     setResult(null);
 
-    const totalAmount = calculateTotal();
+    let totalAmount = calculateTotal();
+    let committedExchange: PosReceiptView["exchange"];
 
     // Read-only eligibility preflight. The database consumes the redemption
     // with the sale transaction; failure needs no independent compensation.
@@ -648,11 +691,12 @@ export default function CheckoutForm() {
     let saleCommitted = false;
     let retailAttempted = false;
     let retailReceiptId: string | undefined;
+    let retailDocumentNumber: string | undefined;
     // A document written AFTER the ledger accepted the operation (the return
     // record, the wholesale invoice). Its failure does not undo the sale, so it
     // must not reach the "nothing changed" catch — see `WriteContext`.
     let documentError: unknown = null;
-    if (appliedDiscount?.id && discountAmount > 0 && !isReturnMode) {
+    if (appliedDiscount?.id && discountAmount > 0 && (!isReturnMode || isPosExchange)) {
       try {
         await claimDiscountUse(appliedDiscount.id, discountAmount);
         claimedDiscount = { id: appliedDiscount.id, amount: discountAmount };
@@ -667,7 +711,7 @@ export default function CheckoutForm() {
     try {
       if (saleMode === "retail") {
         let finalCustomerId = selectedCustomerId;
-        if (customerPhone && !finalCustomerId) {
+        if (customerPhone && !finalCustomerId && !returnCustomerLocked) {
           finalCustomerId = await useCustomerStore.getState().upsertCustomerFromOrder({
             customerName: customerName.trim(),
             customerPhone: customerPhone.trim(),
@@ -679,7 +723,14 @@ export default function CheckoutForm() {
         // none of them do. There is no separate stock update to fall out of
         // sync with the money — that is the whole point.
         retailAttempted = true;
-        retailReceiptId = await appendFinancialEvent({
+        if (isPosExchange) {
+          const exchange = await commitPosExchange({cart,wallet:selectedWallet,customerId:finalCustomerId||undefined,customerName,customerPhone,discountCodeId:appliedDiscount?.id,discountAmount});
+          retailReceiptId = exchange.eventId;
+          retailDocumentNumber = exchange.replacementDocumentNumber;
+          totalAmount = exchange.netPiastres / 100;
+          committedExchange = { sourceDocumentNumber: exchange.sourceDocumentNumber, replacementDocumentNumber: exchange.replacementDocumentNumber, sourceEventId: exchange.sourceEventId, returnEventId: exchange.returnEventId, replacementEventId: exchange.replacementEventId,
+            refundPiastres: exchange.refundPiastres, replacementPiastres: exchange.replacementPiastres, netPiastres: exchange.netPiastres, wallet: selectedWallet };
+        } else { const receipt = await appendFinancialEvent({
           kind: "sale",
           actor: "POS",
           refType: "pos_sale",
@@ -728,7 +779,10 @@ export default function CheckoutForm() {
             discountCodeId: appliedDiscount?.id,
             discountAmount: appliedDiscount ? discountAmount : undefined,
           }),
-        });
+        }, {receipt:true});
+          retailReceiptId = receipt.eventId;
+          retailDocumentNumber = receipt.documentNumber ?? receipt.sourceDocumentNumber;
+        }
         // The ledger accepted it: stock, cash and revenue have moved. From here
         // on nothing may say "nothing changed", and the basket must not survive
         // to be sold a second time.
@@ -960,7 +1014,8 @@ export default function CheckoutForm() {
       const negativeItems = cart.filter(i => i.quantity < 0);
       const positiveItems = cart.filter(i => i.quantity > 0);
       
-      if (negativeItems.length > 0) {
+      if (negativeItems.length > 0 && saleMode === "retail") await refreshReturnDocuments();
+      if (negativeItems.length > 0 && !isPosExchange && saleMode !== "retail") {
         const isExchange = positiveItems.length > 0;
 
         // Awaited: the POS sale/refund is already in the ledger by this point,
@@ -971,8 +1026,8 @@ export default function CheckoutForm() {
         await useBusinessStore.getState().addReturnRecord({
           original_order_id: `pos_${Date.now()}`,
           type: isExchange ? "exchange" : "return",
-          customer_name: (saleMode === "retail" ? customerName.trim() : wholesaleClients.find((c) => c.id === selectedCustomerId)?.companyName) || "عميل غير مسجل (نقاط البيع)",
-          customer_phone: (saleMode === "retail" ? customerPhone.trim() : wholesaleClients.find((c) => c.id === selectedCustomerId)?.phone) || "",
+          customer_name: wholesaleClients.find((c) => c.id === selectedCustomerId)?.companyName || "عميل غير مسجل (نقاط البيع)",
+          customer_phone: wholesaleClients.find((c) => c.id === selectedCustomerId)?.phone || "",
           governorate: "POS",
           returned_items: negativeItems.map(i => ({
             product_id: i.productId,
@@ -1010,7 +1065,7 @@ export default function CheckoutForm() {
 
       // Every line, variant or not. A negative `quantity` is a مرتجع line and
       // its sign carries through untouched — it puts the goods back.
-      useBusinessStore.getState().applyStockMoves(
+      if (!isPosExchange) useBusinessStore.getState().applyStockMoves(
         cart.flatMap((item: any) => item.historicalCost?.isBundle ? item.historicalCost.bundleItems.map((component: any) => ({
           productId: component.productId,
           delta: -item.quantity * component.quantity,
@@ -1038,6 +1093,8 @@ export default function CheckoutForm() {
           : "تمت العملية بنجاح!",
         sold: {
           receiptId: retailReceiptId,
+          documentNumber: retailDocumentNumber,
+          exchange: committedExchange,
           lines: cart,
           total: totalAmount,
           paid:
@@ -1125,9 +1182,18 @@ export default function CheckoutForm() {
             <p className={`font-semibold ${result.success ? "text-green-900" : "text-red-900"}`}>
               {result.message}
             </p>
+            {result.sold?.exchange && (
+              <div className="text-sm mt-2 space-y-1" aria-label="نتيجة الاستبدال المالية">
+                <p className="break-all">الفاتورة الأصلية: {result.sold.exchange.sourceDocumentNumber ?? result.sold.exchange.sourceEventId}</p>
+                <p>قيمة المرتجع بعد الخصم: {formatCurrency(result.sold.exchange.refundPiastres / 100)} ج.م</p>
+                <p>قيمة البديل بعد الخصم: {formatCurrency(result.sold.exchange.replacementPiastres / 100)} ج.م</p>
+                <p>{exchangeCashText(result.sold.exchange)}</p>
+                {result.sold.exchange.netPiastres !== 0 && <p>الخزينة: {WALLET_LABELS[result.sold.exchange.wallet as WalletType] ?? result.sold.exchange.wallet}</p>}
+              </div>
+            )}
           </div>
           {result.sold && (
-            <span className="text-xs break-all">رقم الفاتورة: {result.sold.receiptId}</span>
+            <span className="text-xs break-all">رقم الفاتورة: {result.sold.documentNumber ?? result.sold.receiptId}</span>
           )}
           {result.sold && (
             <Button variant="outline" size="sm" onClick={() => printPosInvoice(result.sold!)}>
@@ -1218,9 +1284,8 @@ export default function CheckoutForm() {
               </div>
               <div className="flex items-center gap-4">
                 <POSReturnModal
-                  onReturnItem={({ line, sourceEventId, product }) => {
-                    if (!isReturnMode) setIsReturnMode(true);
-                    addItemToCart(
+                  onReturnItem={({ line, sourceEventId, sourceDocumentNumber, product, customer }) => {
+                    const accepted = addItemToCart(
                       // The catalog row when it still exists, otherwise a
                       // stand-in built from the receipt: a product archived
                       // since the sale must still be returnable.
@@ -1231,6 +1296,7 @@ export default function CheckoutForm() {
                         unitPrice: line.unitPrice,
                         productName: line.productName,
                         sourceEventId,
+                        sourceDocumentNumber,
                         unitCost: line.unitCost,
                         isBundle: line.isBundle,
                         bundleItems: line.bundleItems,
@@ -1240,11 +1306,20 @@ export default function CheckoutForm() {
                         remaining: line.remaining,
                       },
                     );
+                    // A refused source/cart must not change customer or mode.
+                    if (!accepted) return;
+                    if (!returnCustomerLocked || cart.some((i:any)=>i.returnOfEventId && i.returnOfEventId!==sourceEventId)) { setAppliedDiscount(null); setDiscountCodeInput(""); }
+                    setIsReturnMode(true);
+                    setSelectedCustomerId(customer.id);
+                    const current = customers.find((c: any) => c.id === customer.id);
+                    setCustomerName(customer.name || current?.name || "");
+                    setCustomerPhone(customer.phone || current?.phone || "");
                   }}
                 />
                 <Switch
                   checked={isReturnMode}
                   onCheckedChange={setIsReturnMode}
+                  disabled={returnCustomerLocked}
                   // The visible "وضع المرتجع" text is a bare <label> with no
                   // `htmlFor`, so it named nothing: this announced as an
                   // anonymous switch. It flips the till between SELLING and
@@ -1354,7 +1429,7 @@ export default function CheckoutForm() {
             <Button
               onClick={addManuallyPicked}
               className="w-full mt-6 h-14 text-xl font-bold rounded-xl"
-              disabled={!selectedProduct || sellableStock(selectedProduct, products) <= 0}
+              disabled={!selectedProduct || (returnCustomerLocked ? posStockAfterReturns(selectedProduct,products,cart) : sellableStock(selectedProduct, products)) <= 0}
             >
               <Plus className="size-5 ml-2" />
               إضافة للسلة
@@ -1371,6 +1446,7 @@ export default function CheckoutForm() {
               <div className="flex flex-col gap-3">
                 <Input
                   placeholder="رقم الموبايل (اختياري)"
+                  disabled={returnCustomerLocked}
                   value={customerPhone}
                   onChange={(e) => setCustomerPhone(e.target.value)}
                   dir="ltr"
@@ -1378,6 +1454,7 @@ export default function CheckoutForm() {
                 />
                 <Input
                   placeholder="اسم العميل (اختياري)"
+                  disabled={returnCustomerLocked}
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
                 />
@@ -1420,6 +1497,8 @@ export default function CheckoutForm() {
               {saleMode === "retail" ? (
                 <select
                   value={selectedCustomerId}
+                  aria-label="عميل فاتورة نقاط البيع"
+                  disabled={returnCustomerLocked}
                   onChange={(e) => {
                     const id = e.target.value;
                     setSelectedCustomerId(id);
@@ -1437,6 +1516,9 @@ export default function CheckoutForm() {
                   className="flex h-9 w-full rounded border-0 bg-background/50 px-2 py-1 text-sm font-semibold shadow-sm ring-1 ring-inset ring-border focus:ring-2 focus:ring-inset focus:ring-primary"
                 >
                   <option value="">-- عميل غير مسجل (Walk-in) --</option>
+                  {returnCustomerLocked && selectedCustomerId && !customers.some((c: any) => c.id === selectedCustomerId) && (
+                    <option value={selectedCustomerId}>{customerName || "عميل الفاتورة الأصلية (غير متاح حاليًا)"} {customerPhone}</option>
+                  )}
                   {customers.map((c: any) => (
                     <option key={c.id} value={c.id}>
                       {c.name} {c.phone ? `- ${c.phone}` : ""}
@@ -1457,6 +1539,12 @@ export default function CheckoutForm() {
                   ))}
                 </select>
               )}
+              {saleMode === "retail" && returnCustomerLocked && (
+                <p role="status" className="mt-1 text-xs text-muted-foreground break-words">
+                  عميل الفاتورة الأصلية: {customerName || (selectedCustomerId ? "عميل محفوظ" : "عميل غير مسجل")}
+                  {customerPhone ? ` — ${customerPhone}` : ""}
+                </p>
+              )}
             </div>
           </div>
 
@@ -1474,7 +1562,7 @@ export default function CheckoutForm() {
 
                 return (
                   <div
-                    key={`${item.productId}-${item.variantName || 'default'}`}
+                    key={posCartLineKey(item)}
                     className={cn(
                       "flex flex-col p-3 rounded-lg border bg-background shadow-sm",
                       item.quantity < 0 ? "bg-red-50/50 border-red-200" : "border-border"
@@ -1507,7 +1595,7 @@ export default function CheckoutForm() {
                         <button
                           aria-label={`إنقاص كمية ${item.productName}`}
                           type="button"
-                          onClick={() => updateCartQuantity(item.productId, item.variantName, Math.abs(item.quantity) - 1 > 0 ? (item.quantity < 0 ? -(Math.abs(item.quantity) - 1) : item.quantity - 1) : 0)}
+                          onClick={() => updateCartQuantity(item.productId, item.variantName, Math.abs(item.quantity) - 1 > 0 ? (item.quantity < 0 ? -(Math.abs(item.quantity) - 1) : item.quantity - 1) : 0, (item as any).returnOfEventId)}
                           className="size-6 rounded-sm bg-background flex items-center justify-center hover:bg-muted shadow-sm border border-border/50"
                         >
                           <Minus className="size-3" />
@@ -1517,7 +1605,7 @@ export default function CheckoutForm() {
                         </span>
                         <button
                           aria-label={`زيادة كمية ${item.productName}`}
-                          onClick={() => updateCartQuantity(item.productId, item.variantName, item.quantity < 0 ? -(Math.abs(item.quantity) + 1) : item.quantity + 1)}
+                          onClick={() => updateCartQuantity(item.productId, item.variantName, item.quantity < 0 ? -(Math.abs(item.quantity) + 1) : item.quantity + 1, (item as any).returnOfEventId)}
                           disabled={!isReturnMode && item.quantity >= onHand}
                           className="size-6 rounded-sm bg-background flex items-center justify-center hover:bg-muted shadow-sm border border-border/50 disabled:opacity-40"
                         >
@@ -1559,7 +1647,7 @@ export default function CheckoutForm() {
                     // `x.code === input && x.active` — no expiry, no usage
                     // limit, and a case-sensitive compare against a code the
                     // Discounts screen had upper-cased.
-                    const applied = applyDiscountCode(promoDiscounts, discountCodeInput, subtotal);
+                    const applied = applyDiscountCode(promoDiscounts, discountCodeInput, discountSubtotal);
                     if (applied.ok) {
                       setAppliedDiscount(applied.code as PromoDiscount);
                       setResult(null);
@@ -1645,6 +1733,15 @@ export default function CheckoutForm() {
             <div className="sticky bottom-0 z-10 -mx-4 mt-2 space-y-4 border-t border-border bg-card/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 lg:contents">
             {/* Totals */}
             <div className={cn("pt-3 border-t border-border/50 space-y-4", isWholesaleReturn && "hidden")}>
+              {isPosExchange && (
+                <div aria-label="ملخص الاستبدال" className="space-y-2 rounded border border-indigo-200 bg-indigo-50/50 p-3 text-sm dark:bg-indigo-950/20">
+                  <p className="break-all">فاتورة الأصل: <bdi>{(cart.find(i=>i.quantity<0) as any)?.historicalCost?.sourceDocumentNumber ?? (cart.find(i=>i.quantity<0) as any)?.returnOfEventId}</bdi></p>
+                  <p>صافي قيمة المرتجع: {formatCurrency(discountSubtotal-subtotal)} ج.م</p>
+                  <p>قيمة البديل بعد الخصم: {formatCurrency(discountSubtotal-discountAmount)} ج.م</p>
+                  <p>{calculateTotal()<0 ? "رد للعميل" : calculateTotal()>0 ? "تحصيل من العميل" : "دون تحصيل أو رد نقدي"}: {formatCurrency(Math.abs(calculateTotal()))} ج.م</p>
+                  <p>خزينة الفرق: {WALLET_LABELS[selectedWallet]}</p>
+                </div>
+              )}
               <div className="flex items-center justify-between text-base font-semibold text-gray-700 dark:text-gray-300">
                 <span>الإجمالي الفرعي</span>
                 <span>{formatCurrency(subtotal)}</span>
@@ -1665,7 +1762,7 @@ export default function CheckoutForm() {
                 </div>
               )}
               <div className="flex items-center justify-between pt-2">
-                <span className="text-xl font-extrabold text-gray-900 dark:text-white">الإجمالي المطلوب</span>
+                <span className="text-xl font-extrabold text-gray-900 dark:text-white">{isPosExchange ? calculateTotal()<0 ? "فرق مطلوب رده للعميل" : calculateTotal()>0 ? "فرق مطلوب تحصيله" : "استبدال دون فرق نقدي" : "الإجمالي المطلوب"}</span>
                 <span className="text-3xl font-black text-primary">{formatCurrency(calculateTotal())}</span>
               </div>
               
@@ -1700,7 +1797,7 @@ export default function CheckoutForm() {
             {(() => {
               const hasPositive = cart.some(i => i.quantity > 0);
               const hasNegative = cart.some(i => i.quantity < 0);
-              const isExchange = hasPositive && hasNegative;
+              const isExchange = isPosExchange;
               const isReturnOnly = hasNegative && !hasPositive;
               
               let btnText = "إتمام البيع";
@@ -1770,7 +1867,8 @@ export default function CheckoutForm() {
           </DialogHeader>
           <div className="grid grid-cols-2 gap-3 py-4">
             {pendingVariantSelection?.product?.metadata?.variants?.map((v: any, idx: number) => {
-              const isAvailable = (v.stock || 0) > 0;
+              const available = returnCustomerLocked ? posStockAfterReturns(pendingVariantSelection.product,products,cart,v.name) : v.stock || 0;
+              const isAvailable = available > 0;
               return (
                 <Button
                   key={idx}
@@ -1783,15 +1881,12 @@ export default function CheckoutForm() {
                   onClick={() => {
                     const product = pendingVariantSelection.product;
                     const qty = pendingVariantSelection.qty;
-                    setPendingVariantSelection(null);
-                    setTimeout(() => {
-                      addItemToCart(product, qty, v.name);
-                    }, 0);
+                    addItemToCart(product, qty, v.name);
                   }}
                 >
                   <span className="font-bold">{v.name}</span>
                   <span className="text-xs text-muted-foreground">
-                    المتاح: {v.stock || 0}
+                    المتاح: {available}
                   </span>
                 </Button>
               );

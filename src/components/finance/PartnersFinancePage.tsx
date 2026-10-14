@@ -165,7 +165,7 @@ interface LedgerSummary {
   shippingCost: number;
   /** sales − cogs − opEx. */
   profit: number;
-  /** SUM(receivable_client) — unpaid wholesale credit. */
+  /** SUM(receivable_client) — net customer receivables and earned return credits. */
   receivableClient: number;
   payableSupplier: number;
   /** Total value of inventory on hand at cost. */
@@ -249,8 +249,8 @@ const PERSONA_KPI_CONFIG: Record<
     {
       key: "wholesaleDebts",
       feeds: ["receivable_client"],
-      label: "ديون مستحقة (عملاء الجملة)",
-      sublabel: "أرصدة عملاء الجملة الآجلة",
+      label: "صافي أرصدة العملاء",
+      sublabel: "مبالغ لنا أو أرصدة مستحقة للعملاء",
       icon: TrendingUp,
       bgClass: "from-amber-500/10",
       iconBg: "bg-amber-100",
@@ -366,8 +366,8 @@ const PERSONA_KPI_CONFIG: Record<
     {
       key: "wholesaleDebts",
       feeds: ["receivable_client"],
-      label: "ديون مستحقة (عملاء الجملة)",
-      sublabel: "أرصدة عملاء الجملة الآجلة",
+      label: "صافي أرصدة العملاء",
+      sublabel: "مبالغ لنا أو أرصدة مستحقة للعملاء",
       icon: TrendingUp,
       bgClass: "from-amber-500/10",
       iconBg: "bg-amber-100",

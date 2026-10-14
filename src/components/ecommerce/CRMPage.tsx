@@ -29,6 +29,8 @@ import { useOrderStore } from "@/store/useOrderStore";
 import { useBalances } from "@/lib/ledger/useBalances";
 import { events } from "@/lib/ledger";
 import type { LedgerEvent } from "@/lib/ledger";
+import {groupPosHistory} from "@/lib/posHistory";
+import {PosReceiptDetails} from "@/components/sales/PosReceiptDetails";
 import { toWhatsAppNumber } from "@/lib/phone";
 import { codState, COD_STATE_LABELS_AR } from "@/lib/shippingRates";
 import { STATUS_META } from "@/components/ecommerce/OrdersPage";
@@ -194,22 +196,12 @@ export function CRMPage() {
     
     // `saleBelongsTo`, not a raw id compare: a till sale taken before the
     // customer was linked still belongs in their history.
-    const pos = posSales.filter((sale) => saleBelongsTo(sale, selectedCustomer)).map(s => {
-      const p = s.payload as any;
-      const totalAmount = p.totalAmount || (p.items || []).reduce((acc: number, item: any) => acc + (item.quantity * item.unitPrice), 0);
-      return {
-        id: s.id,
-        type: "pos" as const,
-        date: new Date(s.occurredAt),
-        displayId: "POS-" + (s.id.split("-")[0] || "").toUpperCase(),
-        status: "delivered",
-        totalAmount,
-        expectedCod: 0,
-        cod: "none" as const,
-        originalData: s,
-      };
-    });
-    
+    const pos = groupPosHistory(posSales.filter(sale=>saleBelongsTo(sale,selectedCustomer))).map(group=>({
+      id:group.id,type:"pos" as const,date:new Date(group.event.occurredAt),displayId:group.number,
+      status:"delivered",totalAmount:group.amount,expectedCod:0,cod:"none" as const,
+      posLabel:group.event.refType==="pos_sale"?group.label:"بيع مسجل",structuredReceipt:group.event.refType==="pos_sale",originalData:group.event,
+    }));
+
     return [...ecOrders, ...pos].sort((a, b) => b.date.getTime() - a.date.getTime());
   }, [orders, posSales, selectedCustomer]);
 
@@ -550,7 +542,7 @@ export function CRMPage() {
                       <TableHead className="text-right px-4">رقم الطلب</TableHead>
                       <TableHead className="text-center px-4">التاريخ</TableHead>
                       <TableHead className="text-center px-4">الحالة</TableHead>
-                      <TableHead className="text-center px-4">الإجمالي</TableHead>
+                      <TableHead className="text-center px-4">الإجمالي / فرق الاستبدال</TableHead>
                       <TableHead className="text-center px-4">COD</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -576,7 +568,7 @@ export function CRMPage() {
                           <TableCell className="px-4 font-mono flex items-center gap-2">
                             {event.displayId}
                             {event.type === "pos" ? (
-                              <Badge variant="outline" className="ml-2 text-[10px]">شراء من المحل</Badge>
+                              <Badge variant="outline" className="ml-2 text-[10px]">{event.posLabel}</Badge>
                             ) : (
                               <Badge variant="outline" className="ml-2 text-[10px] text-blue-600 border-blue-200 bg-blue-50">طلب أونلاين</Badge>
                             )}
@@ -586,7 +578,7 @@ export function CRMPage() {
                           </TableCell>
                           <TableCell className="text-center px-4">
                             {event.type === "pos" ? (
-                              <Badge variant="default">مكتمل</Badge>
+                              <Badge variant="default">{event.posLabel}</Badge>
                             ) : (
                               <Badge
                                 variant={
@@ -602,7 +594,7 @@ export function CRMPage() {
                             )}
                           </TableCell>
                           <TableCell className="text-center px-4 font-mono">
-                            {formatMoney(event.totalAmount)}
+                            {event.totalAmount==null?"استكمل قراءة السجل":formatMoney(event.totalAmount)}
                           </TableCell>
                           <TableCell className="text-center px-4 font-mono text-amber-600">
                             {/* Only while the customer still owes it — see `codState`. */}
@@ -730,6 +722,8 @@ export function CRMPage() {
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
+          {selectedTimelineOrder?.type==="pos"&&selectedTimelineOrder.structuredReceipt ? <PosReceiptDetails eventId={selectedTimelineOrder.originalData.id}/> : <>
+
           <Table>
             <TableHeader>
               <TableRow>
@@ -763,11 +757,12 @@ export function CRMPage() {
               طباعة الإيصال (PDF)
             </Button>
           </div>
+          </>}
         </div>
       </DialogContent>
     </Dialog>
 
-    {selectedTimelineOrder && (
+    {selectedTimelineOrder && !selectedTimelineOrder.structuredReceipt && (
       <div className="hidden print:block absolute top-0 left-0 w-full min-h-screen bg-white text-black p-8 z-[99999]" dir="rtl">
         <div className="text-center mb-8 border-b-2 border-black pb-4">
           <h1 className="text-3xl font-bold mb-2">فاتورة مبيعات</h1>

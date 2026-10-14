@@ -92,7 +92,7 @@ test("addOrder draws the number from the store counter", () => {
 });
 
 test("the order form allocates before the ledger event, and links them", () => {
-  const alloc = orderForm.indexOf('nextDocumentNumber("ecommerce_order", "ECO-")');
+  const alloc = orderForm.indexOf('nextOrderDocumentNumber()');
   const placed = orderForm.indexOf('kind: "order_placed"');
   assert.ok(alloc > -1, "the order form does not draw a canonical number");
   assert.ok(placed > -1 && alloc < placed, "the number must exist BEFORE `order_placed` is appended");
@@ -174,7 +174,7 @@ test("every path that COMMITS against stock refuses a mirror number", () => {
   for (const [name, src, compare] of [
     ["نقاط البيع", checkout, "const short = cart.find("],
     ["الجملة", wholesale, "const short = invoiceItems.find("],
-    ["الطلبات أونلاين", orderForm, "if (quantity > onHand)"],
+    ["الطلبات أونلاين", orderForm, "line.quantity > line.available"],
   ]) {
     const gate = src.indexOf("stockIsAuthoritative()");
     const check = src.indexOf(compare);

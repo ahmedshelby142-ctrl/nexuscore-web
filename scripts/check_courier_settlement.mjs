@@ -28,6 +28,7 @@ import {
 } from "../src/lib/ledger/orders.ts";
 import {
   batchSummary,
+  courierSettlementAmounts,
   courierIdOf,
   isCodSettled,
   unsettledDeliveries,
@@ -39,6 +40,46 @@ const WALLET = "inStoreSafe";
 const amountOn = (lines, account) =>
   lines.filter((l) => l.account === account).reduce((s, l) => s + (l.amount ?? 0), 0);
 const countOn = (lines, account) => lines.filter((l) => l.account === account).length;
+
+test("legacy zero courierFee matches the already booked delivery fee, not a zero deduction",()=>{
+  assert.deepEqual(courierSettlementAmounts({expectedCod:50,courierFee:0,shippingFee:50}),{cod:50,fee:50});
+  assert.equal(batchSummary([{expectedCod:50,courierFee:0,shippingFee:50}],0).expectedNet,0);
+});
+
+test("LIVE QA: confirmed courier exchange refund reduces COD before shortfall calculation", () => {
+  const order = { expectedCod: 135, courierFee: 120, exchangeDetails: {
+    status: "confirmed", refundVia: "courier", refundPiastres: 1000, cause: "customer", returnFee: 0,
+  } };
+  assert.deepEqual(courierSettlementAmounts(order), { cod: 125, fee: 120 });
+  const summary = batchSummary([order], 5);
+  assert.equal(summary.expectedNet, 5);
+  assert.equal(summary.shortfall, 0);
+  const lines = buildCourierBatchSettlementLines({ courierId: COURIER, wallet: WALLET,
+    orders: [{ orderId: "exchange", ...courierSettlementAmounts(order) }], netReceived: 5,
+    expectedFees: summary.expectedFees });
+  assert.equal(amountOn(lines, "wallet"), 5);
+  assert.equal(amountOn(lines, "receivable_courier"), -125);
+  assert.equal(amountOn(lines, "payable_courier"), -120);
+  assert.equal(amountOn(lines, "expense"), 0);
+  assert.equal(batchSummary([order], 4.99).shortfall, 0.01);
+});
+
+test("exchange settlement ignores pending/cancelled refunds and wallet-paid principal; includes booked extra trip once", () => {
+  for (const status of ["pending", "cancelled"]) {
+    assert.deepEqual(courierSettlementAmounts({ expectedCod: 135, courierFee: 120,
+      exchangeDetails: { status, refundVia: "courier", refundPiastres: 1000, returnFee: 7 } }), { cod: 135, fee: 120 });
+  }
+  for (const cause of ["customer", "courier", "shop"]) {
+    const result = courierSettlementAmounts({ expectedCod: 135, courierFee: 120, shippingFee: 120,
+      exchangeDetails: { status: "confirmed", refundVia: "wallet", refundPiastres: 1000, cause, returnFee: 7.25 } });
+    assert.deepEqual(result, { cod: cause === "shop" ? 135 : 142.25, fee: 127.25 });
+  }
+});
+
+test("courier-caused delivery surcharge clears its booked compensation without billing the customer", () => {
+  assert.deepEqual(courierSettlementAmounts({expectedCod: 20, shippingFee: 0, courierFee: 50,
+    exchangeDetails: {status: "confirmed", cause: "courier", refundVia: "courier", refundPiastres: 2000, returnFee: 0}}), {cod: 50, fee: 50});
+});
 
 // ── The lines ──────────────────────────────────────────────────────────────
 

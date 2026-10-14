@@ -273,6 +273,7 @@ export function Returns() {
               shippingFee: order.shippingFee,
               wastedTripCompensation: order.wastedTripCompensation ?? 0,
               courierFee: order.courierFee,
+              codServiceFee: order.codServiceFee,
               depositAmount: order.depositAmount,
               wallet: "inStoreSafe",
               codAmount: order.expectedCod,

@@ -129,15 +129,19 @@ test("FA.4 a replayed retry is reported, not recorded twice", async () => {
   assert.equal(F().assets.length, 1);
 });
 
-test("FA.5 مستبعد and delete go to the cloud", async () => {
+test("FA.5 deactivation is an audited command; deletion and retroactive reactivation cannot erase asset history", async () => {
   reset();
   useFinancialStore.setState({ assets: [{ id: "A5", isActive: true }] });
+  globalThis.__rpcAnswer=(_name,args)=>({data:{asset:{id:args.p_input.assetId,store_id:"S1",isActive:false,deactivatedAt:"2026-10-14"},replayed:false},error:null});
   await F().toggleAsset("A5");
-  assert.deepEqual(globalThis.__writes[0], { table: "fixed_assets", row: { id: "A5", isActive: false } });
+  assert.equal(globalThis.__rpc[0].name,"deactivate_fixed_asset");
+  assert.equal(globalThis.__rpc[0].args.p_input.assetId,"A5");
+  assert.equal(globalThis.__writes.length,0);
   assert.equal(F().assets[0].isActive, false);
-  await F().removeAsset("A5");
-  assert.deepEqual(globalThis.__deletes[0], { table: "fixed_assets", id: "A5" });
-  assert.deepEqual(F().assets, []);
+  await assert.rejects(F().removeAsset("A5"),/لا يُحذف/);
+  await assert.rejects(F().toggleAsset("A5"),/إعادة تشغيل/);
+  assert.equal(globalThis.__deletes.length,0);
+  assert.equal(F().assets.length,1);
 });
 
 // ═══ Budget caps ═══

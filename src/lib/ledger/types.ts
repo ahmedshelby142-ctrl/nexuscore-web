@@ -41,6 +41,7 @@ export type EventKind =
   | "payroll"
   | "wallet_transfer"
   | "courier_settlement"
+  | "courier_fee_adjustment"
   | "owner_draw"
   | "stock_adjustment"
   /** Opening capital: owner_equity ±, and wallet ± when cash arrives now (049). */

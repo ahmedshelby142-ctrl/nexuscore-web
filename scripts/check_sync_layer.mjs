@@ -42,10 +42,9 @@ const syncStatus = read("../src/store/useSyncStatus.ts");
 const initSql = read("../docs/full_supabase_init.sql");
 const migration036 = read("../docs/migrations/036_realtime_publication_gap.sql");
 /** Every migration, concatenated — the publication is built across all of them. */
-const allMigrations = readdirSync(new URL("../docs/migrations", import.meta.url))
-  .filter((f) => f.endsWith(".sql"))
-  .map((f) => read(`../docs/migrations/${f}`))
-  .join("\n");
+const allMigrations = ["docs/migrations","supabase/migrations"].flatMap(dir=>
+  readdirSync(new URL(`../${dir}`,import.meta.url)).filter(f=>f.endsWith(".sql")).map(f=>read(`../${dir}/${f}`)),
+).join("\n");
 
 /**
  * Tables the client actually opens a postgres_changes listener on.

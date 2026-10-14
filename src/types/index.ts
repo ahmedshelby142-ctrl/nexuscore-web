@@ -160,6 +160,8 @@ export interface EcommerceOrder {
   courierId?: string | null;
   courierName?: string | null;
   courierFee: number;
+  /** Merchant COD collection service charge; never reduces customer COD. */
+  codServiceFee?: number;
   cogsAmount: number;
   customerId?: string | null;
   discountCodeId?: string | null;

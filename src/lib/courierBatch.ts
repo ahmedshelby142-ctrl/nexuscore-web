@@ -111,7 +111,7 @@ export interface BatchSummary {
 }
 
 type SettlementOrder = Pick<EcommerceOrder, "expectedCod"> &
-  Partial<Pick<EcommerceOrder, "courierFee" | "shippingFee" | "exchangeDetails">> & {
+  Partial<Pick<EcommerceOrder, "courierFee" | "codServiceFee" | "shippingFee" | "exchangeDetails">> & {
     courierObligation?: { codPiastres: number; feePiastres: number };
   };
 
@@ -124,10 +124,12 @@ export function courierSettlementAmounts(order: SettlementOrder): { cod: number;
   let cod = Math.round((order.expectedCod || 0) * 100);
   // Match the established delivery ledger builder: a legacy/default zero
   // courierFee falls back to the saved shipping fee, never today's rate.
-  let fee = Math.round((Number(order.courierFee) > 0 ? order.courierFee! : order.shippingFee ?? 0) * 100);
+  const deliveryFee = Math.round((Number(order.courierFee) > 0 ? order.courierFee! : order.shippingFee ?? 0) * 100);
+  let fee=deliveryFee;
+  if (cod > 0) fee += Math.round((order.codServiceFee ?? 0) * 100);
   const exchange = order.exchangeDetails;
   if (exchange?.cause === "courier")
-    cod += Math.max(0, fee - Math.round((order.shippingFee ?? 0) * 100));
+    cod += Math.max(0, deliveryFee - Math.round((order.shippingFee ?? 0) * 100));
   if (exchange?.status === "confirmed") {
     if (exchange.credit?.version === 1) {
       // expectedCod already excludes allocated merchandise credit. Only the

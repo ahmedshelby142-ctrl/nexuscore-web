@@ -392,8 +392,8 @@ test("no capital recorded reads «غير مسجل», and a failed read is an err
 });
 
 test("a ledger change reaches both Owner readers through the existing realtime cue", () => {
-  assert.match(screenCode, /useRealtimeTables\(\["ledger_events"\], \(\) => equity\.refresh\(\)\);/);
-  assert.match(hookCode, /useRealtimeTables\(\["ledger_events"\], \(\) => \{\s*background\.current = true;/);
+  assert.match(screenCode, /useRealtimeTables\(\["ledger_events",\s*"fixed_assets"\], \(\) => equity\.refresh\(\)\);/);
+  assert.match(hookCode, /useRealtimeTables\(\["ledger_events",\s*"fixed_assets"\], \(\) => \{\s*background\.current = true;/);
   // A realtime re-read keeps the figures up; a period change still shows the skeleton.
   assert.match(hookCode, /if \(!background\.current\) setLoading\(true\);\s*background\.current = false;/);
 });

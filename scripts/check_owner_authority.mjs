@@ -110,7 +110,7 @@ test("no screen writes its own profit subtraction", () => {
 
 test("Partners uses netProfitOf and stays on useBalances (034: ACCOUNTANT)", () => {
   const s = src("../src/components/finance/PartnersFinancePage.tsx");
-  assert.match(s, /profit: netProfitOf\(\{ revenue: ledgerSales, cogs: totalCOGS, expenses: ledgerExpenses \}\)/);
+  assert.ok(s.includes('profit: netProfitOf({ revenue: ledgerSales, cogs: totalCOGS, expenses: ledgerExpenses-(assetRead.data?.capitalPurchasesReclassifiedLifetimePiastres??0)/100 })-(assetRead.data?.lifetimeDepreciationPiastres??0)/100'), 'one shared operating-profit formula, reclassifying paid assets and deducting authoritative noncash depreciation once');
   // Moving it onto the RPC would lock ACCOUNTANT out of a screen the route map
   // grants them — the RPC refuses every role but ADMIN.
   assert.ok(!/owner_financial_summary|useOwnerFinancialSummary/.test(s),

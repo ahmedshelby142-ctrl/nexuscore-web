@@ -253,6 +253,7 @@ test("a Moderator's socket is not subscribed to supplier invoices", () => {
     const tables = realtimeTablesFor(role);
     assert.ok(!tables.includes("orders") && !tables.includes("ledger_events"), `${role} is not sent order/ledger rows`);
     assert.ok(tables.includes("store_activity"), `${role} still hears orders and ledger changes`);
+    assert.equal(tables.includes("fixed_assets"),role==="ADMIN",`${role}: only the owner receives asset rows for the accounting screen`);
   }
   for (const role of ["ADMIN", "ACCOUNTANT"]) {
     assert.ok(realtimeTablesFor(role).includes("purchase_invoices"), `${role} keeps its purchasing refresh`);

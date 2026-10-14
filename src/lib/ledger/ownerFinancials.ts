@@ -46,6 +46,7 @@
 import { getSupabaseClient } from "@/lib/supabase";
 import { getActiveStoreId } from "@/services/api/storeContext";
 import { fromPiastres } from "./money";
+import type {AssetAccounting,AccountingPosition} from "../fixedAssetAccounting";
 
 /** One subject's share of an account, in EGP. */
 export interface OwnerSubjectAmount {
@@ -69,6 +70,10 @@ export interface OwnerFinancialSummary {
   expenses: number;
   /** `revenue − cogs − expenses`. Same definition as `pnl().netProfit`. */
   netProfit: number;
+  profitBeforeDepreciation?: number;
+  depreciation?: number;
+  fixedAssets?: AssetAccounting;
+  position?: AccountingPosition;
   /** Value returned in the window, POSITIVE. Already deducted above. */
   returnsValue: number;
   /** `revenue` split by channel subject: pos · ecommerce · wholesale · … */
@@ -129,8 +134,10 @@ export async function readOwnerFinancialSummary(
 
   if (error) throw new Error(`[owner_financial_summary] ${error.message}`);
   if (!data) throw new Error("[owner_financial_summary] empty response");
+  if(await getActiveStoreId()!==storeId)throw new Error("تغيّر المتجر أثناء قراءة الملخص المالي.");
 
   const payload = data as Record<string, unknown>;
+  if((payload.fixedAssets as AssetAccounting|undefined)?.reviewRequired)throw new Error("تحتاج بيانات الأصول القديمة إلى مراجعة قبل تأكيد الربح.");
 
   return {
     from: payload.from ? new Date(String(payload.from)) : null,
@@ -141,6 +148,10 @@ export async function readOwnerFinancialSummary(
     grossProfit: egp(payload.grossProfit),
     expenses: egp(payload.expenses),
     netProfit: egp(payload.netProfit),
+    profitBeforeDepreciation:egp(payload.profitBeforeDepreciation??payload.netProfit),
+    depreciation:egp(payload.depreciation),
+    fixedAssets:payload.fixedAssets as AssetAccounting|undefined,
+    position:payload.position as AccountingPosition|undefined,
     returnsValue: egp(payload.returnsValue),
     salesByChannel: toEgpRows(payload.salesByChannel as RawSubjectAmount[]),
 

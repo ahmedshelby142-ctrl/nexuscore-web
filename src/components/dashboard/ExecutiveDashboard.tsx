@@ -374,7 +374,7 @@ export function ExecutiveDashboard() {
           <Kpi
             label={periodLabel(period)}
             value={loading ? "…" : formatMoney(owner.data?.netProfit ?? 0)}
-            hint="صافي الربح (مبيعات − تكلفة − مصاريف)"
+              hint="صافي الربح بعد الإهلاك (مبيعات − بضاعة − تشغيل − إهلاك الفترة)"
             icon={TrendingUp}
             tone={(owner.data?.netProfit ?? 0) < 0 ? "bad" : "good"}
             onClick={() => navigate("/partners")}

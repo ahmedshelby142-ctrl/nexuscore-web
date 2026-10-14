@@ -72,7 +72,7 @@ export function Layout() {
     const today = periodWindow("day");
     let report;
     try {
-      report = await fetchPnl(balances, today);
+      report = await fetchPnl(balances, today,readFixedAssetAccounting);
     } catch (e) {
       // Better a visibly failed export than a text file full of zeros that
       // reads as a day with no business.
@@ -103,7 +103,9 @@ export function Layout() {
       `المشتريات (نقدية بقت مخزون، مش مصروف): ${money(report.purchases)}`,
       "",
       "─────────── صافي الربح ───────────",
-      `صافي ربح اليوم: ${money(report.netProfit)}`,
+      `الربح قبل الإهلاك: ${money(report.profitBeforeDepreciation??report.netProfit)}`,
+      `إهلاك الفترة غير النقدي: ${money(report.depreciation??0)}`,
+      `صافي ربح اليوم بعد الإهلاك: ${money(report.netProfit)}`,
       "",
       `عدد فواتير الجملة: ${wholesaleInvoices.length}`,
       `عدد معاملات نقاط البيع: ${transactions.length}`,
@@ -226,3 +228,4 @@ export function Layout() {
     </div>
   );
 }
+import {readFixedAssetAccounting} from "@/lib/fixedAssetAccounting";

@@ -157,6 +157,7 @@ const TABLE_HANDLERS: Record<string, {
     //                 code.
     //   couriers      not in the publication at all. Nothing to subscribe to.
     customers: [useCustomerStore, "customers"],
+    fixed_assets: [useFinancialStore, "assets"],
     suppliers: [useBusinessStore, "suppliers"],
     purchase_invoices: [useBusinessStore, "purchaseInvoices"],
     return_records: [useBusinessStore, "returnRecords"],
@@ -386,7 +387,7 @@ function handleChange(table: string, payload: RealtimePostgresChangesPayload<any
   // not proof an UPDATE was performed by this tab. Merge these authoritative
   // rows through the existing LWW handler even when their creator is local.
   if (isOwnEcho(payload) && !(payload.eventType === 'UPDATE' &&
-      (table === 'products' || table === 'purchase_invoices' || table === 'orders'))) return;
+      (table === 'products' || table === 'purchase_invoices' || table === 'orders' || table === 'fixed_assets'))) return;
 
   const incoming = (payload as any).new ?? (payload as any).old;
   const eventType = payload.eventType;
@@ -402,4 +403,5 @@ function handleChange(table: string, payload: RealtimePostgresChangesPayload<any
       break;
     }
   }
+  if(table==='fixed_assets')window.dispatchEvent(new CustomEvent('ledger-sync-pulled',{detail:{table}}));
 }

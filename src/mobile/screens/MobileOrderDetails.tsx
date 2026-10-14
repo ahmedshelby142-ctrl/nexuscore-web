@@ -1,4 +1,7 @@
 import { ArrowRight, Package } from "lucide-react";
+import {MobileBundleContents} from "@/mobile/components/MobileBundleContents";
+import {savedOrderBundleComponents} from "@/lib/bundleDetails";
+import {CodServiceFeeEditor} from "@/components/shipping/CodServiceFeeEditor";
 import {OrderFulfillmentPanel} from "@/components/ecommerce/OrderFulfillmentPanel";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -153,7 +156,7 @@ export function MobileOrderDetails() {
       </div>
 
       <div className="mobile-detail-total">
-        <span>إجمالي الطلب</span>
+        <span>قيمة البضاعة بعد الخصم</span>
         <strong>{formatArabicCurrency(totalAmount)}</strong>
       </div>
 
@@ -198,11 +201,13 @@ export function MobileOrderDetails() {
             const productId = item.productId;
             const productName = item.productName ?? item.product_id ?? item.bundleName ?? "صنف";
             const variantName = item.variantName;
+            const components=item.bundleId||item.isBundle?savedOrderBundleComponents(item,order.stockItems??[]):[];
             return (
               <div className="mobile-detail-line" key={item.id ?? `${productId}-${index}`}>
                 <div>
                   <strong>{productName}</strong>
                   {variantName && <span className="mobile-muted" style={{ marginInlineStart: "0.5rem" }}>{variantName}</span>}
+                  {components.length>0&&<MobileBundleContents components={components} titleAr="مكونات البوكس المحفوظة في الطلب" captionAr="إجمالي الكميات المحفوظة لهذا البند؛ تعديل تعريف البوكس لا يغيّرها"/>}
                 </div>
                 <div style={{ textAlign: "left" }}>
                   <span style={{ color: "var(--muted-foreground)" }}>{formatArabicCurrency(price)} × {formatArabicCount(qty)}</span>
@@ -264,6 +269,8 @@ export function MobileOrderDetails() {
           </>
         )}
         {showCost && courierFee > 0 && <div className="mobile-detail-line"><span>عمولة المندوب</span><strong>{formatArabicCurrency(courierFee)}</strong></div>}
+        {showCost && <div className="mobile-detail-line"><span>رسوم تحصيل COD</span><strong>{formatArabicCurrency(Number(order.codServiceFee??0))}</strong></div>}
+        {showCost && <CodServiceFeeEditor key={order.id} order={order} onSaved={reload}/>}
       </MobileSection>
 
       <MobileSection titleAr="الشحن والمندوب">

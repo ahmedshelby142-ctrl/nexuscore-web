@@ -36,7 +36,7 @@ import {
   periodWindow,
 } from "@/lib/ledger/reports";
 import type { Bucket, Granularity, PeriodPreset, Pnl, ReportWindow } from "@/lib/ledger/reports";
-import { useFinancialStore } from "@/store/useFinancialStore";
+import {readFixedAssetAccounting} from "@/lib/fixedAssetAccounting";
 import { formatMoney } from "@/lib/math";
 import { printTableAsPdf } from "@/lib/pdfGenerator";
 import { Button } from "@/components/ui/button";
@@ -88,6 +88,8 @@ export function FinancialReportsPage() {
   const [rowPnl, setRowPnl] = useState<Pnl[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshTick,setRefreshTick]=useState(0);
+  useEffect(()=>{const refresh=()=>setRefreshTick(t=>t+1);globalThis.window.addEventListener("ledger-sync-pulled",refresh);return()=>globalThis.window.removeEventListener("ledger-sync-pulled",refresh);},[]);
 
   // ponytail: one `fetchPnl` for the headline plus one per table row, fired
   // in parallel and capped at 60 rows by `buckets` — so at worst 305 indexed
@@ -105,8 +107,8 @@ export function FinancialReportsPage() {
     void (async () => {
       try {
         const [headline, perRow] = await Promise.all([
-          fetchPnl(balances, window),
-          Promise.all(rows.map((b) => fetchPnl(balances, { from: b.from, to: b.to }))),
+          fetchPnl(balances, window,readFixedAssetAccounting),
+          Promise.all(rows.map((b) => fetchPnl(balances, { from: b.from, to: b.to },readFixedAssetAccounting))),
         ]);
         if (cancelled) return;
         setTotal(headline);
@@ -127,11 +129,10 @@ export function FinancialReportsPage() {
     return () => {
       cancelled = true;
     };
-  }, [window, rows]);
+  }, [window, rows,refreshTick]);
 
   // Non-cash, and deliberately NOT inside SUM(expense). See the memo line
   // below the P&L for the whole reasoning.
-  const monthlyDepreciation = useFinancialStore((s) => s.getMonthlyDepreciationExpense());
 
   const periodLabel = window
     ? `${format(window.from, "dd/MM/yyyy")} — ${format(new Date(window.to.getTime() - 1), "dd/MM/yyyy")}`
@@ -149,17 +150,19 @@ export function FinancialReportsPage() {
         { label: "المصروفات والرواتب", accessor: (r) => formatMoney(r.opex) },
         { label: "عمولات ومصاريف الشحن", accessor: (r) => formatMoney(r.shipping) },
         { label: "المرتجعات", accessor: (r) => formatMoney(r.returns) },
-        { label: "صافي الربح", accessor: (r) => signed(r.netProfit) },
+        { label: "الربح قبل الإهلاك", accessor: (r) => signed(r.profitBeforeDepreciation??r.netProfit) },
+        { label: "إهلاك الفترة", accessor: (r) => formatMoney(r.depreciation??0) },
+        { label: "صافي الربح بعد الإهلاك", accessor: (r) => signed(r.netProfit) },
       ],
       rows: [
         ...rows.map((b, i) => ({ label: b.label, ...(rowPnl[i] ?? emptyPnl) })),
         { label: "الإجمالي", ...total },
       ],
       footer:
-        `صافي الربح للفترة: ${signed(total.netProfit)}` +
+        `صافي الربح بعد الإهلاك للفترة: ${signed(total.netProfit)}` +
         ` — المشتريات: ${formatMoney(total.purchases)} (تحوّل نقدية لمخزون، مش مصروف)` +
-        (monthlyDepreciation > 0
-          ? ` — إهلاك شهري غير نقدي: ${formatMoney(monthlyDepreciation)}`
+        ((total.depreciation??0) > 0
+          ? ` — إهلاك الفترة غير النقدي: ${formatMoney(total.depreciation??0)}`
           : ""),
     });
   };
@@ -197,7 +200,7 @@ export function FinancialReportsPage() {
 
           <div className="flex-1" />
 
-          <Button size="sm" variant="outline" onClick={handleExportPdf} disabled={!total}>
+          <Button size="sm" variant="outline" onClick={handleExportPdf} disabled={!total||loading||!!error}>
             <FileDown className="size-4 ml-2" />
             تصدير PDF
           </Button>
@@ -285,10 +288,14 @@ export function FinancialReportsPage() {
             <Kpi
               icon={PiggyBank}
               tone={total.netProfit >= 0 ? "green" : "red"}
-              label="صافي الربح"
-              sublabel="المبيعات − تكلفة البضاعة − المصروفات"
+              label="صافي الربح بعد الإهلاك"
+              sublabel="الربح قبل الإهلاك − إهلاك نفس الفترة"
               value={signed(total.netProfit)}
             />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Kpi icon={PiggyBank} tone="green" label="الربح قبل الإهلاك" sublabel="المبيعات − تكلفة البضاعة − مصروفات التشغيل" value={signed(total.profitBeforeDepreciation??total.netProfit)}/>
+            <Kpi icon={TrendingDown} tone="slate" label="إهلاك الفترة" sublabel="غير نقدي؛ يُستبعد الإهلاك السابق لبدء المحاسبة" value={formatMoney(total.depreciation??0)}/>
           </div>
 
           {/* ── Sales by channel ── */}
@@ -341,13 +348,11 @@ export function FinancialReportsPage() {
                 terms. Both are display decisions with a reason, not TODOs. */}
             <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-900 p-4 space-y-2">
               <p className="text-sm font-semibold text-blue-900 dark:text-blue-200">
-                إهلاك الأصول الثابتة — {formatMoney(monthlyDepreciation)} شهرياً
+                إهلاك الأصول الثابتة للفترة — {formatMoney(total.depreciation??0)}
               </p>
               <p className="text-sm text-blue-900 dark:text-blue-300">
-                الإهلاك تكلفة <strong>غير نقدية</strong>: مفيش فلوس بتخرج من أي محفظة، فمش متسجّل
-                كحركة في الدفتر ومش داخل في «المصروفات» ولا في «صافي الربح» فوق. لو حابّة تقيسي
-                الربح بعده: <strong>{signed(total.netProfit - monthlyDepreciation)}</strong>{" "}
-                للشهر الواحد.
+                الإهلاك تكلفة <strong>غير نقدية</strong>، يُخصم مرة واحدة من ربح نفس الفترة.
+                لا تُخصم شراءات الأصول بالكامل من التشغيل، ولا يدخل الإهلاك السابق لبدء المحاسبة في ربح الفترة الجديدة.
               </p>
             </div>
           </div>
@@ -392,13 +397,15 @@ function PnlTable({ rows, rowPnl, total }: { rows: Bucket[]; rowPnl: Pnl[]; tota
             <TableHead className="text-center">المصروفات والرواتب</TableHead>
             <TableHead className="text-center">الشحن</TableHead>
             <TableHead className="text-center">المرتجعات</TableHead>
-            <TableHead className="text-center">صافي الربح</TableHead>
+            <TableHead className="text-center">الربح قبل الإهلاك</TableHead>
+            <TableHead className="text-center">إهلاك الفترة</TableHead>
+            <TableHead className="text-center">صافي الربح بعد الإهلاك</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.length === 0 && (
             <TableRow>
-              <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
+              <TableCell colSpan={9} className="text-center text-muted-foreground py-6">
                 لا توجد فترات في هذا النطاق
               </TableCell>
             </TableRow>
@@ -413,6 +420,8 @@ function PnlTable({ rows, rowPnl, total }: { rows: Bucket[]; rowPnl: Pnl[]; tota
                 <TableCell className="text-center">{signed(p.opex)}</TableCell>
                 <TableCell className="text-center">{signed(p.shipping)}</TableCell>
                 <TableCell className="text-center">{formatMoney(p.returns)}</TableCell>
+                <TableCell className="text-center">{signed(p.profitBeforeDepreciation??p.netProfit)}</TableCell>
+                <TableCell className="text-center">{formatMoney(p.depreciation??0)}</TableCell>
                 <TableCell className="text-center">
                   <span className={p.netProfit >= 0 ? "text-green-600" : "text-red-600"}>
                     {signed(p.netProfit)}
@@ -434,6 +443,8 @@ function PnlTable({ rows, rowPnl, total }: { rows: Bucket[]; rowPnl: Pnl[]; tota
             <TableCell className="text-center">{signed(total.opex)}</TableCell>
             <TableCell className="text-center">{signed(total.shipping)}</TableCell>
             <TableCell className="text-center">{formatMoney(total.returns)}</TableCell>
+            <TableCell className="text-center">{signed(total.profitBeforeDepreciation??total.netProfit)}</TableCell>
+            <TableCell className="text-center">{formatMoney(total.depreciation??0)}</TableCell>
             <TableCell
               className={`text-center ${total.netProfit >= 0 ? "text-green-600" : "text-red-600"}`}
             >

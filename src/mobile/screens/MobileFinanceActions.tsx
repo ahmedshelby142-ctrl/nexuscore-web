@@ -44,6 +44,7 @@ const KINDS: Record<string, string> = {
   purchase: "توريد",
 };
 export function financeActivityLabel(row: Pick<LedgerEvent, "kind" | "refType">) {
+  if(row.kind==="expense"&&row.refType==="fixed_asset")return "شراء أصل ثابت — رسملة";
   return row.kind === "purchase" && row.refType === "supplier_return" ? "مرتجع مورد" : KINDS[row.kind];
 }
 const initial = () => ({

@@ -107,6 +107,9 @@ export interface EquityInputs {
   revenue: number;
   cogs: number;
   expenses: number;
+  fixedAssetOpening?: number;
+  capitalizedPurchases?: number;
+  depreciation?: number;
 }
 
 export interface OwnerEquityRow {
@@ -143,13 +146,13 @@ export function equityStatement(i: EquityInputs): EquityStatement {
   const contributions = round2(sum(i.contributionRows));
   const withdrawals = round2(sum(i.drawRows));
   const accumulatedResult = round2(
-    netProfitOf({ revenue: i.revenue, cogs: i.cogs, expenses: i.expenses }),
+    netProfitOf({ revenue: i.revenue, cogs: i.cogs, expenses: i.expenses })+(i.capitalizedPurchases??0)-(i.depreciation??0),
   );
   // Capital declared without cash was paid for by what the opening balances
   // already hold: it is taken OUT of them, not added beside them.
   const declaredCapital = (capital ?? 0) - i.capitalCash;
   const openingBalances = round2(
-    i.adjustmentStock + i.adjustmentWallet + i.adjustmentExpense - declaredCapital,
+    i.adjustmentStock + i.adjustmentWallet + i.adjustmentExpense + (i.fixedAssetOpening??0) - declaredCapital,
   );
   const totalEquity = round2(
     (capital ?? 0) + contributions + openingBalances + accumulatedResult - withdrawals,
@@ -193,7 +196,7 @@ type BalancesFn = (q: BalanceQuery) => Promise<Balance[]>;
  * Read every input from the ledger. THROWS if any read fails — a statement
  * built on a failed read would print an invented number.
  */
-export async function fetchEquity(balances: BalancesFn): Promise<EquityStatement> {
+export async function fetchEquity(balances: BalancesFn, assetReader?:()=>Promise<{openingEquityAdjustmentPiastres:number;capitalPurchasesReclassifiedLifetimePiastres:number;lifetimeDepreciationPiastres:number}>): Promise<EquityStatement> {
   const [
     capitalRows,
     contributionRows,
@@ -217,6 +220,7 @@ export async function fetchEquity(balances: BalancesFn): Promise<EquityStatement
     balances({ account: "cogs" }),
     balances({ account: "expense" }),
   ]);
+  const assets = assetReader ? await assetReader() : null;
   return equityStatement({
     capitalRows,
     contributionRows,
@@ -228,5 +232,8 @@ export async function fetchEquity(balances: BalancesFn): Promise<EquityStatement
     revenue: sum(revenue),
     cogs: sum(cogs),
     expenses: sum(expenses),
+    fixedAssetOpening:(assets?.openingEquityAdjustmentPiastres??0)/100,
+    capitalizedPurchases:(assets?.capitalPurchasesReclassifiedLifetimePiastres??0)/100,
+    depreciation:(assets?.lifetimeDepreciationPiastres??0)/100,
   });
 }

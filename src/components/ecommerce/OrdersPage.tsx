@@ -1,4 +1,6 @@
 import {orderManagementSummary} from "@/lib/orderManagement";
+import {useFinancialDraftClose} from "@/hooks/useFinancialDraftClose";
+import {CodServiceFeeEditor} from "@/components/shipping/CodServiceFeeEditor";
 import {OrderQueueWorkspace,OrderOperationPanel} from "./OrderQueueWorkspace";
 import {fulfillmentSummary} from "@/lib/orderFulfillment";
 import {expandPendingOrderItems} from "@/lib/pendingOrderItems";
@@ -1046,6 +1048,7 @@ export function OrdersPage() {
               shippingFee: order.shippingFee,
               wastedTripCompensation: order.wastedTripCompensation ?? 0,
               courierFee: order.courierFee,
+              codServiceFee: order.codServiceFee,
               courierCompensation: order.exchangeDetails?.cause === "courier",
               depositAmount: order.depositAmount,
               wallet: targetWallet,
@@ -1379,6 +1382,13 @@ export function OrdersPage() {
   const payingOrder = orders.find((o) => o.id === payOrderId) ?? null;
   const payOutstanding = Math.max(0, payingOrder?.expectedCod ?? 0);
   const payValue = Math.min(Math.max(0, Number(payAmount) || 0), payOutstanding);
+  const payClose=useFinancialDraftClose({open:payOrderId!==null,draft:{payAmount,payWallet},busy:isWorking,onClose:()=>setPayOrderId(null)});
+  const editClose=useFinancialDraftClose({open:editOrderId!==null,draft,busy:isWorking,onClose:()=>setEditOrderId(null)});
+  const deliveryClose=useFinancialDraftClose({open:reconcileDialog.open,draft:{targetWallet,deliverMode,saleMode,wholesaleClient,wholesalePaidAmount},busy:isWorking,onClose:()=>setReconcileDialog(s=>({...s,open:false}))});
+  const returnClose=useFinancialDraftClose({open:confirmDialog.open,draft:{confirmName,confirmCause,returnSettleInput},busy:isWorking,onClose:()=>setConfirmDialog(s=>({...s,open:false}))});
+  const claimClose=useFinancialDraftClose({open:claimDialog.open,draft:{claimAmount,claimNotes},busy:isWorking,onClose:()=>setClaimDialog(s=>({...s,open:false}))});
+  const cancelClose=useFinancialDraftClose({open:cancelDialog.open,draft:{cancelCause},busy:isWorking,onClose:()=>setCancelDialog(s=>({...s,open:false}))});
+  const resolutionClose=useFinancialDraftClose({open:resolutionDialog.open,draft:{resolutionWallet,resolutionNote,resolutionStep},busy:isWorking,onClose:()=>setResolutionDialog(s=>({...s,open:false}))});
 
   const openPayment = (order: any) => {
     setPayOrderId(order.id);
@@ -1993,7 +2003,7 @@ export function OrdersPage() {
                           </div>
                         </div></details>
       {order.fulfillment&&<details className="rounded-lg border p-3"><summary className="cursor-pointer font-semibold">الحجز والنواقص</summary><OrderFulfillmentPanel fulfillment={order.fulfillment}/></details>}
-      {(order.courierName||order.courierId)&&<details className="rounded-lg border p-3"><summary className="cursor-pointer font-semibold">الشحن والمندوب</summary><p>{order.courierName||"مندوب مسجل"}</p><p>شحن العميل {formatMoney(order.shippingFee)} — تكلفة المندوب {formatMoney(order.courierFee||order.shippingFee)}</p></details>}
+      {(order.courierName||order.courierId)&&<details className="rounded-lg border p-3"><summary className="cursor-pointer font-semibold">الشحن والمندوب</summary><p>{order.courierName||"مندوب مسجل"}</p><p>شحن العميل {formatMoney(order.shippingFee)} — تكلفة المندوب {formatMoney(order.courierFee||order.shippingFee)}</p><p>رسوم تحصيل COD: {formatMoney(order.codServiceFee??0)}</p><CodServiceFeeEditor key={order.id} order={order}/></details>}
       <OrderOperationPanel title="سجل حركة الطلب" summary="العمليات المرتبطة بالطلب من السجل المحفوظ؛ لا تُنشئ أي حركة جديدة."><Suspense fallback={<p role="status">جارٍ فتح السجل…</p>}><OrderActivityPanel orderId={order.id} revision={order.updated_at}/></Suspense></OrderOperationPanel>
     </div>;
   };
@@ -2149,7 +2159,7 @@ export function OrdersPage() {
       {/* Reconcile Dialog */}
       <Dialog
         open={reconcileDialog.open}
-        onOpenChange={(open) => setReconcileDialog({ ...reconcileDialog, open })}
+        onOpenChange={(open) => {if(!open)deliveryClose.close();}}
       >
         <DialogContent className="sm:max-w-sm">
           {/* The dialog says which of the two things is about to happen. The
@@ -2278,7 +2288,7 @@ export function OrdersPage() {
           <DialogFooter className="gap-2">
             <Button
               variant="outline"
-              onClick={() => setReconcileDialog({ ...reconcileDialog, open: false })}
+              onClick={deliveryClose.close}
               disabled={isWorking}
             >
               إلغاء
@@ -2296,7 +2306,8 @@ export function OrdersPage() {
       </Dialog>
 
       {/* ===== RECORD AN ADDITIONAL PAYMENT ===== */}
-      <Dialog open={payOrderId !== null} onOpenChange={(open) => !open && setPayOrderId(null)}>
+      {payClose.confirmation}{editClose.confirmation}{deliveryClose.confirmation}{returnClose.confirmation}{claimClose.confirmation}{cancelClose.confirmation}{resolutionClose.confirmation}
+      <Dialog open={payOrderId !== null} onOpenChange={(open) => !open && payClose.close()}>
         <DialogContent dir="rtl" className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>تسجيل دفعة إضافية — {payingOrder?.orderNumber}</DialogTitle>
@@ -2377,7 +2388,7 @@ export function OrdersPage() {
           </div>
 
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setPayOrderId(null)} disabled={isWorking}>
+            <Button variant="outline" onClick={payClose.close} disabled={isWorking}>
               إلغاء
             </Button>
             <Button onClick={() => void confirmPayment()} disabled={isWorking || payValue <= 0}>
@@ -2389,7 +2400,7 @@ export function OrdersPage() {
       </Dialog>
 
       {/* ===== EDIT A PENDING ORDER ===== */}
-      <Dialog open={editOrderId !== null} onOpenChange={(open) => !open && setEditOrderId(null)}>
+      <Dialog open={editOrderId !== null} onOpenChange={(open) => !open && editClose.close()}>
         <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>تعديل الطلب {editingOrder?.orderNumber}</DialogTitle>
@@ -2544,7 +2555,7 @@ export function OrdersPage() {
           </div>
 
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setEditOrderId(null)} disabled={isWorking}>
+            <Button variant="outline" onClick={editClose.close} disabled={isWorking}>
               إلغاء
             </Button>
             <Button onClick={() => void saveEdit()} disabled={isWorking || draft.length === 0}>
@@ -2558,7 +2569,7 @@ export function OrdersPage() {
       {/* ===== RETURN CONFIRMATION (§3.9) ===== */}
       <Dialog
         open={confirmDialog.open}
-        onOpenChange={(open) => setConfirmDialog({ ...confirmDialog, open })}
+        onOpenChange={(open) => {if(!open)returnClose.close();}}
       >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -2716,7 +2727,7 @@ export function OrdersPage() {
           <DialogFooter className="gap-2">
             <Button
               variant="outline"
-              onClick={() => setConfirmDialog({ ...confirmDialog, open: false })}
+              onClick={returnClose.close}
               disabled={isWorking}
             >
               إلغاء
@@ -2750,7 +2761,7 @@ export function OrdersPage() {
           The claim lifecycle. Deliberately its OWN dialog, separate from رد
           العربون: one is money a provider owes us, the other is money we owe
           a customer, and nothing here settles the other. */}
-      <Dialog open={claimDialog.open} onOpenChange={(open) => setClaimDialog({ ...claimDialog, open })}>
+      <Dialog open={claimDialog.open} onOpenChange={(open) => {if(!open)claimClose.close();}}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>مطالبة شركة الشحن</DialogTitle>
@@ -2836,7 +2847,7 @@ export function OrdersPage() {
             );
           })()}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setClaimDialog({ orderId: "", open: false })}>
+            <Button variant="outline" onClick={claimClose.close}>
               إغلاق
             </Button>
           </DialogFooter>
@@ -2852,7 +2863,7 @@ export function OrdersPage() {
           answer from a role that may not assert one. */}
       <Dialog
         open={cancelDialog.open}
-        onOpenChange={(open) => setCancelDialog({ ...cancelDialog, open })}
+        onOpenChange={(open) => {if(!open)cancelClose.close();}}
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -2890,7 +2901,7 @@ export function OrdersPage() {
           <DialogFooter className="gap-2">
             <Button
               variant="outline"
-              onClick={() => setCancelDialog({ ...cancelDialog, open: false })}
+              onClick={cancelClose.close}
               disabled={isWorking}
             >
               رجوع
@@ -2917,7 +2928,7 @@ export function OrdersPage() {
           is not even sent — the server refunds exactly what is still held. */}
       <Dialog
         open={resolutionDialog.open}
-        onOpenChange={(open) => setResolutionDialog({ ...resolutionDialog, open })}
+        onOpenChange={(open) => {if(!open)resolutionClose.close();}}
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

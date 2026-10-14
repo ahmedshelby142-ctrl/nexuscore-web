@@ -196,6 +196,7 @@ export interface OrderDeliveredInput {
    * charge, while preserving an explicitly entered courier-fee override.
    */
   courierFee?: number;
+  codServiceFee?: number;
   /** Confirmed courier-caused exchange: recover their fee as compensation. */
   courierCompensation?: boolean;
   /** Who carries it. Required when there is a fee to owe them. */
@@ -262,6 +263,9 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
   // rather than turning the whole fee into shop income. A strictly positive
   // value is an operator's override and is honoured as entered.
   const courierFee = order.courierFee && order.courierFee > 0 ? order.courierFee : shippingFee;
+  const serviceFee = cod > 0 ? order.codServiceFee ?? 0 : 0;
+  if (!Number.isFinite(serviceFee) || serviceFee < 0 || Math.abs(serviceFee * 100 - Math.round(serviceFee * 100)) > 1e-7)
+    throw new Error("order: COD service fee must be a non-negative piastre amount");
   if (deposit < 0 || shippingFee < 0 || wastedTripCompensation < 0 || courierFee < 0) {
     throw new Error("order: deposit, shipping, compensation and courier fee cannot be negative");
   }
@@ -346,6 +350,11 @@ export function buildOrderDeliveredLines(order: OrderDeliveredInput): NewLine[] 
   if (courierFee > 0) {
     if (!order.courierId) throw new Error("order: needs a courier to owe the delivery fee to");
     lines.push({ account: "payable_courier", subjectId: order.courierId, amount: courierFee });
+  }
+  if (serviceFee > 0) {
+    if (!order.courierId) throw new Error("order: COD service fee needs a courier");
+    lines.push({ account: "payable_courier", subjectId: order.courierId, amount: serviceFee });
+    lines.push({ account: "expense", subjectId: "courier_cod_service", amount: serviceFee });
   }
 
   if (order.customerId) {

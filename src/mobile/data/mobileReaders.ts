@@ -123,7 +123,7 @@ function viewerSeesCost(): boolean {
 }
 
 function orderColumns(): string {
-  return viewerSeesCost() ? `${ORDER_COLUMNS},courierFee` : ORDER_COLUMNS;
+  return viewerSeesCost() ? `${ORDER_COLUMNS},courierFee,codServiceFee` : ORDER_COLUMNS;
 }
 
 function withoutLineCost(lines: unknown): unknown {
@@ -450,6 +450,7 @@ const TIMELINE_LABELS: Record<string, { labelAr: string; entity: "order" | "ship
   rto_confirmed: { labelAr: "رفض الاستلام (مرتجع شحن)", entity: "return" },
   order_cancelled: { labelAr: "تم إلغاء الطلب", entity: "order" },
   courier_settlement: { labelAr: "تسوية مع المندوب", entity: "courier" },
+  courier_fee_adjustment: {labelAr:"تعديل رسوم تحصيل COD",entity:"courier"},
   client_payment: { labelAr: "دفعة من العميل", entity: "payment" },
   // تسوية العميلة on Desktop (038) — read-only here. Also what Order Details
   // reads the deposit's state from (`depositOutcome`).

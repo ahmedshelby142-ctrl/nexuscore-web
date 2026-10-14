@@ -7,7 +7,7 @@ import { useBusinessStore } from "@/store/useBusinessStore";
 import { useStock } from "@/lib/ledger/useStock";
 import { formatMoney, formatQty } from "@/lib/math";
 import { bundleDefinitionError } from "@/lib/businessDefinitions";
-import { activeProducts, bundleAvailableStock, getActualStock } from "@/lib/product";
+import { activeProducts, bundleAvailableStock, getActualStock, getVariantStock } from "@/lib/product";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -370,7 +370,7 @@ export function BundlesPage() {
                           const product = allProducts.find((p) => p.id === item.productId);
                           // The component that runs out first is the one
                           // capping the box — show what each has left.
-                          const onHand = getActualStock(product);
+                          const onHand = getVariantStock(product,item.variantName);
                           const short = onHand < item.quantity;
                           return (
                             <Badge

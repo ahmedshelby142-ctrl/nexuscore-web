@@ -1,4 +1,8 @@
 import { EXPENSE_CATEGORIES } from "@/lib/expenseCategories";
+import {commitFixedAsset} from "@/lib/fixedAssetAccounting";
+import {FixedAssetRegister} from "./FixedAssetRegister";
+import {useFixedAssetAccounting} from "@/lib/ledger/useFixedAssetAccounting";
+import {useAuthStore} from "@/store/useAuthStore";
 import { toast } from "sonner";
 import { useSubmitGate, useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useMemo, useRef } from "react";
@@ -172,6 +176,8 @@ interface LedgerSummary {
   inventoryValue: number;
   /** SUM(wallet) across all wallets. */
   walletsTotal: number;
+  accountingAssets?: number;
+  accountingNetAssets?: number;
 }
 
 /** The ledger accounts a KPI card is computed from. A failed read of any of
@@ -236,7 +242,7 @@ const PERSONA_KPI_CONFIG: Record<
     {
       key: "netRetail",
       feeds: ["revenue", "cogs", "expense"],
-      label: "صافي ربح التجزئة",
+      label: "صافي الربح بعد الإهلاك",
       sublabel: "المبيعات - (COGS + مصروفات)",
       icon: PiggyBank,
       bgClass: "from-primary/10",
@@ -279,26 +285,26 @@ const PERSONA_KPI_CONFIG: Record<
       key: "totalAssets",
       feeds: ["wallet", "stock", "receivable_client"],
       label: "إجمالي أصول الشركة",
-      sublabel: "خزائن + مخزون + ديون العملاء (قبل خصم ديون الموردين)",
+      sublabel: "نقدية + مخزون وحجوزات + مستحقات + صافي الأصول الثابتة",
       icon: Landmark,
       bgClass: "from-purple-500/10",
       iconBg: "bg-purple-100",
       iconColor: "text-purple-600",
       valueColor: "text-purple-600",
-      compute: (ls) => formatMoney(totalAssetsOf(ls)),
+      compute: (ls) => formatMoney(ls.accountingAssets??totalAssetsOf(ls)),
     },
     {
       key: "netWorth",
       feeds: ["wallet", "stock", "receivable_client", "payable_supplier"],
       label: "صافي القيمة",
-      sublabel: "إجمالي الأصول − ديون الموردين",
+      sublabel: "الأصول − التزامات الموردين والمناديب وعربون العملاء",
       icon: Landmark,
       bgClass: "from-emerald-500/10",
       iconBg: "bg-emerald-100",
       iconColor: "text-emerald-600",
       valueColor: "text-emerald-600",
       compute: (ls) => {
-        const net = netWorthOf(ls);
+        const net = ls.accountingNetAssets??netWorthOf(ls);
         // A minus sign belongs OUTSIDE the currency, like the profit card does
         // it — `formatMoney` of a negative reads as an amount, not a shortfall.
         return net >= 0 ? formatMoney(net) : `-${formatMoney(Math.abs(net))}`;
@@ -353,7 +359,7 @@ const PERSONA_KPI_CONFIG: Record<
     {
       key: "netEcommerce",
       feeds: ["revenue", "cogs", "expense"],
-      label: "صافي ربح المتجر الإلكتروني",
+      label: "صافي الربح بعد الإهلاك",
       sublabel: "الإيرادات - إجمالي التكاليف",
       icon: PiggyBank,
       bgClass: "from-primary/10",
@@ -396,26 +402,26 @@ const PERSONA_KPI_CONFIG: Record<
       key: "totalAssets",
       feeds: ["wallet", "stock", "receivable_client"],
       label: "إجمالي أصول الشركة",
-      sublabel: "خزائن + مخزون + ديون العملاء (قبل خصم ديون الموردين)",
+      sublabel: "نقدية + مخزون وحجوزات + مستحقات + صافي الأصول الثابتة",
       icon: Landmark,
       bgClass: "from-purple-500/10",
       iconBg: "bg-purple-100",
       iconColor: "text-purple-600",
       valueColor: "text-purple-600",
-      compute: (ls) => formatMoney(totalAssetsOf(ls)),
+      compute: (ls) => formatMoney(ls.accountingAssets??totalAssetsOf(ls)),
     },
     {
       key: "netWorth",
       feeds: ["wallet", "stock", "receivable_client", "payable_supplier"],
       label: "صافي القيمة",
-      sublabel: "إجمالي الأصول − ديون الموردين",
+      sublabel: "الأصول − التزامات الموردين والمناديب وعربون العملاء",
       icon: Landmark,
       bgClass: "from-emerald-500/10",
       iconBg: "bg-emerald-100",
       iconColor: "text-emerald-600",
       valueColor: "text-emerald-600",
       compute: (ls) => {
-        const net = netWorthOf(ls);
+        const net = ls.accountingNetAssets??netWorthOf(ls);
         // A minus sign belongs OUTSIDE the currency, like the profit card does
         // it — `formatMoney` of a negative reads as an amount, not a shortfall.
         return net >= 0 ? formatMoney(net) : `-${formatMoney(Math.abs(net))}`;
@@ -440,6 +446,8 @@ export function PartnersFinancePage() {
   const persona: BusinessPersona = businessMode === "ecommerce" ? "ecommerce" : "retail";
 
   const financialStore = useFinancialStore();
+  const assetRead = useFixedAssetAccounting();
+  const canCorrectOpening = useAuthStore(s=>s.userRole)==="ADMIN";
   const {
     expenses,
     payroll,
@@ -541,7 +549,6 @@ export function PartnersFinancePage() {
   const [pendingPartnerRemoval, setPendingPartnerRemoval] = useState<Partner | null>(null);
   // Operating costs are SUM(expense) below — the account the expense/payroll
   // events now write, plus جرد shrinkage and courier return fees.
-  const monthlyDepreciation = useMemo(() => getMonthlyDepreciationExpense(), [assets]);
   // The shipping slice of SUM(expense) — the SAME rows opEx already counts,
   // grouped differently. Splitting it out of one total is what makes it
   // impossible to double-count, which two parallel store counters were not.
@@ -564,28 +571,30 @@ export function PartnersFinancePage() {
       sales: ledgerSales,
       posSales: revenueOf("pos"),
       cogs: totalCOGS,
-      opEx: ledgerExpenses,
+      opEx: ledgerExpenses-(assetRead.data?.capitalPurchasesReclassifiedLifetimePiastres??0)/100,
       shippingCost,
       // The whole formula, from three ledger SUMs. Nothing stored, nothing
       // guessed, and no term counted twice — `shippingCost` is a slice of
-      // `opEx`, not a fourth deduction. Depreciation is deliberately absent:
-      // it is non-cash, so it lives as a memo on the reports tab (§3.12).
+      // `opEx`, not a fourth deduction. Capital purchases are reclassified;
+      // authoritative post-adoption noncash depreciation is deducted once.
       // `netProfitOf`, not a local subtraction: this page is the ACCOUNTANT's
       // financial view and cannot read `owner_financial_summary` (ADMIN only,
       // by decision in migration 034), so it computes — but through the same
       // one definition `pnl()` uses, pinned to the SQL reader by test.
-      profit: netProfitOf({ revenue: ledgerSales, cogs: totalCOGS, expenses: ledgerExpenses }),
+      profit: netProfitOf({ revenue: ledgerSales, cogs: totalCOGS, expenses: ledgerExpenses-(assetRead.data?.capitalPurchasesReclassifiedLifetimePiastres??0)/100 })-(assetRead.data?.lifetimeDepreciationPiastres??0)/100,
       receivableClient: receivableClientTotal,
       payableSupplier: payableSupplierTotal,
       inventoryValue: inventoryValue,
       walletsTotal: walletsTotal,
+      accountingAssets:assetRead.position?.totalAssets!==undefined?assetRead.position.totalAssets/100:undefined,
+      accountingNetAssets:assetRead.position?.netAssets!==undefined?assetRead.position.netAssets/100:undefined,
     };
-  }, [busTrigger, finTrigger, totalCOGS, ledgerSales, ledgerExpenses, revenueOf, shippingCost, receivableClientTotal, payableSupplierTotal, inventoryValue, walletsTotal]);
+  }, [busTrigger, finTrigger, totalCOGS, ledgerSales, ledgerExpenses, revenueOf, shippingCost, receivableClientTotal, payableSupplierTotal, inventoryValue, walletsTotal,assetRead.data,assetRead.position]);
 
   // ls.profit is sales − cogs − expenses: it is only a real number when all
   // three reads succeeded. The partners tab divides it up, so it must never
   // divide up a zero produced by a failure.
-  const profitAvailable = statusOf(salesRead, cogsRead, expenseRead) === "ready";
+  const profitAvailable = statusOf(salesRead, cogsRead, expenseRead,assetRead) === "ready";
 
   // ── Partner earnings map ──
   const partnerEarningsMap = useMemo(() => {
@@ -682,7 +691,6 @@ export function PartnersFinancePage() {
   // whose answer never arrived: the retry sends the SAME id and the database
   // returns the row it already has instead of paying a second time (051).
   const pendingPayrollId = useRef<string | null>(null);
-  const pendingAssetId = useRef<string | null>(null);
   const pendingExpenseId = useRef<string | null>(null);
 
   const handleAddExpense = async () => {
@@ -875,48 +883,22 @@ export function PartnersFinancePage() {
     const life = parseFloat(assetForm.usefulLifeYears);
     const pDate = new Date(assetForm.purchaseDate);
     if (!assetForm.name || !pv || pv <= 0 || !life || life <= 0 || isNaN(pDate.getTime())) return;
+    if(salvage<0||salvage>pv||life*12!==Math.round(life*12)||assetForm.purchaseDate>new Date().toLocaleDateString("en-CA",{timeZone:"Africa/Cairo"})) {
+      setSpendError("قيمة التخريد بين صفر وقيمة الشراء، والعمر بعدد أشهر كامل، وتاريخ الشراء لا يتجاوز اليوم.");return;
+    }
     if (!assetGate.enter()) return;
 
     // The asset and — when it is paid from a wallet now — its `expense` event,
     // in one transaction (`record_fixed_asset`, 051). A «مدفوع مسبقاً» asset
     // moves no money, exactly as before.
     setSpendError(null);
-    const id = pendingAssetId.current ?? crypto.randomUUID();
-    pendingAssetId.current = id;
     const paid = assetForm.paymentSource !== "prepaid";
-    const result = await recordAsset(
-      {
-        id,
-        name: assetForm.name,
-        purchaseValue: pv,
-        salvageValue: salvage,
-        usefulLifeYears: life,
-        purchaseDate: pDate,
-        isActive: true,
-        paymentSource: assetForm.paymentSource,
-      },
-      paid
-        ? {
-            kind: "expense",
-            actor: "أصول",
-            refType: "fixed_asset",
-            refId: id,
-            payload: {
-              category: "assets",
-              description: `شراء أصل ثابت: ${assetForm.name}`,
-              wallet: assetForm.paymentSource,
-            },
-            occurredAt: pDate,
-            lines: buildExpenseLines({
-              category: "assets",
-              amount: pv,
-              wallet: assetForm.paymentSource,
-            }),
-          }
-        : null,
-    );
+    const result = await commitFixedAsset({
+      name:assetForm.name,purchaseValue:pv,salvageValue:salvage,usefulLifeYears:life,
+      purchaseDate:pDate.toISOString(),paymentSource:assetForm.paymentSource,
+    });
+    if(!result.success&&result.resolved){setSpendError(result.reason);assetGate.exit();return;}
     if (!result.success) {
-      if (result.definite) pendingAssetId.current = null;
       setSpendError(
         result.definite
           ? `الأصل ما اتسجّلش، ولم يتم خصم أي مبلغ من الخزينة. ${result.reason}`
@@ -925,7 +907,6 @@ export function PartnersFinancePage() {
       assetGate.exit();
       return;
     }
-    pendingAssetId.current = null;
     if (result.replayed) toast.info("الأصل ده كان اتسجّل قبل كده — ما اتخصمش تاني.");
     if (paid) {
       refreshWallets();
@@ -1091,7 +1072,7 @@ export function PartnersFinancePage() {
               // A failed read leaves its totals at 0, and a KPI computed from
               // those zeros reads like a real answer. A card whose feeds failed
               // says so; a card whose feeds are intact keeps its number.
-              const reads = kpi.feeds.map((f) => feedRead[f]);
+              const reads = [...kpi.feeds.map((f) => feedRead[f]),...(["totalAssets","netWorth","netRetail","netEcommerce","branchExpenses"].includes(kpi.key)?[assetRead]:[])];
               const unavailable = statusOf(...reads) !== "ready";
               const val = figureOr(() => kpi.compute(ls), ...reads);
               const isNegative = val.startsWith("-");
@@ -1325,98 +1306,16 @@ export function PartnersFinancePage() {
               </Button>
             </div>
 
-            {assets.length === 0 ? (
-              <div className="py-6">
-                <EmptyState
-                  icon={Building2}
-                  title="لا توجد أصول ثابتة مسجلة"
-                  description="أضف أصلاً لبدء حساب الإهلاك الشهري."
-                />
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-right px-4">الأصل</TableHead>
-                    <TableHead className="text-center px-4">قيمة الشراء</TableHead>
-                    <TableHead className="text-center px-4">العمر الافتراضي</TableHead>
-                    <TableHead className="text-center px-4">الإهلاك الشهري</TableHead>
-                    <TableHead className="text-center px-4">الحالة</TableHead>
-                    <TableHead className="text-center px-4"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {assets.map((a) => (
-                    <TableRow key={a.id}>
-                      <TableCell className="font-medium px-4 whitespace-nowrap">{a.name}</TableCell>
-                      <TableCell className="text-center px-4 font-mono whitespace-nowrap">
-                        {formatMoney(a.purchaseValue)}
-                      </TableCell>
-                      <TableCell className="text-center px-4 whitespace-nowrap">
-                        {a.usefulLifeYears} سنة
-                      </TableCell>
-                      <TableCell className="text-center px-4 font-mono text-indigo-600 whitespace-nowrap">
-                        {formatMoney(a.monthlyDepreciation)}
-                      </TableCell>
-                      <TableCell className="text-center px-4">
-                        <Badge variant={a.isActive ? "default" : "secondary"}>
-                          {a.isActive ? "نشط" : "مستبعد"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-center px-4">
-                        <div className="flex items-center justify-center gap-1">
-                          <Button aria-label="توزيع الأرباح على الشريك"
-                            variant="ghost"
-                            size="icon"
-                            className="size-7"
-                            onClick={() => void toggleAsset(a.id).catch(() => {})}
-                          >
-                            <BadgePercent className="size-3" />
-                          </Button>
-                          <Button aria-label="حذف السجل"
-                            variant="ghost"
-                            size="icon"
-                            className="size-7 text-destructive"
-                            onClick={() => void removeAsset(a.id).catch(() => {})}
-                          >
-                            <Trash2 className="size-3" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  <TableRow className="bg-muted/50 font-semibold">
-                    <TableCell className="px-4">الإجمالي</TableCell>
-                    <TableCell className="text-center px-4 whitespace-nowrap">
-                      {formatMoney(assets.reduce((s, a) => add(s, a.purchaseValue), 0))}
-                    </TableCell>
-                    <TableCell className="text-center px-4"></TableCell>
-                    <TableCell className="text-center px-4 text-indigo-600 whitespace-nowrap">
-                      {formatMoney(monthlyDepreciation)}
-                    </TableCell>
-                    <TableCell colSpan={2} />
-                  </TableRow>
-                </TableBody>
-              </Table>
-            )}
+            <FixedAssetRegister data={assetRead.data} loading={assetRead.loading} error={assetRead.error} canCorrectOpening={canCorrectOpening} onCorrected={assetRead.refresh}
+              onDeactivate={id=>{if(window.confirm("إيقاف إهلاك هذا الأصل من اليوم مع حفظ قيمته وتاريخه؟"))void toggleAsset(id).catch(e=>setSpendError(String(e)));}}/>
+            {assetRead.position&&<div className="rounded-lg border p-3 text-sm space-y-1">
+              <p>الربح قبل الإهلاك: {formatMoney(ls.profit+(assetRead.data?.lifetimeDepreciationPiastres??0)/100)}</p>
+              <p>صافي الربح بعد الإهلاك: {formatMoney(ls.profit)}</p>
+              <p>مخزون محجوز لم يُسلّم: {formatMoney(assetRead.position.reservedStock/100)} — عربون عملاء محتجز: {formatMoney(assetRead.position.customerDeposits/100)}</p>
+              <p>الأصول: {formatMoney(assetRead.position.totalAssets/100)} = الالتزامات: {formatMoney(assetRead.position.liabilities/100)} + حقوق الملكية: {formatMoney(assetRead.position.equity/100)}</p>
+              <p role={assetRead.position.reviewRequired?"alert":undefined}>فرق المطابقة: {formatMoney(assetRead.position.reconciliationDifference/100)}{assetRead.position.reviewRequired?" — يحتاج مراجعة؛ لا يُعتبر رصيدًا متصالحًا.":" — متطابق"}</p>
+            </div>}
 
-            {/* This used to promise the depreciation was "added to operating
-                expenses automatically". It never was, and it must not be: the
-                figure is NON-CASH — no wallet moves — so writing it as a
-                ledger event would need a monthly posting job whose second run
-                would permanently overstate cost in an append-only ledger.
-                It is reported as a memo instead, here and on التقارير المالية,
-                where the P&L states the profit after it. */}
-            {monthlyDepreciation > 0 && (
-              <div className="mt-4 p-4 rounded-xl bg-blue-50 border border-blue-200">
-                <p className="text-sm text-blue-900 font-medium">الإهلاك الشهري المحتسب</p>
-                <p className="text-xs text-blue-700 mt-1">
-                  {formatMoney(monthlyDepreciation)} شهرياً — دي تكلفة <strong>غير نقدية</strong>،
-                  يعني مفيش فلوس بتخرج من المحفظة، فمش متسجّلة كحركة في الدفتر ومش داخلة في «مصروفات
-                  التشغيل» فوق. تلاقيها كسطر مستقل في تبويب «التقارير المالية».
-                </p>
-              </div>
-            )}
           </div>
         </TabsContent>
 

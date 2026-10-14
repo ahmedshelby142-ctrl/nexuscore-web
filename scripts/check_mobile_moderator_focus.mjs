@@ -39,7 +39,7 @@ registerHooks({
   resolve(specifier, context, next) {
     if (STUBS[specifier]) return { url: STUBS[specifier], shortCircuit: true };
     if (specifier.startsWith("@/")) return next(ts_(new URL(`src/${specifier.slice(2)}`, root).href), context);
-    if (specifier.startsWith(".") && !/\.[cm]?[jt]sx?$/.test(specifier))
+    if (specifier.startsWith(".") && context.parentURL?.startsWith(new URL("src/",root).href) && !/\.[cm]?[jt]sx?$/.test(specifier))
       return next(ts_(new URL(specifier, context.parentURL).href), context);
     return next(specifier, context);
   },
@@ -91,7 +91,7 @@ test("MODERATOR order: identity, phone, WhatsApp, items, payment state and couri
 
 test("MODERATOR order: the hero keeps the stored order total; the full amount owed is in the payment section", () => {
   const t = text(render(MobileOrderDetails, "MODERATOR", baseOrder));
-  const hero = t.slice(t.indexOf("إجمالي الطلب"), t.indexOf("إجمالي الطلب") + 40);
+  const hero = t.slice(t.indexOf("قيمة البضاعة بعد الخصم"), t.indexOf("قيمة البضاعة بعد الخصم") + 60);
   assert.match(hero, /١٬?٠٠٠/, hero);
   assert.ok(t.includes("المجموع المستحق"), "what the customer owes, goods + shipping");
 });
@@ -160,5 +160,5 @@ test("no new permission, no write: the gate is the existing canViewCost, and the
   assert.match(policy, /return mobileVisibilityFor\(useAuthStore\(\(s\) => s\.userRole\)\);/);
   assert.match(read("src/lib/roles.ts"), /export function canViewCost\(role: string \| null \| undefined\): boolean \{\s*return toAppRole\(role\) !== "MODERATOR";/);
   // Cost stays withheld by the database for the Moderator too (047/048).
-  assert.match(read("src/mobile/data/mobileReaders.ts"), /return viewerSeesCost\(\) \? `\$\{ORDER_COLUMNS\},courierFee` : ORDER_COLUMNS;/);
+  assert.match(read("src/mobile/data/mobileReaders.ts"), /return viewerSeesCost\(\) \? `\$\{ORDER_COLUMNS\},courierFee,codServiceFee` : ORDER_COLUMNS;/);
 });

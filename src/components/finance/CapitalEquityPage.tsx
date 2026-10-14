@@ -1,4 +1,5 @@
 import { appendFinancialEvent } from "@/lib/financialCommand";
+import {readFixedAssetAccounting} from "@/lib/fixedAssetAccounting";
 import { toast } from "sonner";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { useState, useMemo, useEffect, useRef } from "react";
@@ -259,6 +260,7 @@ export function CapitalEquityPage() {
   const [profitError, setProfitError] = useState<string | null>(null);
   // Bumped by the retry button: the same `fetchPnl`, asked again.
   const [profitTick, setProfitTick] = useState(0);
+  useEffect(()=>{const refresh=()=>setProfitTick(t=>t+1);window.addEventListener("ledger-sync-pulled",refresh);return()=>window.removeEventListener("ledger-sync-pulled",refresh);},[]);
 
   useEffect(() => {
     const w = customWindow(dividendPeriod.startDate, dividendPeriod.endDate);
@@ -270,7 +272,7 @@ export function CapitalEquityPage() {
     let cancelled = false;
     void (async () => {
       try {
-        const report = await fetchPnl(balances, w);
+        const report = await fetchPnl(balances, w,readFixedAssetAccounting);
         if (cancelled) return;
         setPeriodProfit(report.netProfit);
         setPeriodSales(report.netSales);

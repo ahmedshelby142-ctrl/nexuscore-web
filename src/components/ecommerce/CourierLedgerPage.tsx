@@ -130,13 +130,13 @@ export function CourierLedgerPage() {
   //   delivery = payable_courier written by order_delivered
   // Return/exchange fees are positive payable lines classified by movement.
   // Refund principal in receivable_courier is never a fee.
-  const { delivery: feeDelivery, returns: feeReturnish, exchange: feeExchange } = useCourierFees();
+  const { delivery: feeDelivery, returns: feeReturnish, exchange: feeExchange, codService:feeCodService } = useCourierFees();
 
   // Every balance on this screen, and whether ALL of them actually answered.
   // `useBalances` says 0 both before its read lands and after it fails, so a
   // card, a row or a printed PDF built on one it has not checked is a
   // confident «٠ ج.م» about money a courier is holding.
-  const balanceReads = [owedToUs, owedToThem, expense, feeDelivery, feeReturnish, feeExchange];
+  const balanceReads = [owedToUs, owedToThem, expense, feeDelivery, feeReturnish, feeExchange,feeCodService];
   const balanceStatus = statusOf(...balanceReads);
   const balanceError = balanceReads.find((r) => r.error)?.error ?? null;
   const retryBalances = () => balanceReads.forEach((r) => r.refresh());
@@ -646,6 +646,11 @@ export function CourierLedgerPage() {
                               <p className="text-xs text-muted-foreground mt-1">
                                 رسوم تسليم مسجلة للمندوب؛ الأرصدة المفتوحة موضحة بالأعلى
                               </p>
+                            </div>
+                            <div className="rounded-xl border bg-card p-3">
+                              <p className="text-muted-foreground text-xs">رسوم تحصيل COD</p>
+                              <p className="font-mono font-bold mt-1">{moneyFigure(feeCodService.amountOf(courier.id),feeCodService)}</p>
+                              <p className="text-xs text-muted-foreground">تكلفة خدمة التحصيل المسجلة مع تصحيحاتها؛ منفصلة عن تحصيل العميل.</p>
                             </div>
                             <div className="rounded-xl border bg-card p-3">
                               <p className="text-muted-foreground text-xs">رجّع بضاعة</p>

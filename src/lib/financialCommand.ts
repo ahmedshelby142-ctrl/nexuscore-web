@@ -99,6 +99,14 @@ export async function runFinancialCommand<T>(
                 ? "record_pos_exchange"
               : op.command === "courier_batch"
                 ? "record_courier_batch"
+              : op.command === "cod_service_fee"
+                ? "record_cod_service_fee"
+              : op.command === "asset_deactivate"
+                ? "deactivate_fixed_asset"
+              : op.command === "asset_record"
+                ? "record_asset_command"
+              : op.command === "asset_opening_date"
+                ? "correct_opening_asset_date"
               : op.command === "order_edit"
                 ? "record_order_edit"
                 : op.command === "bundle_edit"
@@ -135,6 +143,11 @@ export async function runFinancialCommand<T>(
             sessionStorage.setItem(key, JSON.stringify(op));
           continue;
         }
+        if ((op.command==="asset_record"||op.command==="asset_deactivate"||op.command==="asset_opening_date") &&
+          (!data?.asset || data.asset.id!==(op.command==="asset_record"?op.id:(op.input as any).assetId) || data.asset.store_id!==identity.storeId))
+          throw new Error("لم يصل تأكيد صالح لمستند الأصل؛ أعد قراءة نفس العملية.");
+        if(op.command==="cod_service_fee"&&(!data?.order||data.order.id!==(op.input as any).orderId||data.order.store_id!==identity.storeId))
+          throw new Error("لم يصل تأكيد صالح لتصحيح رسوم التحصيل؛ أعد قراءة نفس العملية.");
         clear();
         if (changed)
           throw Object.assign(

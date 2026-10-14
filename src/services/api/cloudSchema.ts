@@ -238,7 +238,7 @@ export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
       "customerPhone", "governorate", "city", "address", "items", "stockItems",
       "totalAmount", "discountCodeId", "discountAmount", "shippingFee", "wastedTripCompensation",
       "depositAmount", "depositWallet", "expectedCod", "cogsAmount",
-      "paymentMethod", "courierName", "courierId", "courierFee",
+      "paymentMethod", "courierName", "courierId", "courierFee", "codServiceFee",
       "revenueLogged", "codSettledAt", "returnConfirmedAt", "returnType",
       "isExchange", "original_order_id", "exchangeDetails", "fulfillment", "wholesaleClientId", "createdAt",
       // `shippingPenaltyApplied` is the reason this list is load-bearing: the

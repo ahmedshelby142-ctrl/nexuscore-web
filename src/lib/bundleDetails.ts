@@ -9,6 +9,16 @@ export interface BundleComponentDetail {
   variantUnavailable: boolean;
 }
 
+/** Historical order components come from its saved reservation, never today's recipe. */
+export function savedOrderBundleComponents(item: {bundleId?:string;productId?:string},stockItems: readonly any[]):BundleComponentDetail[] {
+ const id=item.bundleId||item.productId;
+ if(!id)return [];
+ return stockItems.filter(c=>c.bundleId===id).map(c=>({
+  productId:String(c.productId??""),productName:c.productName||"مكون غير مسمى",sku:c.sku||undefined,variantName:c.variantName||undefined,
+  quantity:Number.isFinite(Number(c.quantity))&&Number(c.quantity)>0?Number(c.quantity):null,unavailable:!c.productName,variantUnavailable:false,
+ }));
+}
+
 export function bundleComponentDetails(
   recipe: readonly any[],
   products: ReadonlyMap<string, any>,

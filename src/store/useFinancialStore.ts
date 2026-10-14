@@ -23,6 +23,7 @@ import { getSupabaseClient } from "@/lib/supabase";
 import { getSyncIdentity } from "@/services/api/storeContext";
 import { fromRemoteRow, toRemoteRow } from "@/services/api/fieldMapping";
 import { prepareEvent, type NewEvent } from "@/lib/ledger";
+import {runFinancialCommand} from "@/lib/financialCommand";
 
 
 
@@ -382,14 +383,17 @@ export const useFinancialStore = create<FinancialState>()(
       },
 
       removeAsset: async (id) => {
-        await deleteThrough("fixed_assets", id);
-        set((state) => ({ assets: state.assets.filter((a) => a.id !== id) }));
+        throw new Error("لا يُحذف أصل معترف به أو تاريخه. يمكن إيقاف الإهلاك مع حفظ قيمته الدفترية.");
       },
 
       toggleAsset: async (id) => {
         const current = get().assets.find((a) => a.id === id);
         if (!current) return;
-        const saved = await writeThrough("fixed_assets", { ...current, isActive: !current.isActive });
+        if(!current.isActive)throw new Error("إعادة تشغيل أصل متوقف تحتاج مراجعة محاسبية، ولا تعيد كتابة تاريخه.");
+        const identity=await getSyncIdentity();if(!identity)throw Error("لا يوجد متجر مسجل.");
+        const result=await runFinancialCommand<{asset:any}>("asset_deactivate",{assetId:id,reason:"إيقاف الإهلاك من شاشة الأصول الثابتة"},"asset_deactivate:"+id,identity.storeId);
+        if((await getSyncIdentity())?.storeId!==identity.storeId)throw Error("تم إيقاف الأصل في متجره الأصلي؛ تغيّر المتجر أثناء التأكيد.");
+        const saved = fromRemoteRow("fixed_assets",result.asset);
         upsertLocal(set, "assets", saved);
       },
 

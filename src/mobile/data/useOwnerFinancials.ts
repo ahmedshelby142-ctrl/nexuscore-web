@@ -116,7 +116,7 @@ export function useOwnerFinancials(window: { from?: Date; to?: Date }): OwnerFin
   // Desktop — changes wallets and profit. `ledger_events` arrives as a
   // `store_activity` cue for every role; the summary itself is still refused
   // to anyone but ADMIN by Postgres.
-  useRealtimeTables(["ledger_events"], () => {
+  useRealtimeTables(["ledger_events","fixed_assets"], () => {
     background.current = true;
     setTick((t) => t + 1);
   });

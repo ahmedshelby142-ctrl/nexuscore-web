@@ -200,7 +200,7 @@ function bucketLabel(d: Date, g: Granularity): string {
  * neither revenue nor cost. `shipping` is the wholesale delivery cost and the
  * manual «مصاريف شحن وتوصيل» expense category, which share the subject string.
  */
-export const SHIPPING_SUBJECTS = ["shipping", "shipping_return"] as const;
+export const SHIPPING_SUBJECTS = ["shipping", "shipping_return", "courier_cod_service"] as const;
 
 /**
  * The `revenue` subjects, in Arabic.
@@ -279,6 +279,8 @@ export interface Pnl {
   purchases: number;
   /** `netSales − cogs − expenses`. The only definition of profit in the app. */
   netProfit: number;
+  profitBeforeDepreciation?: number;
+  depreciation?: number;
 }
 
 /**
@@ -296,6 +298,16 @@ export interface Pnl {
  */
 export function netProfitOf(x: { revenue: number; cogs: number; expenses: number }): number {
   return x.revenue - x.cogs - x.expenses;
+}
+
+/** Capitalization and noncash period depreciation share Mobile's server reader. */
+export function accountingPnl(p: Pnl, a: {capitalPurchasesReclassifiedPiastres:number;periodDepreciationPiastres:number}): Pnl {
+  const cents=(value:number)=>Math.round(value*100);
+  const capitalized=a.capitalPurchasesReclassifiedPiastres;
+  const profitBefore=cents(p.netProfit)+capitalized;
+  return {...p,opex:(cents(p.opex)-capitalized)/100,expenses:(cents(p.expenses)-capitalized)/100,
+    profitBeforeDepreciation:profitBefore/100,depreciation:a.periodDepreciationPiastres/100,
+    netProfit:(profitBefore-a.periodDepreciationPiastres)/100};
 }
 
 export function pnl(input: PnlInput): Pnl {
@@ -335,7 +347,7 @@ export function pnl(input: PnlInput): Pnl {
  */
 export type BalancesFn = (query: BalanceQuery) => Promise<Row[]>;
 
-export async function fetchPnl(balances: BalancesFn, w: ReportWindow): Promise<Pnl> {
+export async function fetchPnl(balances: BalancesFn, w: ReportWindow, assetReader?: (w:ReportWindow)=>Promise<{capitalPurchasesReclassifiedPiastres:number;periodDepreciationPiastres:number}>): Promise<Pnl> {
   const total = (rows: Row[]) => rows.reduce((t, r) => t + r.amount, 0);
   const [revenueRows, cogsRows, expenseRows, returnRows, purchaseRows] = await Promise.all([
     balances({ account: "revenue", ...w }),
@@ -344,11 +356,12 @@ export async function fetchPnl(balances: BalancesFn, w: ReportWindow): Promise<P
     balances({ account: "revenue", returnsOnly: true, ...w }),
     balances({ account: "stock", kind: "purchase", ...w }),
   ]);
-  return pnl({
+  const result = pnl({
     revenueRows,
     expenseRows,
     cogs: total(cogsRows),
     returnsRevenue: total(returnRows),
     purchases: total(purchaseRows),
   });
+  return assetReader ? accountingPnl(result,await assetReader(w)) : result;
 }

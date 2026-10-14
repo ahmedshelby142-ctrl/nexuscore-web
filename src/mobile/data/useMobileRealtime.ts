@@ -71,6 +71,7 @@ export const MOBILE_REALTIME_TABLES = [
   "ledger_events",
   // المشتريات reads the documents `commitReceipt` writes.
   "purchase_invoices",
+  "fixed_assets",
 ] as const;
 
 export type MobileRealtimeTable = (typeof MOBILE_REALTIME_TABLES)[number];
@@ -91,7 +92,7 @@ let channelTables = "";
  * The tables a socket actually subscribes to. Not the same list as the CUES
  * above: `orders` and `ledger_events` arrive as `store_activity` rows.
  */
-export type MobileSubscriptionTable = "products" | "customers" | "store_activity" | "purchase_invoices";
+export type MobileSubscriptionTable = "products" | "customers" | "store_activity" | "purchase_invoices" | "fixed_assets";
 
 /**
  * The tables this ROLE subscribes to.
@@ -110,6 +111,8 @@ export function realtimeTablesFor(role: string | null | undefined): MobileSubscr
   const capabilities = getMobileCapabilities(toAppRole(role));
   const tables: MobileSubscriptionTable[] = ["products", "customers", "store_activity"];
   if (capabilities.has("purchasing")) tables.push("purchase_invoices");
+  // Only the owner screen reads asset values. Other roles receive no asset rows.
+  if (toAppRole(role)==="ADMIN") tables.push("fixed_assets");
   return tables;
 }
 

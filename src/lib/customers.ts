@@ -26,6 +26,7 @@
 // `scripts/check_customers.mjs`) and does not resolve bare specifiers.
 import { toWhatsAppNumber } from "./phone.ts";
 import { normaliseSearchText } from "./orderSearch.ts";
+import { groupPosHistory } from "./posHistory.ts";
 import type { EcommerceOrder } from "@/types";
 import type { LedgerEvent } from "./ledger";
 
@@ -339,7 +340,11 @@ export function deriveCustomerMetrics(
   orders: EcommerceOrder[],
   sales: LedgerEvent[],
 ): CustomerMetrics {
-  let totalOrders = 0;
+  // Use the same business-operation grouping as the customer timeline.
+  // An exchange has two immutable sale headers, but is one customer operation.
+  let totalOrders = groupPosHistory(sales.filter(sale =>
+    sale.kind === "sale" && sale.payload && saleBelongsTo(sale, customer),
+  )).length;
   const products = new Map<string, { productId: string; name: string; quantity: number; spent: number }>();
   let lastOrderAt: Date | undefined = undefined;
 
@@ -376,7 +381,6 @@ export function deriveCustomerMetrics(
     if (sale.kind === "sale" && sale.payload) {
       const payload = sale.payload as any; // SaleInput
       if (saleBelongsTo(sale, customer)) {
-        totalOrders++;
         updateTime(sale.occurredAt);
         if (Array.isArray(payload.items)) {
           for (const item of payload.items) {

@@ -155,7 +155,7 @@ function EquitySection() {
   const equity = useEquityStatement();
   // Capital, a contribution or a draw recorded on Desktop is a ledger event.
   // Re-read on the cue; the figures stay up while it is in flight.
-  useRealtimeTables(["ledger_events"], () => equity.refresh());
+  useRealtimeTables(["ledger_events","fixed_assets"], () => equity.refresh());
 
   const s = equity.data;
   return (
@@ -331,11 +331,13 @@ export function MobileOwnerScreen() {
                   tone="muted"
                 />
                 <AmountRow
-                  label="صافي الربح"
+                  label="صافي الربح بعد الإهلاك"
                   amount={data.netProfit}
-                  hint="مجمل الربح − المصروفات"
+                  hint="الربح قبل الإهلاك − إهلاك الفترة، دون خصم شراء الأصل بالكامل"
                   tone={data.netProfit < 0 ? "negative" : "positive"}
                 />
+                <AmountRow label="الربح قبل الإهلاك" amount={data.profitBeforeDepreciation??data.netProfit} hint="مبيعات − بضاعة − مصروفات تشغيل"/>
+                <AmountRow label="إهلاك الفترة" amount={data.depreciation??0} hint="تكلفة غير نقدية، دون إهلاك ما قبل بدء المحاسبة"/>
               </div>
             </MobileSection>
 
@@ -368,6 +370,15 @@ export function MobileOwnerScreen() {
                   amount={data.stockValue}
                   hint="قيمة المنتجات الموجودة بالتكلفة"
                 />
+                {data.fixedAssets&&<AmountRow label="صافي قيمة الأصول الثابتة" amount={data.fixedAssets.netBookPiastres/100} hint="التكلفة − مجمع الإهلاك"/>}
+                {data.position&&<>
+                  <AmountRow label="المخزون المحجوز قبل التسليم" amount={data.position.reservedStock/100}/>
+                  <AmountRow label="عربون العملاء المحتجز" amount={data.position.customerDeposits/100} hint="التزام، وليس ربحًا"/>
+                  <AmountRow label="إجمالي الأصول" amount={data.position.totalAssets/100}/>
+                  <AmountRow label="إجمالي الالتزامات" amount={data.position.liabilities/100}/>
+                  <AmountRow label="صافي القيمة" amount={data.position.netAssets/100}/>
+                  <AmountRow label="فرق مطابقة حقوق الملكية" amount={data.position.reconciliationDifference/100} hint={data.position.reviewRequired?"يحتاج مراجعة":"الأصول = الالتزامات + حقوق الملكية"}/>
+                </>}
                 <AmountRow
                   label="صافي أرصدة العملاء"
                   amount={data.receivableClient}

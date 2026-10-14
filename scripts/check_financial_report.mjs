@@ -182,7 +182,7 @@ test("shipping is a SUBSET of expenses, never an extra term", () => {
   assert.equal(report.opex, 1015);
   assert.equal(report.expenses, 1080, "the two halves add back up to SUM(expense)");
   assert.equal(report.netProfit, -1080, "shipping counted once");
-  assert.deepEqual([...SHIPPING_SUBJECTS], ["shipping", "shipping_return"]);
+  assert.deepEqual([...SHIPPING_SUBJECTS], ["shipping", "shipping_return", "courier_cod_service"]);
 });
 
 test("a جرد surplus reduces expenses instead of inventing revenue", () => {

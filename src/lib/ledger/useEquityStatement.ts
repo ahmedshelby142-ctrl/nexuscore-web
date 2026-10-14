@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { balances } from "./index";
 import { fetchEquity, type EquityStatement } from "./equity";
+import {readFixedAssetAccounting} from "../fixedAssetAccounting";
 
 export interface EquityView {
   /** null while loading or after a failed read — never a statement of zeros. */
@@ -26,7 +27,7 @@ export function useEquityStatement(): EquityView {
     setLoading(true);
     void (async () => {
       try {
-        const statement = await fetchEquity(balances);
+        const statement = await fetchEquity(balances,readFixedAssetAccounting);
         if (cancelled) return;
         setData(statement);
         setError(null);

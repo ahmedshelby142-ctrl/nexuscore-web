@@ -279,7 +279,9 @@ test("the validator's kinds, accounts and wallets are exactly the code's", () =>
   const union = (name) => [...types.match(new RegExp(`export type ${name} =([\\s\\S]*?);`))[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
   const src = sql(CURRENT);
   const kinds = [...src.match(/v_kind <> ALL \(ARRAY\[([\s\S]*?)\]\)/)[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual(kinds, [...union("EventKind"), "deposit_refunded"].sort(), "kinds = EventKind + 038's deposit_refunded");
+  const codMigration=read("supabase/migrations/20261014094740_courier_cod_service_fee.sql");
+  assert.ok(codMigration.includes("IF p_event->>''kind''=''courier_fee_adjustment'' THEN PERFORM financial_private.validate_cod_fee_event(p_event);RETURN;END IF;"), "new fee kind must be delegated to its private journal-backed validator, never allowed as an unrestricted ledger event");
+  assert.deepEqual([...kinds,"courier_fee_adjustment"].sort(), [...union("EventKind"), "deposit_refunded"].sort(), "base whitelist plus the independently guarded fee kind = EventKind + deposit_refunded");
   const accounts = [...src.match(/acc <> ALL \(ARRAY\['stock','wallet'([\s\S]*?)\]\)\)/)[0].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual(accounts, union("Account"));
   const labels = read("src/types/index.ts").match(/export const WALLET_LABELS[\s\S]*?\{([\s\S]*?)\};/)[1];

@@ -252,6 +252,7 @@ function EcommerceOrdersInner() {
   /** The registry id. This is what `receivable_courier` books against. */
   const [courierId, setCourierId] = useDraftState("eco-order:courierId", "");
   const [courierFee, setCourierFee] = useDraftState("eco-order:courierFee", "");
+  const [codServiceFee, setCodServiceFee] = useDraftState("eco-order:codServiceFee", "");
   
   const [discountCodeInput, setDiscountCodeInput] = useDraftState("eco-order:discountCode", "");
   const [appliedDiscount, setAppliedDiscount] = useDraftState<PromoDiscount | null>(
@@ -749,6 +750,11 @@ function EcommerceOrdersInner() {
     });
 
     const courierFeeValue = parseFloat(courierFee) || shipping_fee;
+    const serviceFeeValue = Number(codServiceFee || 0);
+    if (!Number.isFinite(serviceFeeValue) || serviceFeeValue < 0 || Math.abs(serviceFeeValue * 100 - Math.round(serviceFeeValue * 100)) > 1e-7) {
+      setResult({ success: false, message: "رسوم تحصيل COD يجب أن تكون مبلغًا موجبًا أو صفرًا بدقة منزلتين عشريتين." });
+      return;
+    }
 
     const stockItems = expandStockItems(items).map((line) => ({
       ...line,
@@ -884,6 +890,7 @@ function EcommerceOrdersInner() {
         // ledger line booked to the subject `"default"` — see `courierIdOf`.
         courierId: courierId || undefined,
         courierFee: courierFeeValue,
+        codServiceFee: serviceFeeValue,
         status: "pending",
         isExchange,
       },
@@ -987,6 +994,7 @@ function EcommerceOrdersInner() {
     setDepositWallet("instaPay");
     setPaymentMethod("partial_cod");
     setCourierFee("");
+    setCodServiceFee("");
     setDiscountCodeInput("");
     setAppliedDiscount(null);
     setIsExchange(false);
@@ -1029,6 +1037,7 @@ function EcommerceOrdersInner() {
     costOf,
     refreshStock,
     courierFee,
+    codServiceFee,
     courierName,
     courierId,
     paymentMethod,
@@ -1677,6 +1686,13 @@ function EcommerceOrdersInner() {
               placeholder={formatQty(shipping_fee)}
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
             />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="order-cod-service-fee">رسوم خدمة تحصيل الدفع عند الاستلام (COD)</Label>
+            <input id="order-cod-service-fee" type="number" min="0" step="0.01"
+              value={codServiceFee} onChange={e => setCodServiceFee(e.target.value)} placeholder="0.00"
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+            <p className="text-xs text-muted-foreground">تُخصم من مستحق المحل عند تحصيل COD؛ لا تغيّر المبلغ المطلوب من العميل.</p>
           </div>
         </div>
       </div>

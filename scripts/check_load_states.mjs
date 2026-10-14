@@ -279,7 +279,7 @@ test("stock value waits for BOTH the ledger and the product list", () => {
 test("Partners withdraws a card when ANY read under it is loading or failed", () => {
   const s = src("../src/components/finance/PartnersFinancePage.tsx");
   assert.match(s, /const val = figureOr\(\(\) => kpi\.compute\(ls\), \.\.\.reads\);/);
-  assert.match(s, /const profitAvailable = statusOf\(salesRead, cogsRead, expenseRead\) === "ready";/);
+  assert.match(s, /const profitAvailable = statusOf\(salesRead, cogsRead, expenseRead,\s*assetRead\) === "ready";/);
   assert.match(s, /walletsKnown && !hasOpeningBalance/, "an unread wallet read prompts a second opening balance");
   assert.match(s, /<LoadError[\s\S]{0,300}onRetry=\{retryLedgerReads\}/);
 });

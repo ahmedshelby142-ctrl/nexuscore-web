@@ -24,14 +24,14 @@ export function useCourierFees() {
         const rows = await pageAll<any>((from, to) =>
           sb
             .from("ledger_lines")
-            .select("subject_id,amount_delta,ledger_events!inner(kind,ref_id,payload)")
+            .select("subject_id,amount_delta,ledger_events!inner(id,kind,ref_id,payload)")
             .eq("store_id", store)
             .eq("account", "payable_courier")
-            .gt("amount_delta", 0)
-            .in("ledger_events.kind", ["order_delivered", "return_confirmed"])
+            .in("ledger_events.kind", ["order_delivered", "return_confirmed", "rto_confirmed", "courier_fee_adjustment"])
             .order("id", { ascending: true })
             .range(from, to),
         );
+        if(await getActiveStoreId()!==store)throw new Error("تغيّر المتجر أثناء قراءة رسوم الشحن.");
         if (!cancelled) {
           setTotals(courierFeeTotals(rows, orders));
           setError(null);
@@ -50,12 +50,12 @@ export function useCourierFees() {
     window.addEventListener("ledger-sync-pulled", refresh);
     return () => window.removeEventListener("ledger-sync-pulled", refresh);
   }, [refresh]);
-  const view = (type: "delivery" | "returns" | "exchange"): BalancesView => ({
+  const view = (type: "delivery" | "returns" | "exchange" | "codService"): BalancesView => ({
     amountOf: (id) => totals[id]?.[type] ?? 0,
-    total: Object.values(totals).reduce((n, t) => n + t[type], 0),
+    total: Object.values(totals).reduce((n, t) => n + (t[type]??0), 0),
     loading,
     error,
     refresh,
   });
-  return { delivery: view("delivery"), returns: view("returns"), exchange: view("exchange") };
+  return { delivery: view("delivery"), returns: view("returns"), exchange: view("exchange"), codService:view("codService") };
 }

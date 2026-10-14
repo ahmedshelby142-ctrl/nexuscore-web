@@ -562,6 +562,8 @@ test("PUR-UI-source-contracts: print uses persisted variant, scoped focus hooks 
   assert.deepEqual(ret, { kind: "purchase", refType: "supplier_return" });
   assert.equal(label({ kind: "purchase", refType: "supplier_invoice" }), "توريد");
   assert.equal(label({ kind: "supplier_payment", refType: "supplier_payment" }), "دفعة مورد");
+  assert.equal(label({ kind: "expense", refType: "fixed_asset" }), "شراء أصل ثابت — رسملة");
+  assert.equal(label({ kind: "expense", refType: "expense" }), "مصروف تشغيل");
   assert.match(
     read("src/mobile/screens/MobileFinanceActions.tsx"),
     /<strong>\{financeActivityLabel\(row\)\}<\/strong>/,

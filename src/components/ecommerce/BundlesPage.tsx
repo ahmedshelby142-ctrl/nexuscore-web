@@ -65,10 +65,11 @@ export function BundlesPage() {
             variantName,
             productName: product ? product.name + (variantName ? ` - ${variantName}` : "") : productId, 
             quantity, 
-            cost: costOf(productId) 
+            cost: costOf(productId),
+            availableStock: variantName ? getVariantStock(product, variantName) : qtyOf(productId),
           };
         }),
-    [selected, allProducts, costOf],
+    [selected, allProducts, costOf, qtyOf],
   );
 
   const selectedStockOk = selectedItems.every((item) => {
@@ -241,15 +242,15 @@ export function BundlesPage() {
 
             <div className="max-h-80 overflow-y-auto space-y-2 pr-1 mt-3">
               {selectedItems.map((item) => (
-                <div key={item.key} className={`rounded-lg border p-3 space-y-2 ${qtyOf(item.productId) <= 0 ? 'bg-red-50 border-red-200' : 'bg-white'}`}>
+                <div key={item.key} className={`rounded-lg border p-3 space-y-2 ${item.availableStock <= 0 ? 'bg-red-50 border-red-200' : 'bg-white'}`}>
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <p className="font-medium text-sm">{item.productName}</p>
                       <p className="text-xs text-muted-foreground">
-                        المخزون المتوفر: <span className={qtyOf(item.productId) <= 0 ? "text-red-600 font-bold" : ""}>{formatQty(qtyOf(item.productId))}</span>
+                        المخزون المتوفر: <span className={item.availableStock <= 0 ? "text-red-600 font-bold" : ""}>{formatQty(item.availableStock)}</span>
                         {' '}— التكلفة: {formatMoney(item.cost)}
                       </p>
-                      {qtyOf(item.productId) <= 0 && (
+                      {item.availableStock <= 0 && (
                          <p className="text-xs text-red-600 font-bold mt-1">نفد المخزون! لا يمكنك إضافة هذا المنتج.</p>
                       )}
                     </div>

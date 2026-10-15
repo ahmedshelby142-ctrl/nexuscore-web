@@ -7,6 +7,7 @@ import {openBusinessDb,read,ROOT} from './helpers/business-db.mjs';
 import {buildSaleLines} from '../src/lib/ledger/sales.ts';
 import {buildReturnConfirmedLines,buildOrderPlacedLines} from '../src/lib/ledger/orders.ts';
 const migrations=['20261012080415_receipt_variant_stock','20261012082556_pos_atomic_exchange','20261012090535_courier_atomic_batch','20261012191715_authoritative_stock_commands','20261012194223_courier_writer_compatibility','20261012203014_catalog_return_compatibility','20261012204812_courier_obligation_compatibility','20261012213602_order_payment_atomic','20261013010850_exchange_credit_lifecycle','20261013015521_customer_trip_atomic_recovery','20261013022600_courier_claim_source_attribution','20261013031632_order_backorder_allocation','20261013111632_scoped_order_activity','20261013120155_store_branded_document_numbers'];
+migrations.push('20261014094740_courier_cod_service_fee','20261014095804_fixed_asset_accounting');
 let db,c;const evidence=[];
 before(async()=>{db=await openBusinessDb();c=await db.client();for(const m of migrations)await db.admin.query(read('supabase/migrations/'+m+'.sql'));});
 after(async()=>{if(db){fs.writeFileSync(path.join(ROOT,'logs/final-v1-sprint/backorder-allocation-'+Date.now()+'.json'),JSON.stringify({scope:'isolated PostgreSQL17.6 only; NOT Production',version:db.version,migrations,evidence},null,2));await db.close();}});
@@ -30,6 +31,22 @@ function draft(f,quantity=5,{deposit=0}={}){
 const place=async(d,client=c)=>(await client.query('select place_order($1,$2) r',[d.order,d.event])).rows[0].r;
 const receipt=async(f,quantity=3,{cost=3,paid=0,variant=f.variant?'RED':undefined,id=crypto.randomUUID(),client=c}={})=>(await client.query("select record_financial_command($1,$2,$3,'receipt',$4) r",[id,db.store,db.device,{stockMirrorVersion:1,supplierId:f.supplier,paidAmount:paid,wallet:'inStoreSafe',items:[{productId:f.product,productName:'J product',variantName:variant,quantity,unitCost:cost}]}])).rows[0].r;
 const allocation=(o)=>o.fulfillment.demands.map(d=>({requested:Number(d.quantity),allocated:Number(d.allocated),missing:Number(d.missing)}));
+
+test('live QA-ECO-006 full-row upsert refuses while a narrow existing-row handoff preserves the complete authoritative plan',async()=>{
+ const f=await fixture({variant:true}),d=draft(f),placed=await place(d);
+ await reject(()=>c.query("update orders set status='shipped' where id=$1 and store_id=$2",[d.order.id,db.store]),/NEXUS_FULFILLMENT_INCOMPLETE/);
+ await receipt(f);const ready=await current(d.order.id);
+ assert.deepEqual(allocation(ready),[{requested:5,allocated:5,missing:0}]);
+ await reject(()=>c.query("insert into orders select * from jsonb_populate_record(null::public.orders,$1::jsonb) on conflict(id) do update set status=excluded.status",[{...ready,status:'shipped'}]),/NEXUS_FULFILLMENT_COMMAND_REQUIRED/);
+ assert.equal((await current(d.order.id)).status,'pending');
+ const beforeStock=await stock(f.product),beforeLines=(await db.admin.query('select jsonb_agg(to_jsonb(l) order by id) r from ledger_lines l')).rows[0].r;
+ const saved=(await c.query("update orders set status='shipped' where id=$1 and store_id=$2 returning to_jsonb(orders) r",[d.order.id,db.store])).rows[0].r;
+ assert.equal(saved.status,'shipped');assert.deepEqual(saved.fulfillment,ready.fulfillment);assert.deepEqual(saved.stockItems,ready.stockItems);
+ assert.deepEqual(await stock(f.product),beforeStock);assert.deepEqual((await db.admin.query('select jsonb_agg(to_jsonb(l) order by id) r from ledger_lines l')).rows[0].r,beforeLines);
+ const delivered=(await c.query("select record_order_delivery($1,$2,$3,'order_delivery',$4) r",[crypto.randomUUID(),db.store,db.device,{orderId:saved.id,settle:false}])).rows[0].r;
+ assert.equal((await current(saved.id)).status,'delivered');
+ evidence.push({case:'QA-ECO-006 existing-row handoff',version:db.version,placed:placed.order,ready,saved,delivered,beforeStock,afterStock:await stock(f.product),additionalMigrations:['20261014094740','20261014095804']});
+});
 test('5 requested /3 ATP /2 missing persists exact plain and RED reservation, receipt3 allocates2 leaves1',async()=>{
  for(const variant of [false,true]){
   const f=await fixture({variant}),d=draft(f),r=await place(d);assert.equal(r.replayed,false);

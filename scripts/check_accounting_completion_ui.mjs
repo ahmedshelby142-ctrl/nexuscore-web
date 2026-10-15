@@ -90,6 +90,24 @@ test('financial draft guard keeps typed amount on Escape and explicit Cancel, th
   await h.perform(()=>user.click(h.getByRole(document.body,'button',{name:'تجاهل المسودة'})));assert.equal(closed,1);assert.equal(document.querySelector('[data-pwa-unsaved="true"]'),null);
  }finally{await h.cleanup();}
 });
+test('acknowledged claim clears its saved draft warning while failures and later edits remain protected',async()=>{
+ const h=uiHarness({});try{
+  const {useFinancialDraftClose}=h.load('src/hooks/useFinancialDraftClose.tsx'),{React}=h;let closed=0;
+  function Harness(){const [notes,setNotes]=React.useState(''),[savedRevision,setSavedRevision]=React.useState(null);
+   const guard=useFinancialDraftClose({open:true,draft:{notes},savedRevision,busy:false,onClose:()=>{closed++;}});
+   return React.createElement(React.Fragment,null,guard.confirmation,React.createElement('input',{'aria-label':'Claim notes',value:notes,onChange:e=>setNotes(e.target.value)}),React.createElement('button',{onClick:()=>setSavedRevision('saved-claim-id')},'Acknowledge saved claim'),React.createElement('button',{onClick:guard.close},'Close claim'));}
+  const user=await h.render(Harness);await h.perform(()=>user.type(h.getByRole(document.body,'textbox',{name:'Claim notes'}),'Synthetic claim note'));
+  assert.ok(document.querySelector('[data-pwa-unsaved="true"]'));
+  await h.perform(()=>user.click(h.getByRole(document.body,'button',{name:'Close claim'})));assert.ok(h.getByRole(document.body,'alertdialog'));assert.equal(closed,0);
+  await h.perform(()=>user.click(h.getByRole(document.body,'button',{name:'الاحتفاظ بالمسودة'})));
+  await h.perform(()=>user.click(h.getByRole(document.body,'button',{name:'Acknowledge saved claim'})));
+  assert.equal(document.querySelector('[data-pwa-unsaved="true"]'),null);const event=new window.Event('beforeunload',{cancelable:true});window.dispatchEvent(event);assert.equal(event.defaultPrevented,false);
+  await h.perform(()=>user.click(h.getByRole(document.body,'button',{name:'Close claim'})));assert.equal(closed,1);assert.equal(h.queryByRole(document.body,'alertdialog'),null);
+  await h.perform(()=>user.type(h.getByRole(document.body,'textbox',{name:'Claim notes'}),' later edit'));
+  await h.perform(()=>user.click(h.getByRole(document.body,'button',{name:'Close claim'})));assert.ok(h.getByRole(document.body,'alertdialog'));assert.equal(closed,1);
+ }finally{await h.cleanup();}
+});
+
 test('Mobile historical bundle component shows saved exact units, variant and SKU without consulting a changed catalog recipe',async()=>{
  const h=uiHarness({});try{
   const {savedOrderBundleComponents}=h.load('src/lib/bundleDetails.ts');
@@ -101,6 +119,7 @@ test('Mobile historical bundle component shows saved exact units, variant and SK
   assert.equal(components.length,2);assert.deepEqual(components.map(x=>[x.variantName,x.quantity]),[['RED',2],['BLUE',1]]);
   await h.render(()=>h.React.createElement(MobileBundleContents,{components,titleAr:'مكونات البوكس المحفوظة في الطلب',captionAr:'إجمالي الكميات المحفوظة لهذا البند'}));
   assert.match(document.body.textContent,/Saved red shade/);assert.match(document.body.textContent,/SAVED-SKU/);assert.match(document.body.textContent,/RED/);assert.match(document.body.textContent,/BLUE/);assert.equal(JSON.stringify(stock),before);
+  assert.match(document.body.textContent,/بنود المكونات: ٢/);assert.doesNotMatch(document.body.textContent,/٢ قطعة مكونات/);
  }finally{await h.cleanup();}
 });
 test('actual MobileOrderDetails reopens the saved bundle composition and distinguishes goods from shipping-inclusive obligation',async()=>{

@@ -157,7 +157,7 @@ export const STATUS_META: Record<
   pending: { label: "قيد الانتظار", icon: Clock, variant: "secondary" },
   shipped: { label: "مع المندوب", icon: Truck, variant: "default" },
   delivered: { label: "تم التسليم", icon: CheckCircle2, variant: "default" },
-  returned: { label: "مرتجع مع المندوب", icon: RotateCcw, variant: "destructive" },
+  returned: { label: "مرتجع", icon: RotateCcw, variant: "destructive" },
   cancelled: { label: "ملغي", icon: Ban, variant: "outline" },
 };
 
@@ -613,6 +613,14 @@ export function OrdersPage() {
 
   // One in-flight write at a time; see `useRunOnce`.
   const runOnce = useRunOnce();
+
+  const shipOrder = async (orderId: string) => runOnce(async () => {
+    setActionError(null);
+    setIsWorking(true);
+    try { await updateOrderStatus(orderId, "shipped"); }
+    catch { setActionError("تعذّر تأكيد حفظ حالة الشحن. حدّث الطلب للتحقق قبل المتابعة."); }
+    finally { setIsWorking(false); }
+  });
 
   const saveEdit = async () => runOnce(async () => {
     setIsWorking(true);
@@ -1386,7 +1394,7 @@ export function OrdersPage() {
   const editClose=useFinancialDraftClose({open:editOrderId!==null,draft,busy:isWorking,onClose:()=>setEditOrderId(null)});
   const deliveryClose=useFinancialDraftClose({open:reconcileDialog.open,draft:{targetWallet,deliverMode,saleMode,wholesaleClient,wholesalePaidAmount},busy:isWorking,onClose:()=>setReconcileDialog(s=>({...s,open:false}))});
   const returnClose=useFinancialDraftClose({open:confirmDialog.open,draft:{confirmName,confirmCause,returnSettleInput},busy:isWorking,onClose:()=>setConfirmDialog(s=>({...s,open:false}))});
-  const claimClose=useFinancialDraftClose({open:claimDialog.open,draft:{claimAmount,claimNotes},busy:isWorking,onClose:()=>setClaimDialog(s=>({...s,open:false}))});
+  const claimClose=useFinancialDraftClose({open:claimDialog.open,draft:{claimAmount,claimNotes},savedRevision:claimOf(claimDialog.orderId)?.id??null,busy:isWorking,onClose:()=>setClaimDialog(s=>({...s,open:false}))});
   const cancelClose=useFinancialDraftClose({open:cancelDialog.open,draft:{cancelCause},busy:isWorking,onClose:()=>setCancelDialog(s=>({...s,open:false}))});
   const resolutionClose=useFinancialDraftClose({open:resolutionDialog.open,draft:{resolutionWallet,resolutionNote,resolutionStep},busy:isWorking,onClose:()=>setResolutionDialog(s=>({...s,open:false}))});
 
@@ -1732,7 +1740,7 @@ export function OrdersPage() {
                                 variant="outline"
                                 size="sm"
                                 disabled={isWorking || fulfillmentSummary(order.fulfillment)?.ready === false}
-                                onClick={() => updateOrderStatus(order.id, "shipped")}
+                                onClick={() => shipOrder(order.id)}
                               >
                                 تسليم للمندوب
                               </Button>

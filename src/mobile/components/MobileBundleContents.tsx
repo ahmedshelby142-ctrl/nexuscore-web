@@ -1,11 +1,11 @@
 import { MobileSection } from "./MobileSection";
-import { formatArabicQuantity } from "@/mobile/viewmodels/formatters";
+import { formatArabicCount, formatArabicQuantity } from "@/mobile/viewmodels/formatters";
 import type { BundleComponentDetail } from "@/lib/bundleDetails";
 
 export function MobileBundleContents({ components,titleAr="مكونات البوكس",captionAr }: { components: readonly BundleComponentDetail[];titleAr?:string;captionAr?:string }) {
   return <MobileSection titleAr={titleAr}>
     {components.length === 0 ? <p className="mobile-muted">لا توجد مكونات محفوظة لهذا البوكس.</p> : <>
-      <p className="mobile-muted">{captionAr??"الكميات التالية داخل بوكس واحد"} · {formatArabicQuantity(components.length)} مكونات</p>
+      <p className="mobile-muted">{captionAr??"الكميات التالية داخل بوكس واحد"} · بنود المكونات: {formatArabicCount(components.length)}</p>
       <ul className="space-y-3" aria-label="مكونات البوكس">
         {components.map((component, index) => <li
           key={`${component.productId}:${component.variantName ?? ""}:${index}`}

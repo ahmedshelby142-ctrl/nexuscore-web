@@ -14,11 +14,20 @@ before(async()=>{db=await openBusinessDb();c=await db.client();for(const v of ve
  await db.admin.query(read('supabase/migrations/20261014095804_fixed_asset_accounting.sql'));
 });
 after(async()=>{if(db){fs.writeFileSync(path.join(process.env.NEXUS_QA_TEST_LOG_ROOT||path.join(ROOT,'logs/final-v1-sprint'),'asset-accounting-regression-'+Date.now()+'.json'),JSON.stringify({version:db.version,scope:'isolated synthetic only; not Production verified',evidence},null,2));await db.close();}});
-async function summary(asof='2026-10-14',from=null,to=null,client=c){return (await client.query('select fixed_asset_accounting($1,$2,$3,$4) r',[db.store,asof,from,to])).rows[0].r;}
+async function summary(asof=today,from=null,to=null,client=c){return (await client.query('select fixed_asset_accounting($1,$2,$3,$4) r',[db.store,asof,from,to])).rows[0].r;}
+// Independent calendar expectation for live-date commands. Fixed historical
+// reports below still assert their literal 14 October acceptance amounts.
+function referenceDepreciation(cost,residual,months,start,end){
+ const parse=s=>new Date(s+'T00:00:00Z'),origin=parse(start),cutoff=parse(end);
+ const anniversary=n=>{const first=new Date(Date.UTC(origin.getUTCFullYear(),origin.getUTCMonth()+n,1));const last=new Date(Date.UTC(first.getUTCFullYear(),first.getUTCMonth()+1,0)).getUTCDate();return new Date(Date.UTC(first.getUTCFullYear(),first.getUTCMonth(),Math.min(origin.getUTCDate(),last)));};
+ if(cutoff<=origin)return 0;if(cutoff>=anniversary(months))return cost-residual;
+ let whole=(cutoff.getUTCFullYear()-origin.getUTCFullYear())*12+cutoff.getUTCMonth()-origin.getUTCMonth();if(anniversary(whole)>cutoff)whole--;
+ const fraction=(cutoff-anniversary(whole))/(anniversary(whole+1)-anniversary(whole));return Math.round((cost-residual)*(whole+fraction)/months);
+}
 const doc=(patch={})=>({id:crypto.randomUUID(),store_id:db.store,device_id:db.device,name:'Synthetic asset',purchaseValue:100,salvageValue:0,usefulLifeYears:8,purchaseDate:today,paymentSource:'prepaid',isActive:true,...patch});
 const record=async(a,client=c)=>(await client.query('select record_fixed_asset($1,$2) r',[a,a.paymentSource==='prepaid'?null:db.event('expense','fixed_asset',a.id,[{account:'expense',subjectId:'assets',amount:a.purchaseValue},{account:'wallet',subjectId:a.paymentSource,amount:-a.purchaseValue}])])).rows[0].r;
 test('historic16000 at24 months: accumulated4000, book12000, opening equity12000, current P&L0, no wallet debit',async()=>{
- const r=await summary(),a=r.rows.find(x=>x.id===legacy.id);assert.equal(a.grossPiastres,1600000);assert.equal(a.accumulatedDepreciationPiastres,400000);assert.equal(a.netBookPiastres,1200000);assert.equal(a.historicalDepreciationPiastres,400000);assert.equal(a.periodDepreciationPiastres,0);assert.equal(r.openingEquityAdjustmentPiastres,1200000);assert.equal(a.monthlyEstimatePiastres,16667);assert.equal(await total('wallet'),2000000);assert.equal(await total('expense'),0);
+ const r=await summary('2026-10-14'),a=r.rows.find(x=>x.id===legacy.id);assert.equal(a.grossPiastres,1600000);assert.equal(a.accumulatedDepreciationPiastres,400000);assert.equal(a.netBookPiastres,1200000);assert.equal(a.historicalDepreciationPiastres,400000);assert.equal(a.periodDepreciationPiastres,0);assert.equal(r.openingEquityAdjustmentPiastres,1200000);assert.equal(a.monthlyEstimatePiastres,16667);assert.equal(await total('wallet'),2000000);assert.equal(await total('expense'),0);
  const now=(await db.admin.query('select to_jsonb(a) r from fixed_assets a where id=$1',[legacy.id])).rows[0].r;delete now.accountingStartDate;delete now.deactivatedAt;assert.deepEqual(now,original);evidence.push({scenario:'historic2year',r});
 });
 test('anniversary cumulative rounding telescopes, period clipping excludes pre-adoption history, life ends at residual',async()=>{
@@ -37,11 +46,13 @@ test('leap dates, partial month, residual and date validation are deterministic 
  await assert.rejects(dep(100,101,12,'2024-01-31','2026-10-14'),/INVALID/);
 });
 test('paid capital acquisition transfers100 from cash into asset and reclassifies expense, without artificial loss/equity increase',async()=>{
+ const beforePosition=(await c.query('select accounting_position($1) r',[db.store])).rows[0].r;
+ const beforeProfit=(await c.query('select owner_financial_summary($1) r',[db.store])).rows[0].r;
  const a=doc({paymentSource:'inStoreSafe'}),cash=await total('wallet'),r=await record(a);assert.equal(await total('wallet'),cash-10000);assert.equal(r.asset.ledger_event_id,'asset:'+a.id);
  const acct=await summary(today);assert.equal(acct.capitalPurchasesReclassifiedPiastres,10000);assert.equal(acct.rows.find(x=>x.id===a.id).netBookPiastres,10000);
  const position=(await c.query('select accounting_position($1) r',[db.store])).rows[0].r;
- assert.equal(position.totalAssets,3200000);assert.equal(position.equity,3200000);assert.equal(position.reconciliationDifference,0);assert.equal(position.reviewRequired,false);
- const p=(await c.query('select owner_financial_summary($1) r',[db.store])).rows[0].r;assert.equal(p.rawLedgerExpenses,10000);assert.equal(p.expenses,0);assert.equal(p.profitBeforeDepreciation,0);assert.equal(p.netProfit,0);
+ assert.equal(position.totalAssets,beforePosition.totalAssets);assert.equal(position.equity,beforePosition.equity);assert.equal(position.reconciliationDifference,0);assert.equal(position.reviewRequired,false);
+ const p=(await c.query('select owner_financial_summary($1) r',[db.store])).rows[0].r;assert.equal(p.rawLedgerExpenses,10000);assert.equal(p.expenses,0);assert.equal(p.profitBeforeDepreciation,0);assert.equal(p.netProfit,beforeProfit.netProfit);
  assert.equal((await record(a)).replayed,true);assert.equal(await total('wallet'),cash-10000);await assert.rejects(record({...a,purchaseValue:101}),/PAYLOAD_MISMATCH/);evidence.push({scenario:'capitalized100',r,acct,p});
 });
 test('prepaid recognition, invalid residual/life/precision, immutable history, permitted accountant and denied ecommerce',async()=>{
@@ -51,10 +62,11 @@ test('prepaid recognition, invalid residual/life/precision, immutable history, p
  await record(doc(),await db.client('ACCOUNTANT'));await assert.rejects(record(doc(),await db.client('ECOMMERCE_ONLY')),/FORBIDDEN/);
 });
 test('deactivation freezes future depreciation at an auditable date without erasing net book value or historical period',async()=>{
+ const beforeRetirement=(await summary(today)).rows.find(x=>x.id===legacy.id);
  const id=crypto.randomUUID(),req={assetId:legacy.id,reason:'Synthetic retirement'};
  const call=async()=>(await c.query("select deactivate_fixed_asset($1,$2,$3,'asset_deactivate',$4) r",[id,db.store,db.device,req])).rows[0].r;
  const r=await call();assert.equal(r.asset.isActive,false);assert.equal(r.asset.deactivatedAt,today);assert.equal((await call()).replayed,true);
- const a=(await summary('2032-10-14')).rows.find(x=>x.id===legacy.id);assert.equal(a.status,'inactive');assert.equal(a.netBookPiastres,1200000);assert.equal(a.monthlyEstimatePiastres,0);
+ const a=(await summary('2032-10-14')).rows.find(x=>x.id===legacy.id);assert.equal(a.status,'inactive');assert.equal(a.netBookPiastres,beforeRetirement.netBookPiastres);assert.equal(a.monthlyEstimatePiastres,0);
  assert.equal((await summary('2026-10-14')).rows.find(x=>x.id===legacy.id).accumulatedDepreciationPiastres,400000);evidence.push({scenario:'retirement',r,a});
 });
 test('late journal refusal rolls back asset and canonical wallet event; foreign store and raw inserts cannot bypass contract',async()=>{
@@ -80,15 +92,17 @@ test('owner-confirmed opening date correction preserves cash/ledger and retains 
  const req={assetId:a.id,beforeRevision:a.updated_at??0,beforePurchaseDate:'2026-08-14',purchaseDate:'2024-10-14',reason:'Owner confirmed original purchase date; synthetic isolated test'};
  const call=async(client=c,body=req,operation=id)=>(await client.query("select correct_opening_asset_date($1,$2,$3,'asset_opening_date',$4) r",[operation,db.store,db.device,body])).rows[0].r;
  await assert.rejects(call(await db.client('ACCOUNTANT')),/OWNER_ONLY/);
- const r=await call();assert.equal(r.beforePosition.accumulatedDepreciationPiastres,33333);assert.equal(r.afterPosition.accumulatedDepreciationPiastres,400000);
- assert.equal(r.afterPosition.netBookPiastres,1200000);assert.equal(r.openingEquityDeltaPiastres,-366667);
+ const r=await call();assert.equal(r.beforePosition.accumulatedDepreciationPiastres,referenceDepreciation(1600000,0,96,'2026-08-14',today));assert.equal(r.afterPosition.accumulatedDepreciationPiastres,referenceDepreciation(1600000,0,96,'2024-10-14',today));
+ assert.equal(r.afterPosition.netBookPiastres,1600000-r.afterPosition.accumulatedDepreciationPiastres);assert.equal(r.openingEquityDeltaPiastres,r.afterPosition.netBookPiastres-r.beforePosition.netBookPiastres);
  assert.equal(await fingerprint(),hash);assert.equal(await total('wallet'),cash);assert.equal((await call()).replayed,true);
  await assert.rejects(call(c,{...req,purchaseDate:'2024-10-13'}),/PAYLOAD_MISMATCH/);
  await assert.rejects(call(c,req,crypto.randomUUID()),/STALE/);
  const audit=(await c.query('select read_asset_audit($1,$2) r',[db.store,a.id])).rows[0].r;
- assert.equal(audit.length,2);const correction=audit.find(x=>x.id===id);assert.equal(correction.actorId,db.users.ADMIN);assert.ok(correction.at);assert.equal(correction.result.openingEquityDeltaPiastres,-366667);assert.equal(correction.request.input.reason,req.reason);
+ assert.equal(audit.length,2);const correction=audit.find(x=>x.id===id);assert.equal(correction.actorId,db.users.ADMIN);assert.ok(correction.at);assert.equal(correction.result.openingEquityDeltaPiastres,r.openingEquityDeltaPiastres);assert.equal(correction.request.input.reason,req.reason);
  const other=await db.client('ECOMMERCE_ONLY');await assert.rejects(other.query('select read_asset_audit($1,$2)',[db.store,a.id]),/FORBIDDEN/);
  const account=(await summary()).rows.find(x=>x.id===a.id);assert.equal(account.periodDepreciationPiastres,0);
+ const beforeRecognition=(await summary(new Date(new Date(today+'T00:00:00Z').valueOf()-86400000).toISOString().slice(0,10))).rows.find(x=>x.id===a.id);
+ assert.equal(beforeRecognition.status,'not_recognized');assert.equal(beforeRecognition.netBookPiastres,0);
  evidence.push({scenario:'audited Sharp date correction ONLY local, owner confirmation 2024-10-14',r,audit});
 });
 test('opening correction late audit failure rolls back date and revision; concurrent corrections use the original revision once',async()=>{
@@ -105,5 +119,6 @@ test('five historical prepaid assets reconcile cumulative rounding and opening e
  const cash=await total('wallet'),expense=await total('expense'),ids=[];
  for(const [purchaseValue,salvageValue,usefulLifeYears,purchaseDate] of specs)ids.push((await record(doc({purchaseValue,salvageValue,usefulLifeYears,purchaseDate}))).asset.id);
  const rows=(await summary()).rows.filter(a=>ids.includes(a.id));const sum=key=>rows.reduce((n,a)=>n+a[key],0);
- assert.equal(sum('grossPiastres'),5300000);assert.equal(sum('historicalDepreciationPiastres'),462138);assert.equal(sum('netBookPiastres'),4837862);assert.equal(sum('openingCarryingPiastres'),4837862);assert.equal(sum('periodDepreciationPiastres'),0);assert.equal(sum('monthlyEstimatePiastres'),60000);assert.equal(await total('wallet'),cash);assert.equal(await total('expense'),expense);
+ const expectedDepreciation=specs.reduce((n,[cost,residual,years,start])=>n+referenceDepreciation(cost*100,residual*100,years*12,start,today),0);
+ assert.equal(sum('grossPiastres'),5300000);assert.equal(sum('historicalDepreciationPiastres'),expectedDepreciation);assert.equal(sum('netBookPiastres'),5300000-expectedDepreciation);assert.equal(sum('openingCarryingPiastres'),5300000-expectedDepreciation);assert.equal(sum('periodDepreciationPiastres'),0);assert.equal(sum('monthlyEstimatePiastres'),60000);assert.equal(await total('wallet'),cash);assert.equal(await total('expense'),expense);
 });

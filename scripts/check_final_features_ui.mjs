@@ -132,6 +132,29 @@ test("FEATURE-UI-01: edit bundle with keyboard, replace component and preserve c
     { productId: "b", variantName: undefined, quantity: 1 },
   ]);
 });
+test("bundle editor shows each saved variant stock and zero-stock warning, preserving ordinary ledger quantity", async () => {
+  const originalProducts = business.products;
+  try {
+    business.products = [{ ...a, quantity: 10, metadata: { variants: [
+      { name: "RED", stock: 7 }, { name: "BLUE", stock: 3 }, { name: "EMPTY", stock: 0 },
+    ] } }, b, { ...box, bundleItems: [
+      { productId: "a", variantName: "RED", quantity: 1 },
+      { productId: "a", variantName: "BLUE", quantity: 1 },
+      { productId: "a", variantName: "EMPTY", quantity: 1 },
+      { productId: "b", quantity: 1 },
+    ] }];
+    const user = await h.render(BundlesPage);
+    await h.perform(() => user.click(button("تعديل Existing box")));
+    const stockText = name => h.getByText(document.body, name, { exact: true }).parentElement.textContent;
+    assert.match(stockText("Component A - RED"), /المخزون المتوفر: ٧/);
+    assert.match(stockText("Component A - BLUE"), /المخزون المتوفر: ٣/);
+    assert.match(stockText("Component A - EMPTY"), /المخزون المتوفر: ٠/);
+    assert.match(stockText("Component A - EMPTY"), /نفد المخزون/);
+    assert.match(stockText("Component B"), /المخزون المتوفر: ١٠/);
+    assert.equal(writes.length, 0);
+  } finally { business.products = originalProducts; }
+});
+
 test("FEATURE-UI-02: refused bundle edit retains recipe, price and stale version for a safe retry", async () => {
   const user = await h.render(BundlesPage);
   refuse = true;

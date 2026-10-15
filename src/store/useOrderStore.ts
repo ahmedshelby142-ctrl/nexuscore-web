@@ -19,6 +19,7 @@ import { getSyncIdentity } from "@/services/api/storeContext";
 import { fromRemoteRow, toRemoteRow } from "@/services/api/fieldMapping";
 import { prepareEvent, type NewEvent } from "@/lib/ledger";
 import {runFinancialCommand,resolvePendingFinancialCommand} from "@/lib/financialCommand";
+import { toast } from "sonner";
 
 
 /**
@@ -122,11 +123,11 @@ export type PlaceOrderResult =
 /**
  * Send one order to the cloud and commit what came back.
  *
- * The FULL merged record goes out, never the caller's partial patch — upserting
- * `{id, status}` alone would blank every other column.
+ * Creation sends a complete document. Existing documents send an UPDATE of
+ * only the intended fields; they must never enter the guarded INSERT path.
  *
- * Throws on failure, having committed nothing. That is the point: an order that
- * did not reach the database must not sit on screen looking as if it did.
+ * Publish only the acknowledged canonical row. A lost response is uncertain:
+ * callers must refresh before retrying rather than claim that nothing saved.
  */
 async function saveOrder(
   set: (fn: (state: any) => any) => void,
@@ -134,8 +135,11 @@ async function saveOrder(
   // (and what the store keeps) is the full stored row.
   order: NewEcommerceOrder,
   ctx?: WriteContext,
+  updates?: Partial<EcommerceOrder>,
 ): Promise<EcommerceOrder> {
-  const saved = (await writeThrough("orders", order, ctx)) as EcommerceOrder;
+  const saved = updates
+    ? await patchExistingOrder(order.id, updates, ctx)
+    : (await writeThrough("orders", order, ctx)) as EcommerceOrder;
   set((state: any) => {
     const at = state.orders.findIndex((o: EcommerceOrder) => o.id === saved.id);
     if (at < 0) return { orders: [saved, ...state.orders] };
@@ -144,6 +148,31 @@ async function saveOrder(
     return { orders: next };
   });
   return saved;
+}
+
+/** Existing guarded documents must not run BEFORE INSERT through an upsert.
+ * Send only the intended patch, so a newer allocation can never be overwritten
+ * by an old reader. RLS and all UPDATE/fulfillment guards remain authoritative. */
+async function patchExistingOrder(id: string, updates: Partial<EcommerceOrder>, ctx?: WriteContext): Promise<EcommerceOrder> {
+  try {
+    const sb = getSupabaseClient();
+    const identity = await getSyncIdentity();
+    if (!sb || !identity) throw new Error("يلزم اتصال السحابة والمتجر لحفظ حالة الطلب");
+    const payload = toRemoteRow("orders", updates, {
+      storeId: identity.storeId, deviceId: identity.deviceId, stamp: Date.now(),
+    });
+    const { data, error } = await sb.from("orders").update(payload)
+      .eq("id", id).eq("store_id", identity.storeId).select().single();
+    if (error) throw new Error(`[orders] ${error.message}`);
+    if (!data) throw new Error("لم تصل الحالة المحفوظة للطلب");
+    if ((await getSyncIdentity())?.storeId !== identity.storeId) throw new Error("تغيّر المتجر أثناء حفظ الطلب؛ حدّث الحالة للتحقق");
+    return fromRemoteRow("orders", data) as EcommerceOrder;
+  } catch (error) {
+    toast.error(ctx?.afterCommit
+      ? "العملية المالية اتسجلت؛ تعذّر تأكيد تعديل مستند الطلب. حدّث الحالة قبل أي إعادة محاولة."
+      : "تعذّر تأكيد حفظ تعديل الطلب. حدّث الحالة للتحقق قبل المتابعة.");
+    throw error;
+  }
 }
 
 /**
@@ -427,64 +456,33 @@ export const useOrderStore = create<OrderState>()(
       // receivable is a ledger line now, not a row in the financial store, so
       // there is one answer to "what does this courier owe us".
       updateOrderStatus: async (id, status) => {
-        // `updateOrderStatus` is called BARE from onClick — `onClick={() =>
-        // updateOrderStatus(order.id, "shipped")}` — so there is no handler for
-        // a submit gate to sit on. Three clicks on تسليم للمندوب sent three
-        // PATCHes. The guard therefore lives here, where all four call sites
-        // share it, keyed by the transition rather than the order: the same
-        // order legitimately moves shipped → delivered later, and only a
-        // REPEAT of the identical move is dropped.
+        // Shared across callers on this device, beyond any one UI
+        // submit gate. Drop a repeated in-flight transition, while allowing
+        // the same order's next legitimate lifecycle step after confirmation.
         const key = id + ":" + status;
         if (statusInFlight.has(key)) return;
         statusInFlight.add(key);
         try {
-        set((state) => {
-          const order = state.orders.find((item) => item.id === id);
-          if (!order) return state;
-
-          // Keep the courier receivable ROW for the shipping screen's
-          // per-courier drill-down (§3.9) — it is a document, not a balance.
+          const order = get().orders.find((item) => item.id === id);
+          if (!order) return;
+          const saved = await saveOrder(set, order, undefined, {
+            status, updatedAt: new Date(), updated_at: Date.now(),
+            ...(status === "delivered" ? { revenueLogged: true }
+              : status === "returned" ? { revenueLogged: false } : {}),
+          });
+          // Legacy descriptive document only; never create it for a refused
+          // handoff or expose the next lifecycle controls before server success.
           if (status === "shipped" && order.status !== "shipped") {
             useFinancialStore.getState().createCourierReceivable({
-              orderId: order.id,
-              courierId: order.courierId || "default",
-              courierName: order.courierName || "غير محدد",
-              orderTotal: order.totalAmount,
-              courierFee: order.courierFee,
-              amountDue: order.totalAmount - order.courierFee,
+              orderId: saved.id,
+              courierId: saved.courierId || "default",
+              courierName: saved.courierName || "غير محدد",
+              orderTotal: saved.totalAmount,
+              courierFee: saved.courierFee,
+              amountDue: saved.totalAmount - saved.courierFee,
               status: "pending",
             });
           }
-
-          return {
-            orders: state.orders.map((item) =>
-              item.id === id
-                ? {
-                    ...item,
-                    status,
-                    updatedAt: new Date(),
-                    updated_at: Date.now(),
-                    revenueLogged:
-                      status === "delivered"
-                        ? true
-                        : status === "returned"
-                          ? false
-                          : item.revenueLogged,
-                  }
-                : item,
-            ),
-          };
-        });
-
-        // An order's STATUS is the e-commerce flow. Without this the document
-        // moved to "shipped" on one device and stayed "pending" on every other
-        // one — the local write happened, the push never did.
-        //
-        // The `set` above is kept because a status change also fires the
-        // courier-receivable side effect, and the transition has to be visible
-        // to it. `saveOrder` then reconciles against the row Postgres stored.
-        const order = get().orders.find((o) => o.id === id);
-        if (order) await saveOrder(set, order);
         } finally {
           statusInFlight.delete(key);
         }
@@ -498,7 +496,7 @@ export const useOrderStore = create<OrderState>()(
           ...updates,
           updatedAt: new Date(),
           updated_at: Date.now(),
-        }, ctx);
+        }, ctx, { ...updates, updatedAt: new Date(), updated_at: Date.now() });
       },
     }),
     {

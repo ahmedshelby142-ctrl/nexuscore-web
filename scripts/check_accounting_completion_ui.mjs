@@ -139,6 +139,25 @@ test('actual MobileOrderDetails reopens the saved bundle composition and disting
   }finally{await h.cleanup();}
  }
 });
+test('cancelled exchange separates historical obligation from reserved, refund-due and refunded credit without a false collection mismatch',async()=>{
+ for(const [status,allocatedPiastres,refundedAllocationPiastres] of [['reserved',3000,0],['refund_due',3000,0],['refunded',0,3000]]){
+  let React;const order={id:'synthetic-cancelled',orderNumber:'QA-O017',status:'cancelled',createdAt:'2026-10-15T08:00:00Z',customerName:'Synthetic customer',totalAmount:10,shippingFee:120,expectedCod:100,depositAmount:0,isExchange:true,items:[{id:'line',productId:'product',productName:'Replacement',quantity:1,unitPrice:10}],exchangeDetails:{id:'synthetic-exchange',status:status==='reserved'?'cancelled':'confirmed',credit:{version:1,status,eligiblePiastres:3000,allocatedPiastres,refundedAllocationPiastres}}};
+  const h=uiHarness({'react-router-dom':{useNavigate:()=>()=>{},useParams:()=>({orderId:order.id})},
+   '@/mobile/data/useMobileEntity':{useMobileEntity:()=>({data:order,loading:false,error:null,reload:()=>{}})},
+   '@/mobile/data/useIsOffline':{useIsOffline:()=>false},'@/mobile/navigation/mobileVisibility':{useMobileVisibility:()=>({cost:true,internal:true})},
+   '@/mobile/data/useStoreName':{useStoreName:()=> 'Synthetic store'},
+   '@/mobile/data/mobileReaders':{readMobileOrder:async()=>order,readMobileOrderTimeline:async()=>[],readMobileCouriers:async()=>new Map()},
+   '@/mobile/components/MobileAppBar':{MobileAppBar:({title})=>React.createElement('header',null,title)},
+   '@/mobile/components/WhatsAppAction':{WhatsAppIconLink:()=>null},'@/components/shipping/CodServiceFeeEditor':{CodServiceFeeEditor:()=>null},
+   '@/components/ecommerce/ExchangeReturnPanel':{ExchangeReturnPanel:()=>null},'@/components/ecommerce/OrderFulfillmentPanel':{OrderFulfillmentPanel:()=>null}});React=h.React;
+  try{const before=JSON.stringify(order),{MobileOrderDetails}=h.load('src/mobile/screens/MobileOrderDetails.tsx');await h.render(MobileOrderDetails);
+   assert.match(document.body.textContent,/قيمة الطلب قبل الإلغاء/);assert.match(document.body.textContent,/لا يوجد تحصيل للبديل بعد الإلغاء/);
+   assert.doesNotMatch(document.body.textContent,/✗ اختلاف|✓ متطابق|مجموع المدفوع \+ المتبقي/);assert.equal(JSON.stringify(order),before);
+   assert.match(document.body.textContent,/ملغي — مفيش تحصيل/);
+  }finally{await h.cleanup();}
+ }
+});
+
 test('actual financial report refreshes after an asset/ledger cue and exports the same before/after-depreciation figures',async()=>{
  let depreciation=166.67,calls=0,printed;
  const h=uiHarness({'@/lib/ledger':{balances:async()=>[]},'@/lib/ledger/reports':{...reportModel,fetchPnl:async()=>{calls++;return {...pnl({revenueRows:[{subjectId:'pos',amount:10000}],expenseRows:[{subjectId:'rent',amount:2000}],cogs:6000,returnsRevenue:0,purchases:0}),profitBeforeDepreciation:2000,depreciation,netProfit:(200000-Math.round(depreciation*100))/100};}},

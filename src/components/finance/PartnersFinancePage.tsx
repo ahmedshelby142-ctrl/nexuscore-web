@@ -129,7 +129,7 @@ function gaugeLabel(pct: number): string {
 
 const PERSONA_TERMINOLOGY = {
   retail: {
-    mainChartTitle: "حركة المبيعات اليومية",
+    mainChartTitle: "سجل المصروفات والرواتب",
     kpiSectionTitle: "مؤشرات المبيعات",
     expenseSectionTitle: "المصروفات التشغيلية للفروع",
     budgetSectionTitle: "الرقابة على الميزانية",
@@ -137,7 +137,7 @@ const PERSONA_TERMINOLOGY = {
     assetSubLabel: "أصول المحل",
   },
   ecommerce: {
-    mainChartTitle: "حركة الطلبات الإلكترونية",
+    mainChartTitle: "سجل المصروفات والرواتب",
     kpiSectionTitle: "مؤشرات المتجر الإلكتروني",
     expenseSectionTitle: "مصروفات التشغيل",
     budgetSectionTitle: "الرقابة على الميزانية",

@@ -119,6 +119,10 @@ export function MobileOrderDetails() {
   const netGoods = Math.max(0, goodsTotal - discountAmount);
   const collected = netGoods + shippingFee + wastedTripCompensation;
   const allocatedCredit = Number(order.exchangeDetails?.credit?.allocatedPiastres ?? 0) / 100;
+  // Cancellation ends collection; an allocated original credit is instead
+  // refund-due/refunded in its own authoritative lifecycle panel. The saved
+  // pre-cancellation COD must not become a new collection mismatch after refund.
+  const cancelledExchange = order.status === "cancelled" && Boolean(order.exchangeDetails?.credit);
   const depositPlusCod = depositAmount + expectedCod + allocatedCredit;
   const financialsMatch = Math.abs(collected - depositPlusCod) < 0.01;
 
@@ -235,7 +239,8 @@ export function MobileOrderDetails() {
         <div className="mobile-detail-line"><span>صافي البضاعة</span><strong>{formatArabicCurrency(netGoods)}</strong></div>
         <div className="mobile-detail-line"><span>رسوم التوصيل</span><strong>{formatArabicCurrency(shippingFee)}</strong></div>
         {wastedTripCompensation > 0 && <div className="mobile-detail-line"><span>تعويض رحلة شحن سابقة</span><strong>{formatArabicCurrency(wastedTripCompensation)}</strong></div>}
-        <div className="mobile-detail-line"><span>المجموع المستحق</span><strong>{formatArabicCurrency(collected)}</strong></div>
+        <div className="mobile-detail-line"><span>{cancelledExchange ? "قيمة الطلب قبل الإلغاء" : "المجموع المستحق"}</span><strong>{formatArabicCurrency(collected)}</strong></div>
+        {cancelledExchange && <p className="mobile-detail-note" role="status">لا يوجد تحصيل للبديل بعد الإلغاء؛ يُتابع رد رصيد الأصل بشكل منفصل في تفاصيل رصيد الاستبدال.</p>}
         <div className="mobile-detail-line" style={{ borderTop: "1px solid var(--border)", paddingBlockStart: "0.5rem" }}>
           <span>مدفوع مقدماً (عربون)</span>
           <strong>{formatArabicCurrency(depositAmount)}</strong>
@@ -256,7 +261,7 @@ export function MobileOrderDetails() {
           <strong>{codOutstanding ? formatArabicCurrency(expectedCod) : COD_STATE_LABELS_AR[cod as keyof typeof COD_STATE_LABELS_AR]}</strong>
         </div>
         {/* The books' own consistency check — the shop's, not the customer's. */}
-        {showInternal && (
+        {showInternal && !cancelledExchange && (
           <>
             <div className="mobile-detail-line" style={{ borderTop: "1px solid var(--border)", paddingBlockStart: "0.5rem" }}>
               <span>{allocatedCredit > 0 ? "النقدي + رصيد الأصل + المتبقي" : "مجموع المدفوع + المتبقي"}</span>

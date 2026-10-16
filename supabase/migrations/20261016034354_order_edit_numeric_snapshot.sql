@@ -47,8 +47,8 @@ REVOKE ALL ON FUNCTION financial_private.order_edit_snapshot_matches(jsonb,jsonb
 DO $migration$
 DECLARE proc regprocedure;definition text;needle text;
 BEGIN
- needle:=$needle$IF jsonb_build_object('items',o.items,'stockItems',o."stockItems",'totalAmount',o."totalAmount",'discountAmount',o."discountAmount",'depositAmount',o."depositAmount")
-     IS DISTINCT FROM p_input->'before' THEN$needle$;
+ needle:=replace($needle$IF jsonb_build_object('items',o.items,'stockItems',o."stockItems",'totalAmount',o."totalAmount",'discountAmount',o."discountAmount",'depositAmount',o."depositAmount")
+     IS DISTINCT FROM p_input->'before' THEN$needle$,chr(13),'');
  FOREACH proc IN ARRAY ARRAY['public.record_order_edit(text,uuid,uuid,text,jsonb)'::regprocedure,
   'financial_private.record_fulfillment_edit(text,uuid,uuid,text,jsonb)'::regprocedure] LOOP
   definition:=replace(pg_get_functiondef(proc),chr(13),'');

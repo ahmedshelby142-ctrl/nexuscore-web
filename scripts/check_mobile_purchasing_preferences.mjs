@@ -155,7 +155,18 @@ test("mobile purchasing never supplies a tenant; component reads may narrow RLS 
   assert.match(timelineReader,/getActiveStoreId\(\)/);
   assert.match(timelineReader,/\.eq\("store_id",storeId\)/);
   assert.match(timelineReader,/readOrderActivity\(orderId,storeId\)/);
-  const otherReaders = readers.slice(0, componentStart) + readers.slice(componentEnd,timelineStart) + readers.slice(timelineEnd);
+  // The financial detail reader narrows immutable ledger/RPC reads to the
+  // authenticated originating store; it accepts no tenant from a form.
+  const financeStart=readers.indexOf("export async function readMobileOrderCourierPosition(");
+  const financeEnd=readers.indexOf("\nexport ",financeStart+1);
+  assert.ok(financeStart>=0&&financeEnd>financeStart);
+  const financeReader=readers.slice(financeStart,financeEnd);
+  assert.match(financeReader,/getActiveStoreId\(\)/);
+  assert.match(financeReader,/order\.store_id !== store/);
+  assert.match(financeReader,/\.eq\("store_id", store\)/);
+  assert.doesNotMatch(financeReader,/\.insert\(|\.update\(|\.upsert\(|\.delete\(/);
+  const withoutFinance=readers.slice(0,financeStart)+readers.slice(financeEnd);
+  const otherReaders = withoutFinance.replace(componentReader, "").replace(timelineReader, "");
   for (const [name, source] of Object.entries({ purchasing, preferences, readers: otherReaders })) {
     assert.ok(!/store_id\s*[:=]/.test(code(source)), `${name} must not set a store_id`);
     assert.ok(!/\.eq\("store_id"/.test(code(source)), `${name} must not filter by store_id`);

@@ -48,7 +48,10 @@ test("Mobile Order Details keeps its labels but shows the amount only while outs
   assert.match(mobile, /const codOutstanding = cod === "due" \|\| cod === "with_courier";/);
   assert.match(mobile, /<span>المتبقي على المندوب \(COD\)<\/span>\s*<strong>\{codOutstanding \? formatArabicCurrency\(expectedCod\) :/);
   assert.match(mobile, /showInternal && codOutstanding && <div className="mobile-detail-line"><span>المبلغ المستحق تحصيله \(COD\)/);
-  assert.match(mobile, /\) : codOutstanding \? \(\s*<div className="mobile-detail-line"><span>توريد المندوب<\/span><strong style=\{\{ color: "var\(--warning\)" \}\}>معلق/);
+  // Customer COD visibility and courier obligations are independent. Actual
+  // fee-only/partial/settled rendered cases live in check_live_followup_ui.
+  assert.match(mobile, /courierPosition\?\.state === "pending"/);
+  assert.match(mobile, /رسوم متبقية للمندوب/);
 });
 
 test("CRM order timeline: Arabic status, and COD only while outstanding", () => {

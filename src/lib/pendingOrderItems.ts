@@ -1,6 +1,6 @@
 import type { EcommerceOrderItem } from "@/types";
-import { buildableFromRecipe, variantStockFrom } from "@/lib/product";
-import { exchangeCreditDraft } from "@/lib/exchangeCredit";
+import { buildableFromRecipe, variantStockFrom } from "./product.ts";
+import { exchangeCreditDraft } from "./exchangeCredit.ts";
 
 /** Preview the SAME credit capacity used by record_order_edit. Earned credit
  * cannot silently become a refund; the server rejects edits below it. */

@@ -3,12 +3,11 @@ import {useFinancialDraftClose} from "@/hooks/useFinancialDraftClose";
 import {CodServiceFeeEditor} from "@/components/shipping/CodServiceFeeEditor";
 import {OrderQueueWorkspace,OrderOperationPanel} from "./OrderQueueWorkspace";
 import {fulfillmentSummary} from "@/lib/orderFulfillment";
-import {expandPendingOrderItems} from "@/lib/pendingOrderItems";
+import {expandPendingOrderItems, pendingOrderCod, pendingOrderLineCeiling} from "@/lib/pendingOrderItems";
 import { commitOrderPayment, resolvePendingOrderPayment } from "@/lib/orderPayment";
 import {ExchangeReturnPanel} from "./ExchangeReturnPanel";
 import {OrderFulfillmentPanel} from "./OrderFulfillmentPanel";
 import {refreshFeatureStock} from "@/services/featureStockMirror";
-import { bundleAvailableStock } from "@/lib/product";
 import { useRunOnce } from "@/hooks/useSubmitGate";
 import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import {
@@ -610,6 +609,7 @@ export function OrdersPage() {
   }, [editingOrder, draftGoods, promoDiscounts]);
 
   const draftTotal = subtract(draftGoods, draftDiscount);
+  const draftCredit = pendingOrderCod(editingOrder, draftTotal);
 
   // One in-flight write at a time; see `useRunOnce`.
   const runOnce = useRunOnce();
@@ -2426,16 +2426,7 @@ export function OrdersPage() {
             ) : (
               <div className="space-y-2">
                 {draft.map((line) => {
-                  const original =
-                    editingOrder?.items?.find((l) => l.productId === line.productId && l.variantName===line.variantName)
-                      ?.quantity ?? 0;
-                  // What this order already holds counts as available to it.
-                  const componentRows=(editingOrder?.fulfillment?.demands??editingOrder?.stockItems??[]).filter(l=>l.bundleId===line.productId);
-                  const ceiling = line.bundleId && componentRows.length && original>0
-                    ? original + Math.min(...componentRows.map(c=>Math.floor(qtyOf(c.productId)/(c.quantity/original))))
-                    : (products.find(p=>p.id===line.productId)?.isBundle
-                      ? bundleAvailableStock(products.find(p=>p.id===line.productId),products)
-                      : qtyOf(line.productId) + original);
+                  const ceiling = pendingOrderLineCeiling(line, editingOrder, products, qtyOf);
                   return (
                     <div
                       key={`${line.productId}::${line.variantName ?? ""}`}
@@ -2539,18 +2530,15 @@ export function OrdersPage() {
                 <span className="text-muted-foreground">المدفوع مقدماً</span>
                 <span>− {formatMoney(editingOrder?.depositAmount ?? 0)}</span>
               </div>
+              {draftCredit.allocatedPiastres > 0 && <div className="flex justify-between">
+                <span className="text-muted-foreground">رصيد البضاعة الأصلية المستخدم</span>
+                <span>− {formatMoney(draftCredit.allocatedPiastres / 100)}</span>
+              </div>}
+              {draftCredit.requiresCreditRefund && <p role="alert" className="text-destructive">التعديل أقل من الرصيد المكتسب؛ ردّ فرق الرصيد من إجراء الاستبدال أولًا.</p>}
               <div className="flex justify-between border-t border-border pt-1 mt-1">
                 <span className="font-semibold">المتبقي على المندوب</span>
                 <span className="font-semibold">
-                  {formatMoney(
-                    Math.max(
-                      0,
-                      draftTotal +
-                      (editingOrder?.shippingFee ?? 0) +
-                      (editingOrder?.wastedTripCompensation ?? 0) -
-                      (editingOrder?.depositAmount ?? 0),
-                    ),
-                  )}
+                  {formatMoney(Math.max(0, draftCredit.cod))}
                 </span>
               </div>
             </div>

@@ -103,6 +103,7 @@ export function MobileOrderDetails() {
   const cod = codState({ status: String(order.status ?? ""), expectedCod, codSettledAt: order.codSettledAt });
   const codOutstanding = cod === "due" || cod === "with_courier";
   const courierFee = Number(order.courierFee ?? 0);
+  const courierPosition = order.courierPosition;
   // Recovery of one earlier wasted trip (054): owed by the customer on top of
   // base delivery. Absent/0 on every order placed before 054.
   const wastedTripCompensation = Number(order.wastedTripCompensation ?? 0);
@@ -274,7 +275,8 @@ export function MobileOrderDetails() {
           </>
         )}
         {showCost && courierFee > 0 && <div className="mobile-detail-line"><span>عمولة المندوب</span><strong>{formatArabicCurrency(courierFee)}</strong></div>}
-        {showCost && <div className="mobile-detail-line"><span>رسوم تحصيل COD</span><strong>{formatArabicCurrency(Number(order.codServiceFee??0))}</strong></div>}
+        {showCost && <div className="mobile-detail-line"><span>رسوم تحصيل COD المقررة</span><strong>{formatArabicCurrency(Number(order.codServiceFee??0))}</strong></div>}
+        {showCost && ["delivered", "returned", "cancelled"].includes(order.status) && <div className="mobile-detail-line"><span>رسوم تحصيل COD المسجلة</span><strong>{courierPosition?.servicePiastres !== undefined ? formatArabicCurrency(courierPosition.servicePiastres / 100) : "تعذّر التحقق — حدّث العرض"}</strong></div>}
         {showCost && <CodServiceFeeEditor key={order.id} order={order} onSaved={reload}/>}
       </MobileSection>
 
@@ -330,12 +332,22 @@ export function MobileOrderDetails() {
         ) : (
           <div className="mobile-detail-line"><span>حالة الإيراد</span><strong style={{ color: "var(--warning)" }}>غير مسجل</strong></div>
         )}
-        {order.codSettledAt ? (
+        {courierPosition?.state === "pending" ? (
+          <>
+            <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--warning)" }}>تسوية معلقة</strong></div>
+            <div className="mobile-detail-line"><span>المتبقي لنا عند المندوب</span><strong>{formatArabicCurrency(courierPosition.codPiastres / 100)}</strong></div>
+            <div className="mobile-detail-line"><span>رسوم متبقية للمندوب</span><strong>{formatArabicCurrency(courierPosition.feePiastres / 100)}</strong></div>
+          </>
+        ) : courierPosition?.state === "settled" ? (
           <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--success)" }}>مستلم</strong></div>
-        ) : codOutstanding ? (
-          <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--warning)" }}>معلق</strong></div>
+        ) : courierPosition?.state === "none" ? (
+          <div className="mobile-detail-line"><span>توريد المندوب</span><strong>لا توجد مستحقات مفتوحة</strong></div>
+        ) : courierPosition?.state === "awaiting_return" ? (
+          <div className="mobile-detail-line"><span>توريد المندوب</span><strong>بانتظار تأكيد المرتجع ومراجعة الرسوم</strong></div>
+        ) : ["delivered", "returned", "cancelled"].includes(order.status) ? (
+          <div className="mobile-detail-line"><span>توريد المندوب</span><strong>تعذّر التحقق — حدّث العرض قبل التسوية</strong></div>
         ) : (
-          <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--muted-foreground)" }}>غير مطلوب ({cod === "none" ? "مدفوع بالكامل" : COD_STATE_LABELS_AR[cod as keyof typeof COD_STATE_LABELS_AR]})</strong></div>
+          <div className="mobile-detail-line"><span>توريد المندوب</span><strong style={{ color: "var(--muted-foreground)" }}>لم يحِن بعد ({cod === "none" ? "العميل مدفوع بالكامل" : COD_STATE_LABELS_AR[cod as keyof typeof COD_STATE_LABELS_AR]})</strong></div>
         )}
       </MobileSection>}
 

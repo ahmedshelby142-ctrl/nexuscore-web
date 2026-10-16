@@ -385,7 +385,42 @@ export async function readMobileProducts(query: MobileListQuery = {}) {
 
 export async function readMobileOrder(id: string) {
   const page = await readMobileOrders({ id, pageSize: 1 });
-  return page.rows[0] ?? null;
+  const order = page.rows[0] ?? null;
+  if (!order || !viewerSeesCost() || !["delivered", "returned", "cancelled"].includes(order.status)) return order;
+  try { return {...order, courierPosition: await readMobileOrderCourierPosition(order)}; }
+  catch (error) {
+    if (await getActiveStoreId() !== order.store_id) throw error;
+    return {...order, courierPosition: {state: "unavailable"}};
+  }
+}
+
+/** Use the existing canonical, immutable-ledger obligation reader. A failed
+ * read is unknown, never proof that a fee-only or partial balance is settled. */
+export async function readMobileOrderCourierPosition(order: any) {
+  const store = await getActiveStoreId();
+  if (!store || order.store_id !== store) throw new Error("تغيّر المتجر أثناء القراءة");
+  const sb = clientOrThrow();
+  const [{data, error}, events] = await Promise.all([
+    sb.rpc("read_courier_obligations", {p_store: store, p_courier: order.courierId || null}),
+    sb.from("ledger_events").select("id").eq("store_id", store)
+      .eq("ref_type", "ecommerce_order").in("ref_id", [order.id, order.orderNumber].filter(Boolean)),
+  ]);
+  if (error || !Array.isArray(data)) throw new Error("تعذّر قراءة مستحقات المندوب");
+  const obligation = data.find((row: any) => row.orderId === order.id);
+  if (events.error || !Array.isArray(events.data)) throw new Error("تعذّر قراءة رسوم التحصيل المسجلة");
+  let servicePiastres = 0;
+  if (events.data.length) {
+    const lines = await sb.from("ledger_lines").select("amount_delta").eq("store_id", store)
+      .eq("account", "expense").eq("subject_id", "courier_cod_service").in("event_id", events.data.map((e: any) => e.id));
+    if (lines.error || !Array.isArray(lines.data)) throw new Error("تعذّر قراءة رسوم التحصيل المسجلة");
+    servicePiastres = lines.data.reduce((sum: number, line: any) => sum + Number(line.amount_delta), 0);
+  }
+  if (await getActiveStoreId() !== store) throw new Error("تغيّر المتجر أثناء القراءة");
+  const codPiastres = Number(obligation?.codPiastres ?? 0), feePiastres = Number(obligation?.feePiastres ?? 0);
+  if (![codPiastres,feePiastres,servicePiastres].every(Number.isSafeInteger)) throw new Error("تعذّر مطابقة المستحقات بالقرش");
+  return {state: obligation?.reviewReason ? "review" : codPiastres !== 0 || feePiastres !== 0 ? "pending"
+    : order.status === "returned" && !order.returnConfirmedAt ? "awaiting_return" : order.codSettledAt ? "settled" : "none",
+    codPiastres, feePiastres, servicePiastres};
 }
 
 export async function readMobileCustomer(id: string) {

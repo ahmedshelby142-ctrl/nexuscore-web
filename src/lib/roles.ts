@@ -1,5 +1,5 @@
 /**
- * The five roles. Fixed, hardcoded, and the ONLY source of who sees what.
+ * The fixed roles, and the ONLY source of who sees what.
  *
  * ## Why this file exists
  *
@@ -23,7 +23,7 @@
  */
 
 /**
- * The five fixed roles. No dynamic role-building, by design.
+ * The fixed roles. No dynamic role-building, by design.
  *
  * `MODERATOR` is the read-only operational persona (M3.1). It is a MOBILE
  * persona: on Desktop it reaches `/preferences` and nothing else, because
@@ -34,6 +34,7 @@
  */
 export type AppRole =
   | "ADMIN"
+  | "CASHIER_ONLY"
   | "POS_ECOMMERCE"
   | "ECOMMERCE_ONLY"
   | "ACCOUNTANT"
@@ -41,6 +42,7 @@ export type AppRole =
 
 export const APP_ROLES: readonly AppRole[] = [
   "ADMIN",
+  "CASHIER_ONLY",
   "POS_ECOMMERCE",
   "ECOMMERCE_ONLY",
   "ACCOUNTANT",
@@ -50,6 +52,7 @@ export const APP_ROLES: readonly AppRole[] = [
 /** What each role is called on screen. Arabic only — this reaches the user. */
 export const ROLE_LABELS: Record<AppRole, string> = {
   ADMIN: "مدير النظام",
+  CASHIER_ONLY: "كاشير فقط",
   POS_ECOMMERCE: "كاشير وأونلاين",
   ECOMMERCE_ONLY: "أونلاين فقط",
   ACCOUNTANT: "محاسب ومخازن",
@@ -59,8 +62,9 @@ export const ROLE_LABELS: Record<AppRole, string> = {
 /** One line describing the access each role gets, for the invite dropdown. */
 export const ROLE_DESCRIPTIONS: Record<AppRole, string> = {
   ADMIN: "صلاحية كاملة على كل الشاشات والإعدادات",
-  POS_ECOMMERCE: "نقطة البيع، الطلبات، المتجر الإلكتروني، وقاعدة العملاء",
-  ECOMMERCE_ONLY: "الطلبات والمتجر الإلكتروني، والمخزون للعرض فقط",
+  CASHIER_ONLY: "نقطة البيع والفواتير والمرتجعات المسموحة فقط؛ أسماء وسائل الدفع بدون أرصدة الخزائن، وبدون أونلاين أو إدارة المالية",
+  POS_ECOMMERCE: "نقطة البيع، الطلبات، المتجر الإلكتروني، وقاعدة العملاء؛ بدون أرصدة الشركة أو إدارة المالية",
+  ECOMMERCE_ONLY: "الطلبات والمتجر الإلكتروني، والمخزون للعرض فقط؛ بدون نقطة البيع أو أرصدة الشركة وإدارة المالية",
   ACCOUNTANT: "المشتريات والموردين والمخزون وتقارير الخزنة",
   MODERATOR: "متابعة فقط من الموبايل: الطلبات والشحنات والمخزون والنواقص والعملاء — بدون أي تعديل",
 };
@@ -77,7 +81,7 @@ const ROUTE_ACCESS: Record<string, readonly AppRole[]> = {
   // ── Open to everyone ──────────────────────────────────────────────────────
   // Appearance is a preference, not a permission. Every role lands here able to
   // set light/dark; nothing that changes the business belongs on this path.
-  "/preferences": ["POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT", "MODERATOR"],
+  "/preferences": ["CASHIER_ONLY", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT", "MODERATOR"],
 
   // ── MODERATOR on Desktop: straight on to Mobile Operations ───────────────
   // The role's screens exist only in the Mobile build. This Desktop route only
@@ -86,7 +90,7 @@ const ROUTE_ACCESS: Record<string, readonly AppRole[]> = {
   "/mobile-app": ["MODERATOR"],
 
   // ── Selling ───────────────────────────────────────────────────────────────
-  "/pos": ["POS_ECOMMERCE"],
+  "/pos": ["CASHIER_ONLY", "POS_ECOMMERCE"],
   "/orders": ["POS_ECOMMERCE", "ECOMMERCE_ONLY"],
   "/ecommerce-orders": ["POS_ECOMMERCE", "ECOMMERCE_ONLY"],
   "/crm": ["POS_ECOMMERCE"],
@@ -116,6 +120,7 @@ const ROUTE_ACCESS: Record<string, readonly AppRole[]> = {
  */
 const ROLE_HOME: Record<AppRole, string> = {
   ADMIN: "/",
+  CASHIER_ONLY: "/pos",
   POS_ECOMMERCE: "/pos",
   ECOMMERCE_ONLY: "/orders",
   ACCOUNTANT: "/purchasing",
@@ -245,6 +250,18 @@ export function canReturnWholesale(role: string | null | undefined): boolean {
  */
 export function canViewCost(role: string | null | undefined): boolean {
   return toAppRole(role) !== "MODERATOR";
+}
+
+/** Company balances are independent of operational receipt amounts/costs. */
+export function canViewStoreFinance(role: string | null | undefined): boolean {
+  const app = toAppRole(role);
+  return app === "ADMIN" || app === "ACCOUNTANT";
+}
+
+export function canReadBalance(role: string | null | undefined, account: string): boolean {
+  return canViewStoreFinance(role) ||
+    (["CASHIER_ONLY", "POS_ECOMMERCE", "ECOMMERCE_ONLY"].includes(toAppRole(role)) &&
+      ["stock", "customer_ltv"].includes(account));
 }
 
 /**

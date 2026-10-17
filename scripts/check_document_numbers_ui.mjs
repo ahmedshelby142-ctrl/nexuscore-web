@@ -1,6 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {uiHarness} from './helpers/ui-harness.mjs';
+import {uiHarness as realUiHarness} from './helpers/ui-harness.mjs';
+// These historical POS-reader cases use an explicit ADMIN UI identity; real
+// restricted identities/RLS are exercised by check_employee_access_db.mjs.
+const uiHarness=stubs=>realUiHarness({'@/store/useAuthStore':{useAuthStore:Object.assign(s=>s({userRole:'ADMIN'}),{getState:()=>({userRole:'ADMIN'})})},...stubs});
 import {posDocumentNumber} from '../src/lib/documentIdentity.ts';
 test('C saved POS and source refund numbers take precedence; historical identity is never regenerated',()=>{
  assert.equal(posDocumentNumber({id:'internal',payload:{documentNumber:'BS-P001'}}),'BS-P001');

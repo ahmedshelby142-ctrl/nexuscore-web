@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { getSupabaseClient } from "@/lib/supabase";
 import { toAppRole, type AppRole } from "@/lib/roles";
+import { getActiveStoreId } from "@/services/api/storeContext";
 
 /**
  * Who works here, and which of the four roles they hold.
@@ -40,7 +41,7 @@ interface UsersState {
 
   fetchStaffMembers: () => Promise<void>;
   inviteStaff: (email: string, role: AppRole) => Promise<InviteResult>;
-  updateUserRole: (userId: string, role: AppRole) => Promise<void>;
+  updateUserRole: (userId: string, role: AppRole) => Promise<boolean>;
   removeUser: (userId: string) => Promise<void>;
 }
 
@@ -183,16 +184,23 @@ export const useUsersStore = create<UsersState>((set, get) => ({
     const sb = getSupabaseClient();
     if (!sb) {
       set({ error: "تغيير الصلاحيات محتاج اتصال بالسحابة." });
-      return;
+      return false;
     }
 
     set({ isLoading: true, error: null });
     try {
-      const { error } = await sb
+      const storeId = await getActiveStoreId();
+      if (!storeId) throw new Error("تعذّر تحديد المتجر.");
+      const { data, error } = await sb
         .from("store_members")
         .update({ role })
-        .eq("user_id", userId);
+        .eq("user_id", userId)
+        .eq("store_id", storeId)
+        .select("user_id, role")
+        .single();
       if (error) throw error;
+      if (await getActiveStoreId() !== storeId || data?.user_id !== userId || data?.role !== role)
+        throw new Error("لم تؤكد قاعدة البيانات حفظ الصلاحية في المتجر الحالي.");
 
       set((state) => ({
         staffMembers: state.staffMembers.map((m) =>
@@ -200,6 +208,7 @@ export const useUsersStore = create<UsersState>((set, get) => ({
         ),
         isLoading: false,
       }));
+      return true;
     } catch (e) {
       // Leave the old role on screen. Showing the new one after a failed write
       // is exactly the lie this rewrite exists to remove.
@@ -207,6 +216,7 @@ export const useUsersStore = create<UsersState>((set, get) => ({
         isLoading: false,
         error: `لم تُحفظ الصلاحية. ${e instanceof Error ? e.message : String(e)}`,
       });
+      return false;
     }
   },
 

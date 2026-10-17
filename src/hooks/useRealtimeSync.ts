@@ -291,6 +291,7 @@ export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
     };
 
     window.addEventListener('online', handleOnline);
+    window.addEventListener('nexus-membership-changed', handleOnline);
 
     // ── 2. Supabase Realtime subscription ────────────────────────
     //
@@ -348,6 +349,7 @@ export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
     // ── Cleanup ──────────────────────────────────────────────────
     return () => {
       window.removeEventListener('online', handleOnline);
+      window.removeEventListener('nexus-membership-changed', handleOnline);
       channelCleanup?.();
     };
   }, [authenticated, receivesBusinessRows]);

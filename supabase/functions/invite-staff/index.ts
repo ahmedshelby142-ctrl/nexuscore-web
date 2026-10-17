@@ -43,7 +43,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 /** The only roles that exist. Mirrors `src/lib/roles.ts` and the CHECK constraint. */
-const ROLES = ["ADMIN", "ACCOUNTANT", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "MODERATOR"] as const;
+const ROLES = ["ADMIN", "ACCOUNTANT", "CASHIER_ONLY", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "MODERATOR"] as const;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",

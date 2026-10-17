@@ -24,6 +24,8 @@ import type {
 } from "./types";
 import { getSupabaseClient } from "@/lib/supabase";
 import { getSyncIdentity } from "@/services/api/storeContext";
+import {canViewStoreFinance} from "@/lib/roles";
+import {useAuthStore} from "@/store/useAuthStore";
 
 // ── Money boundary ──────────────────────────────────────────────────────────
 // Lives in ./money so tooling and tests can convert without importing the
@@ -318,7 +320,9 @@ const supabaseDriver: LedgerDriver = {
 
   async eventLines(eventId) {
     const sb = requireClient();
-    const { data, error } = await sb.from("ledger_lines").select("*").eq("event_id", eventId);
+    const { data, error } = canViewStoreFinance(useAuthStore.getState().userRole)
+      ? await sb.from("ledger_lines").select("*").eq("event_id", eventId)
+      : await sb.rpc("read_pos_lines", {p_store:await requireStoreId(),p_ids:[eventId]});
     if (error) throw new Error(`[ledger_lines] ${error.message}`);
 
     return (data ?? []).map((l: Record<string, unknown>) => ({

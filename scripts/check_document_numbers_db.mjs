@@ -6,7 +6,10 @@ import path from 'node:path';
 import {openBusinessDb,read,ROOT} from './helpers/business-db.mjs';
 import {buildSaleLines} from '../src/lib/ledger/sales.ts';
 import {buildOrderPlacedLines} from '../src/lib/ledger/orders.ts';
-import {uiHarness} from './helpers/ui-harness.mjs';
+import {uiHarness as realUiHarness} from './helpers/ui-harness.mjs';
+// Keep this historical receipt reader's UI identity explicit. Its backend
+// client still changes role/tenant to prove a stale UI cannot bypass RLS.
+const uiHarness=stubs=>realUiHarness({'@/store/useAuthStore':{useAuthStore:Object.assign(s=>s({userRole:'ADMIN'}),{getState:()=>({userRole:'ADMIN'})})},...stubs});
 import {pgReadSdk} from './helpers/pg-read-sdk.mjs';
 const migrations=['20261012080415_receipt_variant_stock','20261012082556_pos_atomic_exchange','20261012090535_courier_atomic_batch','20261012191715_authoritative_stock_commands','20261012194223_courier_writer_compatibility','20261012203014_catalog_return_compatibility','20261012204812_courier_obligation_compatibility','20261012213602_order_payment_atomic','20261013010850_exchange_credit_lifecycle','20261013015521_customer_trip_atomic_recovery','20261013022600_courier_claim_source_attribution','20261013031632_order_backorder_allocation','20261013111632_scoped_order_activity','20261013120155_store_branded_document_numbers'];
 let db,c;const evidence=[];

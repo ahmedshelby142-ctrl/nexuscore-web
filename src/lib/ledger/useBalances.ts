@@ -16,6 +16,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { balances } from "./index";
 import type { Account, EventKind } from "./types";
 import { canonicalWallet } from "@/types";
+import { canReadBalance } from "@/lib/roles";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export interface BalancesView {
   /** Signed EGP for one subject. Absent means zero — no events yet. */
@@ -37,6 +39,8 @@ export interface BalancesView {
  * SQL. Still a SUM over `ledger_lines`, just fewer rows.
  */
 export function useBalances(account: Account, kind?: EventKind): BalancesView {
+  const role = useAuthStore((s) => s.userRole);
+  const allowed = canReadBalance(role, account);
   const [amounts, setAmounts] = useState<Map<string, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -47,6 +51,12 @@ export function useBalances(account: Account, kind?: EventKind): BalancesView {
 
   useEffect(() => {
     let cancelled = false;
+    if (!allowed) {
+      setAmounts(new Map());
+      setError(null);
+      setLoading(false);
+      return;
+    }
     // A re-read that is RECOVERING from a failure reports itself as loading, so
     // a retry button can refuse a second click while the first is in flight.
     // A routine refresh after a successful read does not: flipping to loading
@@ -86,7 +96,7 @@ export function useBalances(account: Account, kind?: EventKind): BalancesView {
     return () => {
       cancelled = true;
     };
-  }, [account, kind, tick]);
+  }, [account, kind, tick, role, allowed]);
 
   const amountOf = useCallback((subjectId: string) => amounts.get(subjectId) ?? 0, [amounts]);
   const total = [...amounts.values()].reduce((sum, v) => sum + v, 0);
@@ -103,5 +113,7 @@ export function useBalances(account: Account, kind?: EventKind): BalancesView {
     return () => window.removeEventListener("ledger-sync-pulled", onPulled);
   }, []);
 
-  return { amountOf, total, loading, error, refresh };
+  // A demotion cannot paint the previous role's cached answer for one frame.
+  return allowed ? { amountOf, total, loading, error, refresh }
+    : { amountOf: () => 0, total: 0, loading: false, error: null, refresh };
 }

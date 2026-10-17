@@ -40,6 +40,7 @@ const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 /** The colour each role wears in the table. */
 const ROLE_TONE: Record<AppRole, string> = {
   ADMIN: "bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300",
+  CASHIER_ONLY: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-300",
   POS_ECOMMERCE: "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300",
   ECOMMERCE_ONLY: "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
   ACCOUNTANT: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
@@ -114,8 +115,7 @@ export function UserManagementPanel() {
 
   const saveRole = async () => {
     if (!editing) return;
-    await updateUserRole(editing.userId, role);
-    setEditing(null);
+    if (await updateUserRole(editing.userId, role)) setEditing(null);
   };
 
   const confirmRemove = async () => {
@@ -133,7 +133,7 @@ export function UserManagementPanel() {
             المستخدمين والصلاحيات
           </h1>
           <p className="text-muted-foreground mt-1">
-            أربع صلاحيات ثابتة — كل مستخدم بياخد واحدة منهم بس
+            اختر صلاحية الموظف: كاشير فقط، أونلاين فقط، أو كاشير وأونلاين. أدوار الإدارة والمحاسبة والمتابعة منفصلة.
           </p>
         </div>
         <Button onClick={() => setInviteOpen(true)} className="gap-2">
@@ -372,6 +372,7 @@ export function UserManagementPanel() {
               </SelectContent>
             </Select>
             <p className="text-sm text-muted-foreground">{ROLE_DESCRIPTIONS[role]}</p>
+            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           </div>
 
           <DialogFooter className="gap-2">

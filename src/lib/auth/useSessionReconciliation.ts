@@ -141,6 +141,44 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
     }
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
+    let membershipChannel: ReturnType<NonNullable<ReturnType<typeof getSupabaseClient>>["channel"]> | undefined;
+    let rechecking = false;
+    const recheck = async () => {
+      if (cancelled || rechecking) return;
+      rechecking = true;
+      try {
+        const previous = toAppRole(useAuthStore.getState().userRole);
+        const reconciled = await reconcileSupabaseSession();
+        if (cancelled) return;
+        setState(reconciled);
+        if (previous !== toAppRole(useAuthStore.getState().userRole)) {
+          // Each shell clears/re-reads its own data model. Mobile must never
+          // mount Desktop hydration just because a membership changed.
+          window.dispatchEvent(new Event("nexus-membership-changed"));
+          window.dispatchEvent(new Event("ledger-sync-pulled"));
+        }
+      } catch {
+        // A transient read failure grants nothing; every server request still
+        // resolves membership. Preserve the current draft for a later retry.
+      } finally { rechecking = false; }
+    };
+    const onFocus = () => { void recheck(); };
+    window.addEventListener("focus", onFocus);
+    const membershipTimer = window.setInterval(onFocus, 30000);
+    let watchedUid: string | undefined;
+    const watchMembership = (uid?: string) => {
+      const supabase = getSupabaseClient();
+      if (cancelled || !supabase || watchedUid === uid) return;
+      if (membershipChannel) void supabase.removeChannel(membershipChannel);
+      membershipChannel = undefined;
+      watchedUid = uid;
+      if (uid && typeof supabase.channel === "function") {
+        membershipChannel = supabase.channel(`staff-access-${uid}-${crypto.randomUUID()}`)
+          .on("postgres_changes", {event:"*",schema:"public",table:"store_members",filter:`user_id=eq.${uid}`},
+            () => { window.setTimeout(onFocus, 0); })
+          .subscribe();
+      }
+    };
 
     void (async () => {
       const reconciled = await reconcileSupabaseSession();
@@ -179,21 +217,27 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
         // conjure a session, and the next boot re-runs the full membership
         // check and signs out anyone whose membership has gone.
         if (session) {
+          watchMembership(session.user?.id);
           setState("authenticated");
           return;
         }
 
         // ── …and one that vanishes ─────────────────────────────────────────
         if (event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+          watchMembership();
           if (useAuthStore.getState().isAuthenticated) useAuthStore.getState().logout();
           setState("unauthenticated");
         }
       });
       unsubscribe = () => data.subscription.unsubscribe();
+      watchMembership((await supabase.auth.getSession()).data.session?.user.id);
     })();
 
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(membershipTimer);
+      if (membershipChannel) void getSupabaseClient()?.removeChannel(membershipChannel);
       unsubscribe?.();
     };
   }, []);

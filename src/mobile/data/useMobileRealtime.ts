@@ -235,9 +235,11 @@ export function useMobileRealtime(authenticated: boolean): void {
       for (const table of MOBILE_REALTIME_TABLES) announce({ table, catchUp: true });
     };
     window.addEventListener("online", onOnline);
+    window.addEventListener("nexus-membership-changed", onOnline);
 
     return () => {
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("nexus-membership-changed", onOnline);
       listeners -= 1;
       if (listeners <= 0) {
         listeners = 0;

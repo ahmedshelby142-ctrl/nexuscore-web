@@ -49,6 +49,7 @@ const fnBody = (src, name) => src.match(new RegExp(`(?:export )?(?:async )?funct
 test("OTHER ROLES: Desktop homes are unchanged, and every home is openable", () => {
   const expected = {
     ADMIN: "/",
+    CASHIER_ONLY: "/pos",
     POS_ECOMMERCE: "/pos",
     ECOMMERCE_ONLY: "/orders",
     ACCOUNTANT: "/purchasing",

@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useAuthStore } from "@/store/useAuthStore";
-import { canSellWholesale } from "@/lib/roles";
+import { canSellWholesale, canViewStoreFinance } from "@/lib/roles";
 import { useWholesaleEnabled } from "@/hooks/useWholesaleEnabled";
 import { useSettingsStore } from "@/store/useSettingsStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
@@ -203,6 +203,7 @@ export default function CheckoutForm() {
   // beside "الخزينة" never moved after a sale even though the sale itself was
   // written to the ledger correctly. It is now SUM(wallet) for that wallet.
   const wallets = useBalances("wallet");
+  const showWalletBalances = canViewStoreFinance(useAuthStore((s) => s.userRole));
   const {
     amountOf: walletBalance,
     error: walletError,
@@ -1476,13 +1477,14 @@ export default function CheckoutForm() {
                 الخزينة المستهدفة
               </label>
               <select
+                aria-label="الخزينة المستهدفة"
                 value={selectedWallet}
                 onChange={(e) => setSelectedWallet(e.target.value as WalletType)}
                 className="flex h-9 w-full rounded border-0 bg-background/50 px-2 py-1 text-sm font-semibold shadow-sm ring-1 ring-inset ring-border focus:ring-2 focus:ring-inset focus:ring-primary"
               >
                 {Object.entries(WALLET_LABELS).map(([key, label]) => (
                   <option key={key} value={key}>
-                    {label} - {moneyFigure(walletBalance(key), wallets)}
+                    {label}{showWalletBalances ? ` - ${moneyFigure(walletBalance(key), wallets)}` : ""}
                   </option>
                 ))}
               </select>

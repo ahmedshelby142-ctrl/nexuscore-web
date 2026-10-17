@@ -6,6 +6,7 @@ import { balanceOf } from "@/lib/ledger";
 import { buildableFromRecipe, variantStockFrom } from "@/lib/product";
 import { mobileVisibilityFor } from "@/mobile/navigation/mobileVisibility";
 import { useAuthStore } from "@/store/useAuthStore";
+import {canViewStoreFinance} from "@/lib/roles";
 import { formatArabicCurrency } from "@/mobile/viewmodels/formatters";
 import { bundleComponentDetails } from "@/lib/bundleDetails";
 
@@ -400,6 +401,14 @@ export async function readMobileOrderCourierPosition(order: any) {
   const store = await getActiveStoreId();
   if (!store || order.store_id !== store) throw new Error("تغيّر المتجر أثناء القراءة");
   const sb = clientOrThrow();
+  if (!canViewStoreFinance(useAuthStore.getState().userRole)) {
+    const {data,error}=await sb.rpc("read_order_courier_position",{p_store:store,p_order:order.id});
+    if(error||!data)throw new Error("تعذّر قراءة مستحقات المندوب");
+    if(await getActiveStoreId()!==store)throw new Error("تغيّر المتجر أثناء القراءة");
+    const codPiastres=Number(data.codPiastres??0),feePiastres=Number(data.feePiastres??0),servicePiastres=Number(data.servicePiastres??0);
+    if(![codPiastres,feePiastres,servicePiastres].every(Number.isSafeInteger))throw new Error("تعذّر مطابقة المستحقات بالقرش");
+    return {state:data.reviewReason?"review":codPiastres!==0||feePiastres!==0?"pending":order.status==="returned"&&!order.returnConfirmedAt?"awaiting_return":order.codSettledAt?"settled":"none",codPiastres,feePiastres,servicePiastres};
+  }
   const [{data, error}, events] = await Promise.all([
     sb.rpc("read_courier_obligations", {p_store: store, p_courier: order.courierId || null}),
     sb.from("ledger_events").select("id").eq("store_id", store)

@@ -24,10 +24,10 @@ import {
 
 // ── the four, and only the four ─────────────────────────────────────────────
 
-test("there are exactly five roles, all named in Arabic", () => {
+test("there are exactly six fixed roles, all named in Arabic", () => {
   assert.deepEqual(
     [...APP_ROLES],
-    ["ADMIN", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT", "MODERATOR"],
+    ["ADMIN", "CASHIER_ONLY", "POS_ECOMMERCE", "ECOMMERCE_ONLY", "ACCOUNTANT", "MODERATOR"],
     "no dynamic roles — the set is fixed",
   );
   for (const r of APP_ROLES) {

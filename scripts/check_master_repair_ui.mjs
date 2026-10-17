@@ -413,6 +413,7 @@ test("D1 actual receipt picker passes persisted customer ID and snapshot with th
   let selected;
   const container=({children})=>React.createElement("div",null,children);
   const modal=loader({
+    "@/store/useAuthStore":{useAuthStore:selector=>selector({userRole:"ADMIN"})},
     "@/components/ui/dialog":Object.fromEntries(["Dialog","DialogContent","DialogHeader","DialogTitle","DialogDescription","DialogTrigger"].map(k=>[k,container])),
     "@/components/ui/button":{Button:({children,variant,size,...p})=>React.createElement("button",p,children)},
     "@/components/ui/input":{Input:p=>React.createElement("input",p)},

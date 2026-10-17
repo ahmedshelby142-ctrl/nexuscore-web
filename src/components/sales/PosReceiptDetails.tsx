@@ -5,6 +5,8 @@ import {formatMoney} from "@/lib/math";
 import {printTableAsPdf} from "@/lib/pdfGenerator";
 import {WALLET_LABELS,type WalletType} from "@/types";
 import {Button} from "@/components/ui/button";
+import {canViewStoreFinance} from "@/lib/roles";
+import {useAuthStore} from "@/store/useAuthStore";
 const title=(r:PosReceipt)=>r.kind==='exchange'?'إيصال استبدال':r.kind==='refund'?'إيصال مرتجع':'فاتورة بيع';
 export function printSavedPosReceipt(r:PosReceipt) {
  printTableAsPdf({title:title(r),subtitle:`${r.number} — ${r.customer}${r.sourceNumber?` — فاتورة الأصل: ${r.sourceNumber}`:''}`,
@@ -13,6 +15,7 @@ export function printSavedPosReceipt(r:PosReceipt) {
 }
 /** Reopening/printing always reads committed evidence, never today's catalog or a draft. */
 export function PosReceiptDetails({eventId}:{eventId:string}) {
+ const showFinance=canViewStoreFinance(useAuthStore(s=>s.userRole));
  const [receipt,setReceipt]=useState<PosReceipt|null>(null),[error,setError]=useState(''),[tick,setTick]=useState(0);
  useEffect(()=>{let active=true;setReceipt(null);setError('');void readPosReceipt(eventId).then(r=>{if(active)setReceipt(r);}).catch(e=>{if(active)setError(e instanceof Error?e.message:String(e));});return()=>{active=false;};},[eventId,tick]);
  if(error)return <div><p role="alert">{error}</p><Button variant="outline" onClick={()=>setTick(n=>n+1)}>إعادة قراءة الإيصال</Button></div>;
@@ -25,7 +28,7 @@ export function PosReceiptDetails({eventId}:{eventId:string}) {
   {receipt.kind!=='refund'&&<p>قيمة {receipt.kind==='exchange'?'البديل':'البيع'} بعد الخصم: {formatMoney(receipt.replacementPiastres/100)}</p>}
   <p className="font-semibold">{posCashLabel(receipt.netPiastres)}{receipt.netPiastres?`: ${formatMoney(Math.abs(receipt.netPiastres)/100)}`:''}</p>
   {receipt.wallets.filter(w=>w.piastres!==0).map(w=><p key={w.id}>{WALLET_LABELS[w.id as WalletType]??w.id}: {formatMoney(w.piastres/100)}</p>)}
-  <details><summary>أثر التكلفة والربح المسجل</summary><p>أثر COGS: {formatMoney(receipt.cogsPiastres/100)}</p><p>أثر الربح: {formatMoney(receipt.profitPiastres/100)}</p></details>
+  {showFinance&&<details><summary>أثر التكلفة والربح المسجل</summary><p>أثر COGS: {formatMoney(receipt.cogsPiastres/100)}</p><p>أثر الربح: {formatMoney(receipt.profitPiastres/100)}</p></details>}
   <Button variant="outline" onClick={()=>printSavedPosReceipt(receipt)}>طباعة الإيصال المحفوظ</Button>
  </section>;
 }

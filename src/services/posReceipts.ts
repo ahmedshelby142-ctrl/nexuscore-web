@@ -5,6 +5,8 @@ import {posDocumentNumber} from "@/lib/documentIdentity";
 import {groupPosHistory} from "@/lib/posHistory";
 import {netProfitOf} from "@/lib/ledger/reports";
 import type {LedgerEvent} from "@/lib/ledger/types";
+import {canViewStoreFinance} from "@/lib/roles";
+import {useAuthStore} from "@/store/useAuthStore";
 export interface PosReceipt {
  id:string;number:string;kind:'sale'|'refund'|'exchange';sourceId?:string;sourceNumber?:string;
  customer:string;phone:string;at:string;eventIds:string[];items:any[];
@@ -20,16 +22,22 @@ const integer=(value:unknown)=>{const n=Number(value);if(value==null||(typeof va
 export async function readPosReceipt(eventId:string):Promise<PosReceipt> {
  const client=getSupabaseClient(),store=await getActiveStoreId();
  if(!client||!store)throw new Error('تعذّر تحديد متجر الفاتورة.');
+ const finance=canViewStoreFinance(useAuthStore.getState().userRole);
  const current=async()=>{if(await getActiveStoreId()!==store)throw new Error('تغيّر المتجر أثناء قراءة الإيصال.');};
  const load=async(id:string)=>{
-  const {data,error}=await client.from('ledger_events').select(columns).eq('store_id',store).eq('id',id).eq('kind','sale').eq('ref_type','pos_sale').maybeSingle();
+  const response=finance ? await client.from('ledger_events').select(columns).eq('store_id',store).eq('id',id).eq('kind','sale').eq('ref_type','pos_sale').maybeSingle()
+   : await client.rpc('read_pos_headers',{p_store:store,p_ids:[id],p_exchange:null});
+  const {error}=response;const data=finance?response.data:response.data?.[0];
   await current();if(error)throw new Error(error.message);if(!data)throw new Error('الفاتورة الأصلية غير متاحة في هذا المتجر.');return header(data);
  };
  const selected=await load(eventId),exchangeId=selected.payload.exchangeId;
  let legs=[selected],kind:PosReceipt['kind']=selected.payload.returnOfEventId?'refund':'sale';
  if(exchangeId){
   if(typeof exchangeId!=='string'||selected.refId!==exchangeId)throw new Error('روابط الاستبدال تحتاج مراجعة.');
-  const rows=await pageAll<any>((from,to)=>client.from('ledger_events').select(columns).eq('store_id',store).eq('kind','sale').eq('ref_type','pos_sale').eq('ref_id',exchangeId).order('id').range(from,to));await current();
+  let rows:any[];
+  if(finance) rows=await pageAll<any>((from,to)=>client.from('ledger_events').select(columns).eq('store_id',store).eq('kind','sale').eq('ref_type','pos_sale').eq('ref_id',exchangeId).order('id').range(from,to));
+  else {const {data,error}=await client.rpc('read_pos_headers',{p_store:store,p_ids:[],p_exchange:exchangeId});if(error)throw new Error(error.message);rows=data??[];}
+  await current();
   const groups=groupPosHistory(rows.map(header));
   if(groups.length!==1||groups[0].incomplete||!groups[0].events.some(e=>e.id===selected.id))throw new Error('لم تكتمل قراءة طرفي الاستبدال؛ أعد المحاولة دون تسجيل عملية جديدة.');
   legs=groups[0].events;kind='exchange';
@@ -37,7 +45,10 @@ export async function readPosReceipt(eventId:string):Promise<PosReceipt> {
  const returned=legs.find(e=>e.payload.returnOfEventId),sold=legs.find(e=>!e.payload.returnOfEventId);
  const source=returned?await load(String(returned.payload.returnOfEventId)):undefined;
  if(source?.payload.returnOfEventId)throw new Error('هوية فاتورة الأصل تحتاج مراجعة.');
- const ids=legs.map(e=>e.id),lines=await pageAll<any>((from,to)=>client.from('ledger_lines').select('id,event_id,account,subject_id,amount_delta').eq('store_id',store).in('event_id',ids).order('id').range(from,to));await current();
+ const ids=legs.map(e=>e.id);let lines:any[];
+ if(finance) lines=await pageAll<any>((from,to)=>client.from('ledger_lines').select('id,event_id,account,subject_id,amount_delta').eq('store_id',store).in('event_id',ids).order('id').range(from,to));
+ else {const {data,error}=await client.rpc('read_pos_lines',{p_store:store,p_ids:ids});if(error)throw new Error(error.message);lines=data??[];}
+ await current();
  const sum=(account:string,id?:string)=>integer(lines.filter(l=>l.account===account&&(!id||l.event_id===id)).reduce((n,l)=>integer(n+integer(l.amount_delta)),0));
  if(!lines.some(l=>l.account==='revenue')||legs.some(e=>!lines.some(l=>l.event_id===e.id&&l.account==='wallet')))throw new Error('حركات الإيصال غير مكتملة؛ أعد القراءة.');
  const refund=returned?-sum('revenue',returned.id):0,replacement=sold?sum('revenue',sold.id):0,net=sum('wallet'),revenue=sum('revenue'),cogs=sum('cogs');

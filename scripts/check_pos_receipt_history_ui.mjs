@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
 import vm from 'node:vm';
-import {uiHarness} from './helpers/ui-harness.mjs';
+import {uiHarness as realUiHarness} from './helpers/ui-harness.mjs';
+// Historical ADMIN receipt tests supply an explicit UI identity. Database
+// authorization is tested separately with real authenticated local clients.
+const uiHarness=stubs=>realUiHarness({'@/store/useAuthStore':{useAuthStore:Object.assign(s=>s({userRole:'ADMIN'}),{getState:()=>({userRole:'ADMIN'})})},...stubs});
 import {groupPosHistory,posHeaderNet} from '../src/lib/posHistory.ts';
 const event=(id,payload,extra={})=>({id,storeId:'s',kind:'sale',refType:'pos_sale',occurredAt:'2026-10-14T00:00:00Z',payload,...extra});
 const legs=(price=320)=>[event('x',{exchangeId:'x',exchangeLeg:'return',returnOfEventId:'original',replacementEventId:'x:replacement',items:[{productName:'Saved original',quantity:-1,unitPrice:270}],sourceDocumentNumber:'BS-P001'},{refId:'x'}),event('x:replacement',{exchangeId:'x',exchangeLeg:'replacement',returnEventId:'x',exchangeSourceEventId:'original',documentNumber:'BS-P002',items:[{productName:'Saved replacement',quantity:1,unitPrice:price}]},{refId:'x'})];

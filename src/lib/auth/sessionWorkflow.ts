@@ -13,9 +13,9 @@
 
 import { checkLeakedPassword, LEAKED_PASSWORD_MESSAGE_AR } from "@/lib/security";
 import { getOperationMode, getSupabaseClient } from "@/lib/supabase";
-import { toAppRole, type AppRole } from "@/lib/roles";
-import { clearStoreIdCache } from "@/services/api/storeContext";
+import { APP_ROLES, toAppRole, type AppRole } from "@/lib/roles";
 import { useAuthStore } from "@/store/useAuthStore";
+import { reconcileSupabaseSession, suspendVerifiedAccess } from "@/lib/auth/useSessionReconciliation";
 import {
   BUSINESS_PROFILE_TO_BUSINESS_TYPE,
   BUSINESS_TYPE_TO_MODE,
@@ -86,6 +86,7 @@ function hydrateAfterLogin(prefix: string): void {
 export async function establishSupabaseSession(
   input: EstablishSessionInput,
 ): Promise<SessionWorkflowResult> {
+  suspendVerifiedAccess();
   const supabase = getSupabaseClient();
   if (!supabase) {
     return {
@@ -95,11 +96,15 @@ export async function establishSupabaseSession(
     };
   }
 
-  let { data: membership } = await supabase
+  let { data: membership, error: membershipError } = await supabase
     .from("store_members")
     .select("role")
     .eq("user_id", input.userId)
     .maybeSingle();
+
+  if (membershipError) {
+    return {success:false,code:"membership_missing",message:"تعذّر التحقق من صلاحيات المتجر. أعد المحاولة؛ لم يتم منح أي وصول."};
+  }
 
   // ── The System Owner is a GLOBAL identity, asked about first ──────────────
   //
@@ -126,7 +131,6 @@ export async function establishSupabaseSession(
   } catch {
     isSystemOwner = false;
   }
-  useAuthStore.getState().setSystemOwner(isSystemOwner);
 
   // Identity is global; the store-less SESSION is a surface decision. Declared
   // here because both membership branches below consult it.
@@ -154,6 +158,7 @@ export async function establishSupabaseSession(
         .eq("user_id", input.userId)
         .maybeSingle();
       membership = reread.data;
+      membershipError = reread.error;
     }
   }
 
@@ -173,6 +178,15 @@ export async function establishSupabaseSession(
     };
   }
 
+  if (membershipError || (!membership && !systemOwnerExempt) ||
+      (membership && !(APP_ROLES as readonly string[]).includes(membership.role))) {
+    return {success:false,code:"membership_missing",message:"لم يتم التحقق من عضوية المتجر وصلاحياته. تواصل مع مدير المتجر."};
+  }
+  const latest = await supabase.auth.getSession();
+  if (latest.error || latest.data.session?.user.id !== input.userId) {
+    return {success:false,code:"session_unavailable",message:"تغيّرت جلسة الدخول. أعد المحاولة بالحساب الحالي."};
+  }
+
   // `membership` is legitimately null for a System Owner who belongs to no
   // store, and was ALSO reachable as null on desktop's `claim` path when an
   // older `claim_store` returned an empty response. This line used to be
@@ -185,24 +199,13 @@ export async function establishSupabaseSession(
   // false for them everywhere, so every store-scoped read and write is refused
   // by Postgres no matter what this client-side role says. Global authority
   // travels in `isSystemOwner`, not in here.
-  const role = toAppRole(membership?.role ?? null);
-  useAuthStore.getState().setSession({
-    token: input.accessToken,
-    expires_at: new Date(input.expiresAt ? input.expiresAt * 1000 : Date.now() + 3600000) as never,
-    machine_id: "cloud-device",
-    user: {
-      id: input.userId,
-      username: input.username,
-      role,
-      is_active: true,
-      created_at: new Date() as never,
-      must_change_password: false,
-    },
-  } as never);
-
-  // Tenancy is derived from the signed-in session. A previous user's cached
-  // value must not survive a successful login.
-  clearStoreIdCache();
+  // Login and refresh commit through the same generation-checked resolver.
+  // A delayed login answer must not overwrite a newer role/session answer.
+  const reconciled = await reconcileSupabaseSession();
+  if (reconciled !== "authenticated") {
+    return {success:false,code:"session_unavailable",message:"تعذّر تأكيد صلاحيات الجلسة الحالية. أعد المحاولة."};
+  }
+  const role = toAppRole(useAuthStore.getState().userRole);
 
   // Keep desktop's current two post-login hydration opportunities exactly as
   // they are: one after identity is established and one after profile state is

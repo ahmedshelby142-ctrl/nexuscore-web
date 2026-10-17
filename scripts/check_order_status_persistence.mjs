@@ -9,6 +9,7 @@ function setup() {
   const identity={storeId:'synthetic-store',deviceId:'synthetic-device'};
   const query={eq(k,v){patches.at(-1).filters.push([k,v]);return this;},select(){return this;},single(){return wait;}};
   const h=uiHarness({
+    '@/store/useAuthStore':{useAuthStore:{getState:()=>({userRole:'ADMIN'})}},
     'zustand/middleware':{persist:creator=>creator},
     './useBusinessStore':{useBusinessStore:{getState:()=>({})}},
     './useCustomerStore':{useCustomerStore:{getState:()=>({})}},

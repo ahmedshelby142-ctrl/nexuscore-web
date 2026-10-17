@@ -33,6 +33,8 @@
  * in `src/mobile/navigation/mobileCapabilities.ts` instead.
  */
 export type AppRole =
+  // Frontend denial state only. Never an assignable store_members role.
+  | "UNVERIFIED"
   | "ADMIN"
   | "CASHIER_ONLY"
   | "POS_ECOMMERCE"
@@ -51,6 +53,7 @@ export const APP_ROLES: readonly AppRole[] = [
 
 /** What each role is called on screen. Arabic only — this reaches the user. */
 export const ROLE_LABELS: Record<AppRole, string> = {
+  UNVERIFIED: "لم يتم التحقق من الصلاحية",
   ADMIN: "مدير النظام",
   CASHIER_ONLY: "كاشير فقط",
   POS_ECOMMERCE: "كاشير وأونلاين",
@@ -61,6 +64,7 @@ export const ROLE_LABELS: Record<AppRole, string> = {
 
 /** One line describing the access each role gets, for the invite dropdown. */
 export const ROLE_DESCRIPTIONS: Record<AppRole, string> = {
+  UNVERIFIED: "تعذّر التحقق من صلاحيات الحساب؛ الوصول التشغيلي متوقف مؤقتًا",
   ADMIN: "صلاحية كاملة على كل الشاشات والإعدادات",
   CASHIER_ONLY: "نقطة البيع والفواتير والمرتجعات المسموحة فقط؛ أسماء وسائل الدفع بدون أرصدة الخزائن، وبدون أونلاين أو إدارة المالية",
   POS_ECOMMERCE: "نقطة البيع، الطلبات، المتجر الإلكتروني، وقاعدة العملاء؛ بدون أرصدة الشركة أو إدارة المالية",
@@ -119,6 +123,7 @@ const ROUTE_ACCESS: Record<string, readonly AppRole[]> = {
  * Never a screen the role cannot open — a redirect loop is worse than a denial.
  */
 const ROLE_HOME: Record<AppRole, string> = {
+  UNVERIFIED: "/preferences",
   ADMIN: "/",
   CASHIER_ONLY: "/pos",
   POS_ECOMMERCE: "/pos",
@@ -157,19 +162,19 @@ const LEGACY_ROLE_MAP: Record<string, AppRole> = {
 /**
  * Any stored role string → one of the fixed roles.
  *
- * Unknown values land on `ECOMMERCE_ONLY`, the least privileged role, rather
- * than throwing or defaulting to admin. A row with a typo in it must not open
- * the safe.
+ * Missing/unknown values have no operational authority. Online Only is NOT
+ * a safe fallback for a Cashier Only account: it grants different workflows.
  */
 export function toAppRole(role: string | null | undefined): AppRole {
-  if (!role) return "ECOMMERCE_ONLY";
+  if (!role) return "UNVERIFIED";
   if ((APP_ROLES as readonly string[]).includes(role)) return role as AppRole;
-  return LEGACY_ROLE_MAP[role] ?? "ECOMMERCE_ONLY";
+  return LEGACY_ROLE_MAP[role] ?? "UNVERIFIED";
 }
 
 /** Is this role allowed to open this path? */
 export function canAccess(role: string | null | undefined, path: string): boolean {
   const app = toAppRole(role);
+  if (app === "UNVERIFIED") return path.split("?")[0] === "/preferences";
   if (app === "ADMIN") return true;
 
   // Match the top-level segment so `/orders/123` resolves like `/orders`.
@@ -237,19 +242,13 @@ export function canReturnWholesale(role: string | null | undefined): boolean {
  * May this role see what the shop PAID — unit cost, stock value, margin,
  * courier commission, COGS?
  *
- * MODERATOR is the operations supervisor: it follows orders, stock, shipments
- * and customers, and it keeps every SELLING figure (price, total, COD,
- * shipping fee). Cost is the owner's and finance's. Every other role keeps
- * exactly what it saw before this rule existed.
- *
- * This decides what the app READS and SHOWS. The boundary is the database:
- * since migration 048 the financial SELECT policies require
- * `can_read_store_finance` (the same four roles), so a Moderator's own token
- * cannot read the ledger, order cost or the financial tables either — see
- * §6 of `docs/ROLE_PERMISSIONS_AUDIT.md`.
+ * Operational staff keep selling prices, quantities and customer amounts.
+ * Inventory acquisition cost/valuation and profit require the existing
+ * ADMIN/ACCOUNTANT financial permission. The database enforces this separately
+ * in its projections and trusted commands; hiding a component is insufficient.
  */
 export function canViewCost(role: string | null | undefined): boolean {
-  return toAppRole(role) !== "MODERATOR";
+  return canViewStoreFinance(role);
 }
 
 /** Company balances are independent of operational receipt amounts/costs. */
@@ -273,5 +272,5 @@ export function canReadBalance(role: string | null | undefined, account: string)
  * rows to it. It now loads and subscribes to nothing.
  */
 export function readsDesktopBusinessData(role: string | null | undefined): boolean {
-  return toAppRole(role) !== "MODERATOR";
+  return !["MODERATOR", "UNVERIFIED"].includes(toAppRole(role));
 }

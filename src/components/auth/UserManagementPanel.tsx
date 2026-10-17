@@ -39,6 +39,7 @@ const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 /** The colour each role wears in the table. */
 const ROLE_TONE: Record<AppRole, string> = {
+  UNVERIFIED: "bg-slate-100 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300",
   ADMIN: "bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300",
   CASHIER_ONLY: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-300",
   POS_ECOMMERCE: "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300",

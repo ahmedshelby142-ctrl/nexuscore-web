@@ -148,6 +148,7 @@ test("place_order inserts the row then appends, in one function, idempotently", 
 globalThis.__rpc = null;
 const stub = (src) => `data:text/javascript,${encodeURIComponent(src)}`;
 const STUBS = {
+  "@/store/useAuthStore":stub(`export const useAuthStore={getState:()=>({userRole:"ADMIN"})};`),
   "@/lib/supabase": stub(`export const getSupabaseClient = () => ({ rpc: (...a) => globalThis.__rpc(...a) }); export const isCloudSyncMode = () => true;`),
   "@/services/api/storeContext": stub(`export const getSyncIdentity = async () => ({ storeId: "S1", deviceId: "D1" }); export const getActiveStoreId = async () => "S1";`),
   "@/lib/ledger": stub(`export const prepareEvent = async (e) => ({ id: "EV", store_id: "S1", kind: e.kind, ref_type: e.refType, ref_id: e.refId, lines: e.lines });`),

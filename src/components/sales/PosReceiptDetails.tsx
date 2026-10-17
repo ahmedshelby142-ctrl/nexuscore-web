@@ -28,7 +28,7 @@ export function PosReceiptDetails({eventId}:{eventId:string}) {
   {receipt.kind!=='refund'&&<p>قيمة {receipt.kind==='exchange'?'البديل':'البيع'} بعد الخصم: {formatMoney(receipt.replacementPiastres/100)}</p>}
   <p className="font-semibold">{posCashLabel(receipt.netPiastres)}{receipt.netPiastres?`: ${formatMoney(Math.abs(receipt.netPiastres)/100)}`:''}</p>
   {receipt.wallets.filter(w=>w.piastres!==0).map(w=><p key={w.id}>{WALLET_LABELS[w.id as WalletType]??w.id}: {formatMoney(w.piastres/100)}</p>)}
-  {showFinance&&<details><summary>أثر التكلفة والربح المسجل</summary><p>أثر COGS: {formatMoney(receipt.cogsPiastres/100)}</p><p>أثر الربح: {formatMoney(receipt.profitPiastres/100)}</p></details>}
+  {showFinance&&receipt.cogsPiastres!==null&&receipt.profitPiastres!==null&&<details><summary>أثر التكلفة والربح المسجل</summary><p>أثر COGS: {formatMoney(receipt.cogsPiastres/100)}</p><p>أثر الربح: {formatMoney(receipt.profitPiastres/100)}</p></details>}
   <Button variant="outline" onClick={()=>printSavedPosReceipt(receipt)}>طباعة الإيصال المحفوظ</Button>
  </section>;
 }

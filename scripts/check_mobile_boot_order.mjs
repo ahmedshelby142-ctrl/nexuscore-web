@@ -78,14 +78,14 @@ test("while the session is unknown the gate renders a state, not the app", () =>
     checking < outlet,
     "an <Outlet /> reached before the checking branch mounts every reader anonymously",
   );
-  assert.match(code, /if \(sessionState === "checking"\) \{\s*return <MobileAccessState/);
+  assert.match(code, /if \(sessionState === "checking" \|\| \(sessionState === "authenticated" && !verified\)\) \{\s*return <MobileAccessState/);
 });
 
 test("no session means a redirect, never a render", () => {
   const code = strip(gate);
   assert.match(
     code,
-    /if \(sessionState === "unavailable" \|\| !isAuthenticated\) \{\s*return <Navigate to="\/login"/,
+    /if \(sessionState !== "authenticated" \|\| !isAuthenticated\) \{\s*return <Navigate to="\/login"/,
     "an unauthenticated visitor must reach /login, not a screen that queries",
   );
   const redirect = code.indexOf('Navigate to="/login"');
@@ -202,8 +202,9 @@ test("signing in drops the previous user's cached store", () => {
   // using one browser must not share it — the second would write rows tagged
   // with the first one's shop.
   const code = strip(workflow);
-  assert.match(code, /clearStoreIdCache\(\)/, "the session workflow must clear it");
-  const cleared = code.indexOf("clearStoreIdCache()");
+  assert.match(code, /suspendVerifiedAccess\(\)/, "the shared verification workflow clears old identity/cache");
+  assert.match(strip(reconciliation), /clearStoreIdCache\(\)/);
+  const cleared = code.indexOf("suspendVerifiedAccess()");
   assert.ok(cleared > -1);
   // The CALL sites, not the `function hydrateAfterLogin` declaration that
   // precedes them — the declaration's position says nothing about ordering.

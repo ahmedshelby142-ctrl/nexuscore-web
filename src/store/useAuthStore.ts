@@ -87,6 +87,10 @@ interface AuthState {
    * routes — see `SystemOwnerGate`.
    */
   isSystemOwner: boolean;
+  /** True only after the current identity's server membership was resolved. */
+  permissionsVerified: boolean;
+  accessRevision: number;
+  beginVerification: () => void;
 
   // ── Legacy actions (kept for backward compat) ─────────────────
   setUserRole: (role: UserRole) => void;
@@ -122,7 +126,7 @@ function legacyDefault(): Pick<
   | "activeBusinessProfile"
 > {
   return {
-    userRole: "owner",
+    userRole: "UNVERIFIED",
     businessType: "retail",
     // Derived from configuration, never chosen: there is no local database to
     // fall back to, so "local" is not a mode this app has.
@@ -143,8 +147,17 @@ export const useAuthStore = create<AuthState>()(
       bootstrapped: false,
       sessionToken: null,
       isSystemOwner: false,
+      permissionsVerified: false,
+      accessRevision: 0,
+      beginVerification: () => set((s) => ({
+        accessRevision: s.accessRevision + 1,
+        permissionsVerified: false,
+        userRole: "UNVERIFIED",
+        isSystemOwner: false,
+        status: "checking",
+      })),
 
-      setUserRole: (role) => set({ userRole: role }),
+      setUserRole: (role) => set((s) => ({ userRole: role, permissionsVerified: false,accessRevision:s.accessRevision+1 })),
       setBusinessType: (type) => set({ businessType: type }),
       setOperationMode: (mode) => set({ operationMode: mode }),
       setBusinessProfile: (profile) =>
@@ -161,59 +174,78 @@ export const useAuthStore = create<AuthState>()(
        */
       setSession: (session) => {
         if (session) {
-          set({
+          set((s) => ({
+            accessRevision:s.accessRevision+(s.session?.user.id!==session.user.id||s.userRole!==session.user.role?1:0),
             session,
             sessionToken: session.token,
             username: session.user.username,
             userRole: session.user.role,
             isAuthenticated: true,
+            permissionsVerified: true,
             status: "online",
             lastError: null,
-          });
+          }));
         } else {
-          set({
+          set((s) => ({
+            accessRevision:s.accessRevision+1,
             session: null,
             sessionToken: null,
             isAuthenticated: false,
             status: "idle",
             lastError: null,
             username: "",
-            // Keep userRole / businessType / activeBusinessProfile as
-            // they are — the user might still be looking at the app
-            // pre-login.
-          });
+            userRole: "UNVERIFIED",
+            permissionsVerified: false,
+            isSystemOwner: false,
+          }));
         }
       },
       setError: (lastError) => set({ lastError, status: lastError ? "error" : "idle" }),
       setBootstrapped: (bootstrapped) => set({ bootstrapped }),
       logout: () =>
-        set({
+        set((s) => ({
+          accessRevision:s.accessRevision+1,
           session: null,
           sessionToken: null,
           isAuthenticated: false,
           status: "idle",
           lastError: null,
           username: "",
+          userRole: "UNVERIFIED",
+          permissionsVerified: false,
           // Cleared on the way out: the next person at this machine is not the
           // System Owner until the server says so again.
           isSystemOwner: false,
-        }),
+        })),
     }),
     {
       name: "auth-storage-v2",
       partialize: (s) => ({
-        // Persist the active session so reloads keep the user logged in.
-        session: s.session,
-        sessionToken: s.sessionToken,
+        // Supabase persists its own session. A local permission mirror is
+        // never evidence for the next identity or the next browser boot.
         bootstrapped: s.bootstrapped,
-        // Legacy fields — kept for backward compat with any in-flight code.
-        userRole: s.userRole,
         businessType: s.businessType,
         operationMode: s.operationMode,
-        isAuthenticated: s.isAuthenticated,
-        username: s.username,
         activeBusinessProfile: s.activeBusinessProfile,
       }),
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<AuthState>;
+        return {
+          ...current,
+          bootstrapped: saved.bootstrapped ?? current.bootstrapped,
+          businessType: saved.businessType ?? current.businessType,
+          activeBusinessProfile: saved.activeBusinessProfile ?? current.activeBusinessProfile,
+          // Ignore old auth-storage-v2 session/role/token flags entirely.
+          session: null,
+          sessionToken: null,
+          userRole: "UNVERIFIED",
+          isAuthenticated: false,
+          permissionsVerified: false,
+          isSystemOwner: false,
+          username: "",
+          status: "idle",
+        };
+      },
     },
   ),
 );

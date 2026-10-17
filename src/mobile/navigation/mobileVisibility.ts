@@ -13,10 +13,10 @@ import { useAuthStore } from "@/store/useAuthStore";
  *             customer: record ids, revenue/remittance flags, the books' own
  *             reconciliation check, the customer's money summary.
  *
- * Today both are "every role but the Moderator", so `internal` follows `cost`.
+ * Both require the existing ADMIN/ACCOUNTANT financial permission.
  * They are separate so a future role (a dispatcher who needs ids but not
  * margins, say) is one line here, not a new branch in every screen. Neither
- * grants anything: the database withholds cost from a Moderator regardless.
+ * grants anything: the database withholds inventory cost from staff regardless.
  */
 export interface MobileVisibility {
   readonly cost: boolean;

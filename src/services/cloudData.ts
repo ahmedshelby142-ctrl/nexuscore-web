@@ -37,6 +37,7 @@ import { toRemoteRow, fromRemoteRow } from "./api/fieldMapping";
 import { getSyncIdentity } from "./api/storeContext";
 import { isSyncedTable, CLOUD_SCHEMA } from "./api/cloudSchema";
 import { pageAll } from "@/lib/pageAll";
+import {operationalSource,captureReadAuthority,assertReadAuthority} from "./operationalSource";
 
 export class CloudUnavailable extends Error {
   constructor(message: string) {
@@ -62,6 +63,7 @@ const noTombstone = new Set<string>();
  * column and the tombstone filter starts working with no code change.
  */
 export async function cloudList(table: string): Promise<any[]> {
+  const authority=captureReadAuthority();
   const sb = getSupabaseClient();
   if (!sb) throw new CloudUnavailable("لا يوجد اتصال بالسحابة");
 
@@ -71,9 +73,10 @@ export async function cloudList(table: string): Promise<any[]> {
       // Paged: PostgREST answers at most 1000 rows, and a truncated page is
       // indistinguishable from a table that short. See `pageAll`.
       const rows = await pageAll<any>((from, to) => {
-        const query = sb.from(table).select("*").range(from, to);
+        const query = sb.from(operationalSource(table)).select("*").range(from, to);
         return withTombstone ? query.is("deleted_at", null) : query;
       });
+      assertReadAuthority(authority);
       return rows.map((row) => fromRemoteRow(table, row));
     } catch (e: any) {
       const message = String(e?.message ?? e);

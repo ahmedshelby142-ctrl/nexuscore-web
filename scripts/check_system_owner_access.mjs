@@ -93,7 +93,7 @@ test("the store-less session is opt-in, and only where the manager lives", () =>
     "mobile has no System Owner surface and must keep failing closed",
   );
   // And the identity itself is still resolved everywhere, on every surface.
-  assert.match(workflow, /setSystemOwner\(isSystemOwner\)/);
+  assert.match(workflow, /await reconcileSupabaseSession\(\)/, "login uses the same verified global identity resolver as refresh");
 });
 
 test("a store-less session does not crash on a null membership", () => {
@@ -110,7 +110,8 @@ test("a store-less session does not crash on a null membership", () => {
     !/toAppRole\(membership\.role\)/.test(establish),
     "membership is legitimately null for an owner with no store",
   );
-  assert.match(establish, /toAppRole\(membership\?\.role \?\? null\)/, "least privilege, no crash");
+  assert.match(establish, /await reconcileSupabaseSession\(\)/, "a store-less owner delegates to the same null-safe verified resolver");
+  assert.match(establish, /toAppRole\(useAuthStore\.getState\(\)\.userRole\)/, "routing uses the committed authoritative role");
 });
 
 test("the global identity is stored separately from the store role", () => {
@@ -126,7 +127,7 @@ test("the global identity is stored separately from the store role", () => {
 test("signing out forgets that this machine held a System Owner", () => {
   // Anchored on the implementation's `set({`, because a bare "logout: () =>"
   // matches the interface declaration higher up the file first.
-  const impl = authStore.search(/logout: \(\) =>\s*\r?\n\s*set\(\{/);
+  const impl = authStore.search(/logout: \(\) =>\s*\r?\n\s*set\(\(s\) => \(\{/);
   assert.ok(impl > -1, "the logout implementation must be found, not its type declaration");
   assert.match(authStore.slice(impl, impl + 500), /isSystemOwner: false/, "the next user is not the owner");
 });
@@ -166,9 +167,10 @@ test("the identity survives a refresh, because it is re-asked on every boot", ()
   );
   assert.match(
     reconcile,
-    /setSystemOwner\(!error && owner === true\)/,
+    /isSystemOwner = !error && owner === true/,
     "and record it the same fail-closed way the login path does",
   );
+  assert.match(reconcile, /setSystemOwner\(isSystemOwner\)/, "commit global identity only with the current verified session");
   // A boot with no session must actively clear it, not leave a stale true.
   const noSession = reconcile.indexOf("if (!data.session)");
   const cleared = reconcile.indexOf("setSystemOwner(false)");

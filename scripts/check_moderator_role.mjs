@@ -70,7 +70,8 @@ test("the session maps roles through toAppRole and nothing else", () => {
   // The System Owner bug was a second, parallel notion of who someone is. There
   // must be exactly one place a stored role string becomes an AppRole, so that
   // adding a fifth role needed no change here at all.
-  assert.match(sessionWorkflow, /const role = toAppRole\(membership\?\.role \?\? null\)/);
+  assert.match(sessionWorkflow, /const role = toAppRole\(useAuthStore\.getState\(\)\.userRole\)/);
+  assert.match(sessionWorkflow, /reconcileSupabaseSession\(\)/);
   assert.doesNotMatch(sessionWorkflow, /MODERATOR/, "a store role needs no special case in the session");
   // …and global authority still travels separately from the store role.
   assert.match(sessionWorkflow, /rpc\("is_system_owner"\)/);

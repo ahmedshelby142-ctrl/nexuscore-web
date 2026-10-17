@@ -988,7 +988,7 @@ test("logging out ends the Supabase session, not just the local flag", () => {
   assert.match(reconcile, /auth\.getSession\(\)/, "boot still reconciles against the real session");
   assert.match(
     reconcile,
-    /if \(session\)[\s\S]{0,400}setState\("authenticated"\)/,
-    "…and a session that APPEARS is reported too",
+    /if \(session\)[\s\S]{0,600}setState\("checking"\)/,
+    "…and an appearing session triggers verification without trusting a cached role",
   );
 });

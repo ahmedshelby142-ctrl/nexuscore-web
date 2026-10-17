@@ -63,6 +63,7 @@ export function getDeviceId(): string {
 
 let cached: SyncIdentity | null = null;
 let inflight: Promise<SyncIdentity | null> | null = null;
+let identityGeneration = 0;
 
 /**
  * The active store id, or null if nobody is signed in.
@@ -76,13 +77,15 @@ export async function getSyncIdentity(): Promise<SyncIdentity | null> {
   if (cached) return cached;
   if (inflight) return inflight;
 
+  const generation = identityGeneration;
   inflight = resolve()
     .then((identity) => {
+      if (generation !== identityGeneration) return null;
       cached = identity;
       return identity;
     })
     .finally(() => {
-      inflight = null;
+      if (generation === identityGeneration) inflight = null;
     });
 
   return inflight;
@@ -152,6 +155,7 @@ export function primeActiveStoreId(storeId: unknown): void {
  * and a stale cache would tag new rows with the previous one.
  */
 export function clearStoreIdCache(): void {
+  identityGeneration += 1;
   cached = null;
   inflight = null;
 }

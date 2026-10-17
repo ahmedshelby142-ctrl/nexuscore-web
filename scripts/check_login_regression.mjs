@@ -60,8 +60,8 @@ test("a session that APPEARS moves the state up, not only one that vanishes", ()
   assert.ok(listener.length > 0, "the auth-state listener must exist");
   assert.match(
     listener,
-    /if \(session\)[\s\S]{0,400}setState\("authenticated"\)/,
-    "a session-bearing event must resolve to authenticated",
+    /if \(session\)[\s\S]{0,600}setState\("checking"\)/,
+    "a session-bearing event must verify membership before authenticating",
   );
 });
 
@@ -85,7 +85,7 @@ test("the desktop guard requires BOTH halves, and still does", () => {
     /if \(sessionState !== "authenticated" \|\| !isAuthenticated\)/,
     "the server verdict AND the store flag",
   );
-  assert.match(GUARD, /if \(sessionState === "checking"\)/, "and it still holds while asking");
+  assert.match(GUARD, /sessionState === "checking" \|\| \(sessionState === "authenticated" && !verified\)/, "it holds until membership is verified");
 });
 
 test("mobile turns realtime on once the session is real", () => {
@@ -94,7 +94,8 @@ test("mobile turns realtime on once the session is real", () => {
   assert.match(MAPP, /useMobileRealtime\(sessionState === "authenticated"\)/);
   // The gate's own condition is unchanged — mobile fails closed on
   // `unavailable` and on a missing local flag.
-  assert.match(MGATE, /if \(sessionState === "unavailable" \|\| !isAuthenticated\)/);
+  assert.match(MGATE, /if \(sessionState !== "authenticated" \|\| !isAuthenticated\)/);
+  assert.match(MGATE, /sessionState === "unavailable"/);
 });
 
 test("both surfaces read ONE reconciliation, not two", () => {
@@ -142,7 +143,7 @@ test("the licence gate sits BELOW the session gate, not inside it", () => {
 test("a store-less System Owner is not signed out by reconciliation", () => {
   assert.match(
     RECONCILE,
-    /!membership && !useAuthStore\.getState\(\)\.isSystemOwner/,
+    /!membership && !isSystemOwner/,
     "the global identity is exempt from the membership sign-out",
   );
 });

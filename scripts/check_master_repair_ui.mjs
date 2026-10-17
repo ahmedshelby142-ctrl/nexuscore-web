@@ -85,7 +85,7 @@ test('I delivery reader publishes current exact-tenant customer debt with LWW; f
  for(const mode of ['normal','newer','changedTenant','failedRead']) {
   let tenant='store',calls=0,state={orders:[{id:'o',updated_at:1}]},customers={customers:[{id:'c',returned_orders_count:9,updated_at:mode==='newer'?99:1}]};
   const result={eventId:'e',orderIds:['o'],customer:{id:'c',store_id:'store',returned_orders_count:1,updated_at:2}};
-  const stubs={'@/lib/financialCommand':{runFinancialCommand:async(command,input,scope,storeId)=>{assert.equal(storeId,'store');calls++;if(mode==='changedTenant')tenant='other';return result},resolvePendingFinancialCommand:async()=>undefined},
+  const stubs={'@/store/useAuthStore':{useAuthStore:{getState:()=>({userRole:'ADMIN'})}},'@/lib/financialCommand':{runFinancialCommand:async(command,input,scope,storeId)=>{assert.equal(storeId,'store');calls++;if(mode==='changedTenant')tenant='other';return result},resolvePendingFinancialCommand:async()=>undefined},
    '@/services/api/storeContext':{getSyncIdentity:async()=>({storeId:tenant})},'@/services/api/fieldMapping':{fromRemoteRow:(_table,row)=>row},
    '@/store/useOrderStore':{useOrderStore:{setState:fn=>state={...state,...fn(state)}}},'@/store/useCustomerStore':{useCustomerStore:{setState:fn=>customers={...customers,...fn(customers)}}},
    '@/lib/supabase':{getSupabaseClient:()=>({from(table){const query={select(){return query},eq(){return query},async in(){if(mode==='failedRead')throw Error('SYNTHETIC_READ_FAILURE');return{data:[{id:'o',updated_at:3}],error:null}},async single(){return{data:{id:'c',store_id:'store',returned_orders_count:0,updated_at:3},error:null}}};return query}})}};
@@ -413,7 +413,7 @@ test("D1 actual receipt picker passes persisted customer ID and snapshot with th
   let selected;
   const container=({children})=>React.createElement("div",null,children);
   const modal=loader({
-    "@/store/useAuthStore":{useAuthStore:selector=>selector({userRole:"ADMIN"})},
+    "@/store/useAuthStore":{useAuthStore:Object.assign(selector=>selector({userRole:"ADMIN"}),{getState:()=>({userRole:"ADMIN"})})},
     "@/components/ui/dialog":Object.fromEntries(["Dialog","DialogContent","DialogHeader","DialogTitle","DialogDescription","DialogTrigger"].map(k=>[k,container])),
     "@/components/ui/button":{Button:({children,variant,size,...p})=>React.createElement("button",p,children)},
     "@/components/ui/input":{Input:p=>React.createElement("input",p)},

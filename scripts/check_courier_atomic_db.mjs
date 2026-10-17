@@ -130,7 +130,7 @@ test('actual command/client: lost committed response/reload replays same identit
  globalThis.sessionStorage={getItem:k=>storage[k]??null,setItem:(k,v)=>storage[k]=v,removeItem:k=>delete storage[k]};
  const client={async rpc(name,args){assert.equal(name,'record_courier_batch');calls.push(args.p_id);const data=await settle(args.p_input,args.p_id);if(lose){lose=false;throw Error('SYNTHETIC_RESPONSE_LOSS')}return {data,error:null}},
   from(table){assert.equal(table,'orders');const q={select(){return q},eq(k,v){assert.equal(k,'store_id');assert.equal(v,db.store);return q},async in(k,ids){assert.equal(k,'id');if(failRead)throw Error('SYNTHETIC_READ_FAIL');return {data:await Promise.all(ids.map(row)),error:null}}};return q}};
- const stubs={'@/store/useCustomerStore':{useCustomerStore:{setState:()=>{}}},'@/lib/supabase':{getSupabaseClient:()=>client},'@/services/api/storeContext':{getSyncIdentity:async()=>({storeId:db.store,deviceId:db.device})},
+ const stubs={'@/store/useAuthStore':{useAuthStore:{getState:()=>({userRole:'ADMIN'})}},'@/store/useCustomerStore':{useCustomerStore:{setState:()=>{}}},'@/lib/supabase':{getSupabaseClient:()=>client},'@/services/api/storeContext':{getSyncIdentity:async()=>({storeId:db.store,deviceId:db.device})},
   '@/services/api/fieldMapping':{fromRemoteRow:(_t,r)=>r},'@/store/useOrderStore':{useOrderStore:{setState:fn=>state={...state,...fn(state)}}}};
  const source=load('src/lib/courierSettlement.ts',stubs),result=await source.commitCourierBatch(req);
  assert.equal(result.replayed,true);assert.equal(new Set(calls).size,1);assert.ok(state.orders[0].codSettledAt);
@@ -218,7 +218,7 @@ test('actual delivery client recovers lost response before checking a now-delive
  const o=await seed({deliver:false}),calls=[],storage={};let lose=true,state={orders:[await row(o.id)]};
  globalThis.sessionStorage={getItem:k=>storage[k]??null,setItem:(k,v)=>storage[k]=v,removeItem:k=>delete storage[k]};
  const client={async rpc(name,args){assert.equal(name,'record_order_delivery');calls.push(args.p_id);const data=await delivery(args.p_input,args.p_id);if(lose){lose=false;throw Error('SYNTHETIC_RESPONSE_LOSS')}return {data,error:null}},from(){const q={select(){return q},eq(){return q},async in(k,ids){return {data:await Promise.all(ids.map(row)),error:null}}};return q}};
- const stubs={'@/store/useCustomerStore':{useCustomerStore:{setState:()=>{}}},'@/lib/supabase':{getSupabaseClient:()=>client},'@/services/api/storeContext':{getSyncIdentity:async()=>({storeId:db.store,deviceId:db.device})},'@/services/api/fieldMapping':{fromRemoteRow:(_t,r)=>r},'@/store/useOrderStore':{useOrderStore:{setState:fn=>state={...state,...fn(state)}}}};
+ const stubs={'@/store/useAuthStore':{useAuthStore:{getState:()=>({userRole:'ADMIN'})}},'@/store/useCustomerStore':{useCustomerStore:{setState:()=>{}}},'@/lib/supabase':{getSupabaseClient:()=>client},'@/services/api/storeContext':{getSyncIdentity:async()=>({storeId:db.store,deviceId:db.device})},'@/services/api/fieldMapping':{fromRemoteRow:(_t,r)=>r},'@/store/useOrderStore':{useOrderStore:{setState:fn=>state={...state,...fn(state)}}}};
  const r=await load('src/lib/courierSettlement.ts',stubs).commitOrderDelivery({orderId:o.id,settle:true,wallet:'inStoreSafe',netReceived:100});
  assert.equal(r.replayed,true);assert.equal(new Set(calls).size,1);assert.equal(state.orders[0].status,'delivered');assert.ok(state.orders[0].codSettledAt);
  const saved=(await db.admin.query('select command_request from ledger_events where id=$1',[r.eventId])).rows[0].command_request;

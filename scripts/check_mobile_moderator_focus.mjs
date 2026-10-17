@@ -158,7 +158,7 @@ test("no new permission, no write: the gate is the existing canViewCost, and the
   const policy = read("src/mobile/navigation/mobileVisibility.ts");
   assert.match(policy, /const cost = canViewCost\(role\);\n\s*visibility = Object\.freeze\(\{ cost, internal: cost \}\);/);
   assert.match(policy, /return mobileVisibilityFor\(useAuthStore\(\(s\) => s\.userRole\)\);/);
-  assert.match(read("src/lib/roles.ts"), /export function canViewCost\(role: string \| null \| undefined\): boolean \{\s*return toAppRole\(role\) !== "MODERATOR";/);
+  assert.match(read("src/lib/roles.ts"), /export function canViewCost\(role: string \| null \| undefined\): boolean \{\s*return canViewStoreFinance\(role\);/);
   // Cost stays withheld by the database for the Moderator too (047/048).
   assert.match(read("src/mobile/data/mobileReaders.ts"), /return viewerSeesCost\(\) \? `\$\{ORDER_COLUMNS\},courierFee,codServiceFee` : ORDER_COLUMNS;/);
 });

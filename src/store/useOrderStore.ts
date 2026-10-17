@@ -20,6 +20,8 @@ import { fromRemoteRow, toRemoteRow } from "@/services/api/fieldMapping";
 import { prepareEvent, type NewEvent } from "@/lib/ledger";
 import {runFinancialCommand,resolvePendingFinancialCommand} from "@/lib/financialCommand";
 import { toast } from "sonner";
+import {canViewStoreFinance} from "@/lib/roles";
+import {useAuthStore} from "@/store/useAuthStore";
 
 
 /**
@@ -161,8 +163,10 @@ async function patchExistingOrder(id: string, updates: Partial<EcommerceOrder>, 
     const payload = toRemoteRow("orders", updates, {
       storeId: identity.storeId, deviceId: identity.deviceId, stamp: Date.now(),
     });
-    const { data, error } = await sb.from("orders").update(payload)
-      .eq("id", id).eq("store_id", identity.storeId).select().single();
+    const { data, error } = canViewStoreFinance(useAuthStore.getState().userRole)
+      ? await sb.from("orders").update(payload)
+        .eq("id", id).eq("store_id", identity.storeId).select().single()
+      : await sb.rpc("patch_operational_order",{p_store:identity.storeId,p_order:id,p_patch:payload});
     if (error) throw new Error(`[orders] ${error.message}`);
     if (!data) throw new Error("لم تصل الحالة المحفوظة للطلب");
     if ((await getSyncIdentity())?.storeId !== identity.storeId) throw new Error("تغيّر المتجر أثناء حفظ الطلب؛ حدّث الحالة للتحقق");

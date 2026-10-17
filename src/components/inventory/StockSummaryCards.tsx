@@ -17,6 +17,8 @@ import { figureOr, moneyFigure, type ReadState } from "@/lib/figure";
 import { useCollectionStatus } from "@/components/ui/collection-gate";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/store/useAuthStore";
+import { canViewStoreFinance } from "@/lib/roles";
 
 /** Which subset of products a screen is showing. */
 export type StockFilter = "all" | "low" | "out";
@@ -87,6 +89,7 @@ interface StockSummaryCardsProps {
 }
 
 export function StockSummaryCards({ products, value, onChange, costOf, read }: StockSummaryCardsProps) {
+  const showValuation = canViewStoreFinance(useAuthStore((s) => s.userRole));
   // The counts below are counts of the product LIST, which arrives by hydrate.
   // Before it lands — or when it fails — they are not zero, they are unknown.
   const { read: listRead } = useCollectionStatus(["products"]);
@@ -125,7 +128,7 @@ export function StockSummaryCards({ products, value, onChange, costOf, read }: S
     //
     // `costOf` is the same weighted average the row prints and the same one a
     // sale snapshots as `unit_cost`, so the card, the row and COGS agree.
-    totalValue += (qty || 0) * costOf(product.id);
+    if (showValuation) totalValue += (qty || 0) * costOf(product.id);
   }
 
   // Clicking the active filter clears it, so a card is a toggle rather than a
@@ -202,7 +205,7 @@ export function StockSummaryCards({ products, value, onChange, costOf, read }: S
             <div>
               <p className="text-xs tracking-wider text-muted-foreground">إجمالي قيمة المخزون</p>
               <p className="font-display text-3xl font-semibold mt-2">
-                {moneyFigure(totalValue, read, listRead)}
+                {showValuation ? moneyFigure(totalValue, read, listRead) : "للمصرّح لهم ماليًا فقط"}
               </p>
             </div>
             <div

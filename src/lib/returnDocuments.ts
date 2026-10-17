@@ -2,13 +2,14 @@ import { getSupabaseClient } from "@/lib/supabase";
 import { getSyncIdentity } from "@/services/api/storeContext";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import {operationalSource} from "@/services/operationalSource";
 
 /** Optional read after the server has committed the document with its ledger. */
 export async function refreshReturnDocuments() {
   try {
     const sb = getSupabaseClient(), identity = await getSyncIdentity();
     if (!sb || !identity) return;
-    const { data, error } = await sb.from("return_records").select("*")
+    const { data, error } = await sb.from(operationalSource("return_records")).select("*")
       .eq("store_id", identity.storeId).is("deleted_at", null).order("created_at", { ascending: false });
     if (error) throw error;
     if ((await getSyncIdentity())?.storeId !== identity.storeId) return;

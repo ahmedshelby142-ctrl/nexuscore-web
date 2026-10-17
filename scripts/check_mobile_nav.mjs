@@ -58,7 +58,7 @@ test("the shared filter is the same function the router enforces with", () => {
   assert.match(hook, /!item\.featureKey \|\| featureFlags\[item\.featureKey\]/);
   // canAccess must still short-circuit ADMIN and default unknown roles down.
   assert.match(roles, /if \(app === "ADMIN"\) return true;/);
-  assert.match(roles, /if \(!role\) return "ECOMMERCE_ONLY";/);
+  assert.match(roles, /if \(!role\) return "UNVERIFIED";/);
 });
 
 test("no route reaches the menu that is not in the navigation data", () => {

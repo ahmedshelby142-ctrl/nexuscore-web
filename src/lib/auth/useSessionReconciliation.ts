@@ -1,10 +1,25 @@
 import { useEffect, useState } from "react";
-import { toAppRole } from "@/lib/roles";
+import { APP_ROLES, toAppRole } from "@/lib/roles";
 import { getSupabaseClient, isCloudSyncMode } from "@/lib/supabase";
 import { useAuthStore } from "@/store/useAuthStore";
-import { primeActiveStoreId } from "@/services/api/storeContext";
+import { clearStoreIdCache, primeActiveStoreId } from "@/services/api/storeContext";
 
 export type SessionReconciliationState = "authenticated" | "unauthenticated" | "unavailable";
+
+let verificationGeneration = 0;
+
+/** Invalidates in-flight answers as well as the previous identity's UI rights. */
+export function suspendVerifiedAccess(): number {
+  const generation = ++verificationGeneration;
+  useAuthStore.getState().beginVerification();
+  clearStoreIdCache();
+  return generation;
+}
+
+function currentVerdict(): SessionReconciliationState {
+  const state = useAuthStore.getState();
+  return state.permissionsVerified && state.isAuthenticated ? "authenticated" : "unavailable";
+}
 
 /**
  * Make Zustand's local auth mirror agree with Supabase's real session.
@@ -13,13 +28,44 @@ export type SessionReconciliationState = "authenticated" | "unauthenticated" | "
  * independent mobile entry gets the same fail-closed session recovery without
  * mounting desktop data hydration or realtime business subscriptions.
  */
-export async function reconcileSupabaseSession(): Promise<SessionReconciliationState> {
+export async function reconcileSupabaseSession({ background = false }: { background?: boolean } = {}): Promise<SessionReconciliationState> {
+  // Periodic proof renewal for the same already verified identity must not
+  // unmount a cashier's live cart every30seconds. Boot/login/auth events and
+  // explicit role-change/focus checks always suspend access immediately.
+  const current = useAuthStore.getState();
+  const renewing = background && current.permissionsVerified && current.isAuthenticated;
+  const generation = renewing ? ++verificationGeneration : suspendVerifiedAccess();
+  try {
+    const result = await resolveVerifiedSession(generation);
+    if (result === "unavailable" && generation === verificationGeneration) {
+      useAuthStore.getState().beginVerification();
+      clearStoreIdCache();
+    }
+    return result;
+  } catch {
+    // Never restore a cached role on transport failure. Keep the draft, but
+    // leave every operational gate closed until a later verified answer.
+    if (generation !== verificationGeneration) return currentVerdict();
+    useAuthStore.getState().beginVerification();
+    clearStoreIdCache();
+    return "unavailable";
+  }
+}
+
+async function resolveVerifiedSession(generation: number): Promise<SessionReconciliationState> {
   if (!isCloudSyncMode()) return "unavailable";
 
   const supabase = getSupabaseClient();
   if (!supabase) return "unavailable";
 
-  const { data } = await supabase.auth.getSession();
+  const { data, error: authError } = await supabase.auth.getSession();
+  if (generation !== verificationGeneration) return currentVerdict();
+  if (authError) return "unavailable";
+  if (data.session && useAuthStore.getState().permissionsVerified &&
+      useAuthStore.getState().session?.user.id !== data.session.user.id) {
+    useAuthStore.getState().beginVerification();
+    clearStoreIdCache();
+  }
   if (!data.session) {
     if (useAuthStore.getState().isAuthenticated) {
       console.warn("[Auth] local session flag with no Supabase session — signing out");
@@ -53,11 +99,12 @@ export async function reconcileSupabaseSession(): Promise<SessionReconciliationS
   // nowhere; `MobileSessionGate` does not consult it, and mobile has no
   // System Owner surface to reach. On desktop it only restores what a login
   // had already established.
+  let isSystemOwner = false;
   try {
     const { data: owner, error } = await supabase.rpc("is_system_owner");
-    useAuthStore.getState().setSystemOwner(!error && owner === true);
+    isSystemOwner = !error && owner === true;
   } catch {
-    useAuthStore.getState().setSystemOwner(false);
+    isSystemOwner = false;
   }
 
   // ── The membership, re-asked on EVERY boot ────────────────────────────────
@@ -90,11 +137,17 @@ export async function reconcileSupabaseSession(): Promise<SessionReconciliationS
   // issue licences out of the app on every reload.
   //
   // A FAILED query is not the same answer and must not be treated as one. On a
-  // flaky connection `maybeSingle()` returns an error with a null row, and
-  // signing the user out for that would throw away their work over a dropped
-  // packet. Postgres refuses every read and write from a revoked member anyway,
-  // so holding the UI open through a transport failure exposes nothing.
-  if (!membershipError && !membership && !useAuthStore.getState().isSystemOwner) {
+  // flaky connection `maybeSingle()` returns an error with a null row. Keep
+  // the Supabase session/draft, but suspend operational UI permissions until
+  // membership can be verified. Online Only is not a Cashier fallback.
+  const latest = await supabase.auth.getSession();
+  if (generation !== verificationGeneration) return currentVerdict();
+  if (latest.error || latest.data.session?.user.id !== uid) return "unavailable";
+
+  if (membershipError) return "unavailable";
+  if (membership && !(APP_ROLES as readonly string[]).includes(membership.role)) return "unavailable";
+
+  if (!membershipError && !membership && !isSystemOwner) {
     if (useAuthStore.getState().isAuthenticated) {
       console.warn("[Auth] the signed-in user no longer holds a store membership — signing out");
     }
@@ -105,14 +158,14 @@ export async function reconcileSupabaseSession(): Promise<SessionReconciliationS
   // The same row carries the store: hand it to `storeContext` so the first
   // `getActiveStoreId()` does not ask `auth/user` and `store_members` again.
   if (!membershipError) primeActiveStoreId(membership?.store_id);
+  useAuthStore.getState().setSystemOwner(isSystemOwner);
 
   // Written unconditionally, from the server's answer. `setSession` refreshes
   // `username`, `userRole` and `isAuthenticated` together, so the persisted
   // copies of all three are replaced rather than merged into.
   //
-  // `membershipError` leaves `membership` null and `toAppRole(undefined)`
-  // resolves to the LEAST privileged role, so an inconclusive read narrows the
-  // UI rather than widening it.
+  // Only a successful membership answer reaches this point. A store-less
+  // global owner receives UNVERIFIED store rights, independently of licensing.
   useAuthStore.getState().setSession({
     token: data.session.access_token,
     expires_at: new Date(
@@ -143,12 +196,15 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
     let unsubscribe: (() => void) | undefined;
     let membershipChannel: ReturnType<NonNullable<ReturnType<typeof getSupabaseClient>>["channel"]> | undefined;
     let rechecking = false;
-    const recheck = async () => {
-      if (cancelled || rechecking) return;
+    let queuedRecheck = false;
+    const recheck = async (background = false) => {
+      if (cancelled) return;
+      if (rechecking) { queuedRecheck = true; return; }
       rechecking = true;
+      if (!background) setState("checking");
       try {
         const previous = toAppRole(useAuthStore.getState().userRole);
-        const reconciled = await reconcileSupabaseSession();
+        const reconciled = await reconcileSupabaseSession({background});
         if (cancelled) return;
         setState(reconciled);
         if (previous !== toAppRole(useAuthStore.getState().userRole)) {
@@ -158,13 +214,15 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
           window.dispatchEvent(new Event("ledger-sync-pulled"));
         }
       } catch {
-        // A transient read failure grants nothing; every server request still
-        // resolves membership. Preserve the current draft for a later retry.
-      } finally { rechecking = false; }
+        if (!cancelled) setState("unavailable");
+      } finally {
+        rechecking = false;
+        if (queuedRecheck && !cancelled) { queuedRecheck = false; void recheck(); }
+      }
     };
     const onFocus = () => { void recheck(); };
     window.addEventListener("focus", onFocus);
-    const membershipTimer = window.setInterval(onFocus, 30000);
+    const membershipTimer = window.setInterval(() => { void recheck(true); }, 30000);
     let watchedUid: string | undefined;
     const watchMembership = (uid?: string) => {
       const supabase = getSupabaseClient();
@@ -181,9 +239,8 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
     };
 
     void (async () => {
-      const reconciled = await reconcileSupabaseSession();
+      await recheck();
       if (cancelled) return;
-      setState(reconciled);
 
       const supabase = getSupabaseClient();
       if (!supabase) return;
@@ -217,13 +274,18 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
         // conjure a session, and the next boot re-runs the full membership
         // check and signs out anyone whose membership has gone.
         if (session) {
+          suspendVerifiedAccess();
           watchMembership(session.user?.id);
-          setState("authenticated");
+          setState("checking");
+          // Supabase API calls must run outside this synchronous callback's
+          // auth lock. The event proves identity, not a store role.
+          window.setTimeout(() => { void recheck(); }, 0);
           return;
         }
 
         // ── …and one that vanishes ─────────────────────────────────────────
         if (event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+          suspendVerifiedAccess();
           watchMembership();
           if (useAuthStore.getState().isAuthenticated) useAuthStore.getState().logout();
           setState("unauthenticated");

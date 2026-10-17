@@ -7,6 +7,7 @@ import {
   unknownColumnFrom,
 } from './fieldMapping';
 import { getSyncIdentity } from './storeContext';
+import {operationalSource,captureReadAuthority,assertReadAuthority} from '../operationalSource';
 
 /**
  * SyncService — Real Supabase Push Engine
@@ -112,13 +113,14 @@ export class SyncService {
    * Returns records whose `updated_at` is greater than the given timestamp.
    */
   static async fetchChanges(table: string, lastSyncTimestamp: number): Promise<any[]> {
+    const authority=captureReadAuthority();
     if (!isCloudSyncMode()) return [];
 
     const supabase = getSupabaseClient();
     if (!supabase) return [];
 
     const { data, error } = await supabase
-      .from(table)
+      .from(operationalSource(table))
       .select('*')
       .gt('updated_at', lastSyncTimestamp);
 
@@ -128,6 +130,7 @@ export class SyncService {
     }
 
     // Columns → the field names the local stores read.
+    assertReadAuthority(authority);
     return (data ?? []).map((row) => fromRemoteRow(table, row));
   }
 

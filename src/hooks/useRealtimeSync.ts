@@ -338,6 +338,15 @@ export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
               }));
             },
           )
+          // Restricted staff cannot subscribe to raw cost-bearing order/ledger
+          // rows. A tenant-scoped signal contains no financial payload; fetch
+          // their server projection after a change, including another device.
+          .on('postgres_changes',{event:'INSERT',schema:'public',table:'store_activity'},() => {
+            window.dispatchEvent(new Event('ledger-sync-pulled'));
+            void import('@/services/cloudHydrate').then(async({hydrateTable})=>{
+              await Promise.allSettled(['orders','return_records'].map(table=>hydrateTable(table)));
+            });
+          })
           .subscribe();
 
         channelCleanup = () => {

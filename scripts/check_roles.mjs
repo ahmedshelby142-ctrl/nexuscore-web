@@ -158,7 +158,9 @@ test("an unknown path is closed to everyone except ADMIN", () => {
 
 test("a missing, empty or nonsense role gets the least privilege", () => {
   for (const bad of [null, undefined, "", "wizard", "root", "ADMINISTRATOR"]) {
-    assert.equal(toAppRole(bad), "ECOMMERCE_ONLY", `role ${String(bad)}`);
+    assert.equal(toAppRole(bad), "UNVERIFIED", `role ${String(bad)}`);
+    assert.equal(canAccess(bad, "/pos"), false);
+    assert.equal(canAccess(bad, "/orders"), false);
     assert.equal(canAccess(bad, "/settings"), false, `${String(bad)} must not open settings`);
     assert.equal(canAccess(bad, "/"), false, `${String(bad)} must not open the dashboard`);
   }

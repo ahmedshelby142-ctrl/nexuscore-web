@@ -25,6 +25,8 @@ import { formatMoney } from "@/lib/math";
 import {PosReceiptDetails} from "./PosReceiptDetails";
 import { posDocumentNumber } from "@/lib/documentIdentity";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import {useAuthStore} from "@/store/useAuthStore";
+import {canViewCost} from "@/lib/roles";
 import {
   priorReturnsFrom,
   remainingSaleLines,
@@ -96,7 +98,11 @@ export function POSReturnModal({ onReturnItem, trigger }: POSReturnModalProps) {
     setLoading(true);
     try {
     const product = products.find((p: any) => String(p.id) === String(line.productId));
-    const costed = costedReturnLine(rec, line, await eventLines(rec.id), Boolean(product?.isBundle));
+    // The command resolves historical COGS from this immutable receipt. A
+    // restricted cashier sends no secret cost, including for saved box parts.
+    const costed = canViewCost(useAuthStore.getState().userRole)
+      ? costedReturnLine(rec, line, await eventLines(rec.id), Boolean(product?.isBundle))
+      : {...line,unitCost:0,...(line.bundleItems?{bundleItems:line.bundleItems.map(p=>({...p,unitCost:0}))}:{})};
     onReturnItem({
       line: costed,
       sourceEventId: rec.id,

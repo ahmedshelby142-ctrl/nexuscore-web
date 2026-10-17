@@ -114,10 +114,10 @@ const orderSelect = () => globalThis.__selects.filter((s) => s.table === "orders
 
 // ── The role rule itself ────────────────────────────────────────────────────
 
-test("only MODERATOR loses cost; every other role keeps it", () => {
+test("cost requires finance; all existing operational roles retain Desktop hydration", () => {
   assert.equal(roles.canViewCost("MODERATOR"), false);
   for (const role of ["ADMIN", "ACCOUNTANT", "POS_ECOMMERCE", "ECOMMERCE_ONLY"]) {
-    assert.equal(roles.canViewCost(role), true, `${role} is unchanged`);
+    assert.equal(roles.canViewCost(role),["ADMIN","ACCOUNTANT"].includes(role),`${role} inventory cost boundary`);
     assert.equal(roles.readsDesktopBusinessData(role), true, `${role} still hydrates on Desktop`);
   }
   assert.equal(roles.readsDesktopBusinessData("MODERATOR"), false);

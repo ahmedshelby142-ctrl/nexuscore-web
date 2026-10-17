@@ -44,8 +44,9 @@ export function ProtectedRoute({
   sessionState: "checking" | SessionReconciliationState;
 }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const verified = useAuthStore((s) => s.permissionsVerified);
 
-  if (sessionState === "checking") {
+  if (sessionState === "checking" || (sessionState === "authenticated" && !verified)) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-[#0B1220]">
         <div className="flex flex-col items-center gap-4">
@@ -59,6 +60,13 @@ export function ProtectedRoute({
         </div>
       </div>
     );
+  }
+
+  if (sessionState === "unavailable") {
+    return <div className="flex min-h-screen flex-col items-center justify-center gap-4" dir="rtl">
+      <p role="alert">تعذّر التحقق من صلاحيات الحساب. الوصول متوقف لحين التحقق.</p>
+      <button type="button" onClick={() => window.location.reload()}>إعادة المحاولة</button>
+    </div>;
   }
 
   // Both halves must agree. The server's verdict is the authority — it is what

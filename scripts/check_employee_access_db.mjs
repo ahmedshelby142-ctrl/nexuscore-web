@@ -123,7 +123,7 @@ test('actual restricted receipt/driver readers use bounded authenticated RPCs an
  const sb={from(){throw Error('Restricted reader attempted raw ledger access');},async rpc(name,args){calls.push({name,args});const allowed=['read_pos_headers','read_pos_lines','ledger_balances','ledger_events_page','search_pos_receipts'];assert.ok(allowed.includes(name),name);
   try{const result=await client.query(`select * from public.${name}(${Object.keys(args).map((key,i)=>key+'=>$'+(i+1)).join(',')})`,Object.values(args));return {data:result.rows,error:null};}catch(error){return {data:null,error:{message:error.message}};}}};
  const h=uiHarness({'@/lib/supabase':{getSupabaseClient:()=>sb},'@/store/useAuthStore':{useAuthStore:{getState:()=>({userRole:'CASHIER_ONLY'})}},'@/services/api/storeContext':{getActiveStoreId:async()=>db.store,getSyncIdentity:async()=>({storeId:db.store,deviceId:db.device})}});
- try{const receipt=await h.load('src/services/posReceipts.ts').readPosReceipt(r.eventId);assert.equal(receipt.netPiastres,1000);assert.equal(receipt.cogsPiastres,200);assert.equal(receipt.profitPiastres,800);assert.equal(receipt.number,r.documentNumber);
+ try{const receipt=await h.load('src/services/posReceipts.ts').readPosReceipt(r.eventId);assert.equal(receipt.netPiastres,1000);assert.equal(receipt.cogsPiastres,null);assert.equal(receipt.profitPiastres,null);assert.equal(receipt.number,r.documentNumber);
   const driver=h.load('src/lib/ledger/driver.ts').driver;assert.equal((await driver.eventLines(r.eventId)).find(l=>l.account==='wallet').amount_delta,1000);
   await assert.rejects(()=>driver.balances({account:'wallet'}),/FORBIDDEN/);assert.ok(calls.every(c=>c.args.p_store===db.store));
  }finally{await h.cleanup();}

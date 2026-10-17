@@ -280,7 +280,7 @@ test('actual catalog client recovers committed response loss/reload without crea
  delete globalThis.sessionStorage;evidence.push({case:'actual catalog lost-response/reload',operation:calls[0],product:state.products[0].id});
 });
 test('optional return-document refresh failure cannot submit a second financial operation',async()=>{
- let writes=0;const harness=uiHarness({'@/lib/supabase':{getSupabaseClient:()=>({rpc(){writes++;throw Error('No financial RPC allowed')},from(table){assert.equal(table,'return_records');const q={select(){return q},eq(){return q},is(){return q},async order(){throw Error('SYNTHETIC_READ_FAILURE')}};return q}})},
+ let writes=0;const harness=uiHarness({'@/store/useAuthStore':{useAuthStore:{getState:()=>({userRole:'ADMIN'})}},'@/lib/supabase':{getSupabaseClient:()=>({rpc(){writes++;throw Error('No financial RPC allowed')},from(table){assert.equal(table,'return_records');const q={select(){return q},eq(){return q},is(){return q},async order(){throw Error('SYNTHETIC_READ_FAILURE')}};return q}})},
   '@/services/api/storeContext':{getSyncIdentity:async()=>({storeId:db.store,deviceId:db.device})},'@/store/useBusinessStore':{useBusinessStore:{setState(){throw Error('No failed read may replace the cache')}}}});
  await harness.load('src/lib/returnDocuments.ts').refreshReturnDocuments();assert.equal(writes,0);
 });

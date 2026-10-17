@@ -4,6 +4,7 @@ import { getSyncIdentity } from "@/services/api/storeContext";
 import { fromRemoteRow } from "@/services/api/fieldMapping";
 import { useOrderStore } from "@/store/useOrderStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
+import {operationalSource} from "@/services/operationalSource";
 
 const SCOPE = "ledger:courier_settlement";
 export interface CourierBatchResult {
@@ -37,7 +38,7 @@ async function refreshOrders<T extends { orderIds: string[]; customer?: any }>(r
   try {
     const sb = getSupabaseClient(), identity = await getSyncIdentity();
     if (!sb || !identity || identity.storeId !== storeId) return result;
-    const { data, error } = await sb.from("orders").select("*")
+    const { data, error } = await sb.from(operationalSource("orders")).select("*")
       .eq("store_id", identity.storeId).in("id", result.orderIds);
     if (error) throw error;
     if ((await getSyncIdentity())?.storeId !== identity.storeId) return result;

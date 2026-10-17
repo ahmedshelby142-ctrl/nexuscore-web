@@ -236,10 +236,10 @@ test("P0-3 · clearing localStorage cannot change what a role may open", () => {
   assert.ok(!/localStorage|sessionStorage/.test(roles), "the access map must not read storage");
   assert.ok(!/localStorage|sessionStorage/.test(requireAccess), "nor may the route guard");
   // Unknown or absent roles fall to the least privileged, never to admin.
-  assert.match(roles, /if \(!role\) return "ECOMMERCE_ONLY"/, "a missing role is not an admin");
+  assert.match(roles, /if \(!role\) return "UNVERIFIED"/, "a missing role has no operational access");
   assert.match(
     roles,
-    /return LEGACY_ROLE_MAP\[role\] \?\? "ECOMMERCE_ONLY"/,
+    /return LEGACY_ROLE_MAP\[role\] \?\? "UNVERIFIED"/,
     "a typo in a role is not an admin",
   );
 });
@@ -276,7 +276,7 @@ test("P0-4 · the reconciled session reaches the guard", () => {
 test("P0-4 · the guard holds while the answer is in flight", () => {
   // Rendering the app "just for that moment" hands someone a working-looking
   // till for the moment; bouncing to /login flashes a lockout at a valid user.
-  assert.match(protectedRoute, /if \(sessionState === "checking"\)/, "the first render must hold");
+  assert.match(protectedRoute, /if \(sessionState === "checking" \|\| \(sessionState === "authenticated" && !verified\)\)/, "unverified permissions must hold too");
   assert.match(protectedRoute, /جارٍ التحقق من الجلسة/, "and say why");
 });
 
@@ -320,10 +320,11 @@ test("P0-4 · a revoked membership ends the session; a dropped packet does not",
   // holding the UI open through an inconclusive answer exposes nothing.
   assert.match(
     reconcile,
-    /if \(!membershipError && !membership && !useAuthStore\.getState\(\)\.isSystemOwner\)/,
+    /if \(!membershipError && !membership && !isSystemOwner\)/,
     "sign out only on a definite answer, and never on the global identity",
   );
-  const branch = reconcile.slice(reconcile.indexOf("if (!membershipError && !membership"));
+  assert.match(reconcile, /if \(membershipError\) return "unavailable";/);
+  const branch = reconcile.slice(reconcile.indexOf("if (!membershipError && !membership && !isSystemOwner"));
   assert.match(branch.slice(0, 400), /logout\(\);\s*return "unauthenticated";/);
 });
 
@@ -370,7 +371,7 @@ test("editing localStorage cannot resurrect a signed-out session", () => {
   // `logout()` clears the flag AND the session, and reconciliation re-asks the
   // server on the next boot. Flipping `isAuthenticated` back to true in
   // devtools now yields "unauthenticated" from the server and a redirect.
-  const impl = authStore.search(/logout: \(\) =>\s*\r?\n?\s*set\(\{/);
+  const impl = authStore.search(/logout: \(\) =>\s*\r?\n?\s*set\(\(s\) => \(\{/);
   assert.ok(impl > -1);
   const body = authStore.slice(impl, impl + 500);
   assert.match(body, /isAuthenticated: false/);
@@ -383,7 +384,7 @@ test("editing localStorage cannot make anyone System Owner", () => {
   assert.match(reconcile, /rpc\("is_system_owner"\)/, "the verdict is the server's");
   assert.match(
     reconcile,
-    /setSystemOwner\(!error && owner === true\)/,
+    /isSystemOwner = !error && owner === true/,
     "and a failed call denies rather than promotes",
   );
 });

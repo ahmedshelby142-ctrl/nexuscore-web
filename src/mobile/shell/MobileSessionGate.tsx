@@ -12,25 +12,32 @@ export function MobileSessionGate({
 }) {
   const location = useLocation();
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const verified = useAuthStore((state) => state.permissionsVerified);
   const { decision, resolved, hydrate, refresh } = useStoreLicense();
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !verified) return;
     hydrate();
     void refresh();
 
     const onOnline = () => void refresh();
     window.addEventListener("online", onOnline);
     return () => window.removeEventListener("online", onOnline);
-  }, [hydrate, isAuthenticated, refresh]);
+  }, [hydrate, isAuthenticated, verified, refresh]);
 
-  if (sessionState === "checking") {
+  if (sessionState === "checking" || (sessionState === "authenticated" && !verified)) {
     return <MobileAccessState text="جارٍ التحقق من الجلسة…" />;
   }
 
   // Mobile requires the same configured Supabase service as the desktop app;
   // a local client mirror is never a legitimate mobile ERP session.
-  if (sessionState === "unavailable" || !isAuthenticated) {
+  if (sessionState === "unavailable") {
+    return <main className="mobile-state" dir="rtl">
+      <p role="alert">تعذّر التحقق من صلاحيات الحساب. الوصول متوقف لحين التحقق.</p>
+      <button type="button" className="mobile-primary-button" onClick={() => window.location.reload()}>إعادة المحاولة</button>
+    </main>;
+  }
+  if (sessionState !== "authenticated" || !isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
 

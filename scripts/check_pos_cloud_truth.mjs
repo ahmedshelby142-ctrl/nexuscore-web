@@ -45,6 +45,7 @@ globalThis.window.dispatchEvent ??= () => true;
 // ── a fake PostgREST that enforces the live `products` policies ─────────────
 globalThis.__db = { role: "POS_ECOMMERCE", requests: [], toasts: [], rows: new Map(), fail: new Set(), rpc: [] };
 const STUBS = {
+  "@/store/useAuthStore":stub(`export const useAuthStore={getState:()=>({userRole:globalThis.__db.role})};`),
   "@/lib/supabase": stub(`
     const db = () => globalThis.__db;
     const DEFINITION = ["name","sku","barcode","category","description","image_url","unitPrice",

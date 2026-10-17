@@ -113,7 +113,7 @@ export function CustomerPhoneMatch({
               <p className="text-sm font-medium truncate">{c.name}</p>
               <p className="text-xs text-muted-foreground">
                 {c.phone}
-                {c.lastOrderAt ? ` — آخر طلب: ${formatDate(c.lastOrderAt)}` : " — لسه مافيش طلبات"}
+                {c.lastOrderAt ? ` — آخر طلب: ${formatDate(c.lastOrderAt)}` : " — تاريخ آخر طلب غير متاح"}
                 {ltvOf ? ` — ${formatMoney(ltvOf(c.id))}` : ""}
               </p>
             </div>

@@ -322,7 +322,7 @@ const posHelpers=loader({"@/lib/financialCommand":{},"@/services/featureStockMir
 const posContext={exports:{},require,React,window:{confirm:()=>false},...posHelpers};
 vm.runInNewContext(compile(`
 const {useState}=React;
-exports.Harness=function({customers,initialCart=[],pick}){
+exports.Harness=function({customers,initialCart=[],pick,shift}){
  const [cart,setCart]=useState(initialCart),[selectedCustomerId,setSelectedCustomerId]=useState("stale"),[customerName,setCustomerName]=useState("Stale"),[customerPhone,setCustomerPhone]=useState("999"),[isReturnMode,setIsReturnMode]=useState(false),[result,setResult]=useState(null);
  const saleMode="retail",products=[],setPendingVariantSelection=()=>{},setAppliedDiscount=()=>{},setDiscountCodeInput=()=>{};
  const sellableStock=()=>50,posRefundValue=(line,q)=>line.unitPrice*q;
@@ -399,6 +399,16 @@ test("D2 actual cart handlers: same-product return/replacement stay distinct, re
   await act(async()=>fireEvent.click(getByRole(entry.host,"button",{name:"Remove",exact:true})));
   assert.equal(state().cart.length,1);assert.equal(state().cart[0].quantity,1);assert.equal(state().isPosExchange,false);assert.equal(state().selectedCustomerId,"");assert.equal(state().returnCustomerLocked,false);
 });
+test("actual checkout button respects the optional shift gate without changing legacy customer/cart behavior",async()=>{
+ const props={customers:[],pick:{line,sourceEventId:"sale",customer:{id:"",name:"",phone:""}},initialCart:[{productId:"p",quantity:1,unitPrice:10}]};
+ const entry=await render(React.createElement(posContext.exports.Harness,{...props,shift:{canSell:false}}));
+ assert.equal(getByRole(entry.host,"button",{name:"إتمام البيع"}).disabled,true);
+ await render(React.createElement(posContext.exports.Harness,{...props,shift:{canSell:true}}),entry);
+ assert.equal(getByRole(entry.host,"button",{name:"إتمام البيع"}).disabled,false);
+ await render(React.createElement(posContext.exports.Harness,props),entry);
+ assert.equal(getByRole(entry.host,"button",{name:"إتمام البيع"}).disabled,false,"optional legacy/isolated callers keep their existing gate");
+});
+
 test("D2: current stock plus exact historical return credit allows a zero-stock shade and uses saved bundle components",()=>{
  const p={id:"p",quantity:0,metadata:{variants:[{name:"RED",stock:0},{name:"BLUE",stock:0}]}};
  const returned=[{productId:"p",variantName:"RED",quantity:-1,historicalCost:{unitCost:2}}];

@@ -41,6 +41,7 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
     [eventId, setEventId] = useState("");
   const [receivedFloat, setReceivedFloat] = useState(false),
     [countConfirmed, setCountConfirmed] = useState(false);
+  const [adjustmentConfirmed, setAdjustmentConfirmed] = useState(false);
   const [handed, setHanded] = useState(false),
     [received, setReceived] = useState(false),
     [inputError, setInputError] = useState("");
@@ -49,7 +50,9 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
     setCashier(data?.policy?.cashier_id ?? "");
     setOpening(String((data?.policy?.opening_piastre ?? 50000) / 100));
     setKeep(String((data?.policy?.keep_piastre ?? 50000) / 100));
-  }, [data?.policy?.updated_at, data?.policy?.cashier_id]);
+    setReceivedFloat(false);
+    setAdjustmentConfirmed(false);
+  }, [data?.policy?.revision, data?.policy?.cashier_id]);
   useEffect(() => {
     setActual("");
     setReason("");
@@ -57,12 +60,34 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
     setCountConfirmed(false);
     setHanded(false);
     setReceived(false);
+    setReceivedFloat(false);
+    setAdjustmentConfirmed(false);
     setExpanded(s?.status !== "open");
   }, [s?.id, s?.status]);
+  useEffect(() => {
+    setActual("");
+    setCountConfirmed(false);
+    setHanded(false);
+    setReceived(false);
+  }, [s?.revision]);
+  useEffect(() => {
+    if (error) {
+      setCountConfirmed(false);
+      setHanded(false);
+      setReceived(false);
+      setReceivedFloat(false);
+      setAdjustmentConfirmed(false);
+    }
+  }, [error]);
   if (!m.eligible) return null;
   const execute = (action: string, input: Record<string, unknown> = {}) => {
     setInputError("");
-    void m.execute(action, input);
+    void m.execute(action, {
+      ...(action === "open" || action === "configure"
+        ? { expectedPolicyRevision: data?.policy?.revision ?? 0 }
+        : { expectedRevision: s?.revision }),
+      ...input,
+    });
   };
   const configure = (enabled: boolean) => {
     try {
@@ -97,6 +122,9 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
     }
   };
   const active = !!s && s.status !== "closed";
+  const floatAdjustment = data?.policy?.has_previous_shift
+    ? data.policy.opening_piastre - (data.policy.previous_retained_piastre ?? 0)
+    : 0;
   return (
     <section
       className="rounded-2xl border border-border bg-card p-4 space-y-4"
@@ -224,15 +252,36 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
                     />
                   </label>
                 )}
+                {floatAdjustment !== 0 && (
+                  <label className="flex gap-2">
+                    <input
+                      type="checkbox"
+                      checked={adjustmentConfirmed}
+                      onChange={(e) => setAdjustmentConfirmed(e.target.checked)}
+                    />
+                    {floatAdjustment > 0
+                      ? `استلمت زيادة العهدة ${money(floatAdjustment)} من الخزنة فعليًا`
+                      : `سلّمت فرق تخفيض العهدة ${money(-floatAdjustment)} إلى الخزنة فعليًا`}
+                  </label>
+                )}
                 <Button
                   disabled={
                     busy ||
                     loading ||
                     !receivedFloat ||
                     !data.policy ||
+                    (floatAdjustment !== 0 && !adjustmentConfirmed) ||
                     (admin && reason.trim().length < 4)
                   }
-                  onClick={() => execute("open", { floatReceived: receivedFloat, reason })}
+                  onClick={() =>
+                    execute("open", {
+                      floatReceived: receivedFloat,
+                      reason,
+                      ...(floatAdjustment !== 0
+                        ? { floatAdjustmentConfirmed: adjustmentConfirmed }
+                        : {}),
+                    })
+                  }
                 >
                   استلام العهدة وفتح الوردية
                 </Button>
@@ -543,7 +592,9 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
               {data.audit.map((x) => (
                 <li key={x.id}>
                   {new Date(x.recorded_at).toLocaleString("ar-EG")} —{" "}
-                  {actions[x.action] ?? "إجراء وردية"} {x.detail.input?.reason}
+                  {actions[x.action] ??
+                    (x.action.startsWith("rejected_") ? "محاولة وردية مرفوضة" : "إجراء وردية")}{" "}
+                  {x.detail.input?.reason}
                 </li>
               ))}
             </ul>

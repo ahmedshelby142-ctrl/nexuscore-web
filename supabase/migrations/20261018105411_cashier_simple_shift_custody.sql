@@ -4,7 +4,7 @@ CREATE TABLE financial_private.cashier_shift_policy (
  store_id uuid PRIMARY KEY REFERENCES public.stores(id), cashier_id uuid NOT NULL,
  enabled boolean NOT NULL, opening_piastre bigint NOT NULL CHECK(opening_piastre BETWEEN 0 AND 1000000000),
  keep_piastre bigint NOT NULL CHECK(keep_piastre BETWEEN 0 AND 1000000000),
- updated_by uuid NOT NULL, updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+ updated_by uuid NOT NULL, updated_at timestamptz NOT NULL DEFAULT clock_timestamp(), revision bigint NOT NULL DEFAULT 1
 );
 CREATE TABLE financial_private.cashier_shifts (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), store_id uuid NOT NULL REFERENCES public.stores(id),
@@ -12,7 +12,7 @@ CREATE TABLE financial_private.cashier_shifts (
  opened_by uuid NOT NULL, planned_end_at timestamptz NOT NULL,
  opening_piastre bigint NOT NULL CHECK(opening_piastre>=0), keep_piastre bigint NOT NULL CHECK(keep_piastre>=0),
  carry_in_piastre bigint NOT NULL DEFAULT 0, float_adjustment_piastre bigint NOT NULL DEFAULT 0,
- status text NOT NULL CHECK(status IN ('open','awaiting_review','awaiting_handover','handover_reported','closed')),
+ status text NOT NULL CHECK(status IN ('open','awaiting_review','awaiting_handover','handover_reported','closed')), revision bigint NOT NULL DEFAULT 1,
  expected_piastre bigint, actual_piastre bigint CHECK(actual_piastre>=0), variance_piastre bigint,
  retained_piastre bigint CHECK(retained_piastre>=0), handover_piastre bigint CHECK(handover_piastre>=0),
  counted_at timestamptz, counted_by uuid, discrepancy_reason text, reviewed_by uuid, reviewed_at timestamptz,
@@ -78,16 +78,18 @@ $$;
 
 CREATE FUNCTION public.cashier_shift_snapshot(p_store uuid) RETURNS jsonb
  LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path='' AS $$
-DECLARE v_admin boolean; v_policy financial_private.cashier_shift_policy; v_shift uuid;
+DECLARE v_admin boolean; v_policy financial_private.cashier_shift_policy; v_shift uuid; v_carry bigint; v_previous boolean;
 BEGIN
  v_admin:=coalesce(public.has_role(p_store,VARIADIC ARRAY['ADMIN']),false);
  IF auth.uid() IS NULL OR NOT coalesce(public.has_role(p_store,VARIADIC ARRAY['ADMIN','CASHIER_ONLY']),false)
  THEN RAISE EXCEPTION 'NEXUS_SHIFT_FORBIDDEN' USING ERRCODE='42501'; END IF;
  SELECT * INTO v_policy FROM financial_private.cashier_shift_policy WHERE store_id=p_store;
+ SELECT retained_piastre INTO v_carry FROM financial_private.cashier_shifts WHERE store_id=p_store AND status='closed' ORDER BY closed_at DESC LIMIT 1;
+ v_previous:=FOUND;
  SELECT id INTO v_shift FROM financial_private.cashier_shifts WHERE store_id=p_store
   AND (v_admin OR cashier_id=auth.uid()) ORDER BY (status<>'closed') DESC,opened_at DESC LIMIT 1;
  RETURN jsonb_build_object('enabled',coalesce(v_policy.enabled,false),'admin',v_admin,
-  'policy',CASE WHEN v_policy.store_id IS NOT NULL AND (v_admin OR v_policy.cashier_id=auth.uid()) THEN to_jsonb(v_policy) ELSE NULL END,
+  'policy',CASE WHEN v_policy.store_id IS NOT NULL AND (v_admin OR v_policy.cashier_id=auth.uid()) THEN to_jsonb(v_policy)||jsonb_build_object('previous_retained_piastre',coalesce(v_carry,0),'has_previous_shift',v_previous) ELSE NULL END,
   'shift',financial_private.cashier_shift_summary(v_shift),
   'allocatable',CASE WHEN v_admin THEN coalesce((SELECT jsonb_agg(to_jsonb(x)) FROM (
     SELECT e.id event_id,min(c.recorded_at) created_at,coalesce(nullif(e.payload::jsonb->>'description',''),
@@ -133,6 +135,7 @@ BEGIN
  INSERT INTO financial_private.cashier_shift_movements(ledger_line_id,shift_id,event_id,actor_id,wallet_id,payment_piastre,cash_piastre,category,reason)
  VALUES(NEW.id,s.id,e.id,auth.uid(),NEW.subject_id,NEW.amount_delta,CASE WHEN NEW.subject_id='inStoreSafe' THEN NEW.amount_delta ELSE 0 END,
   CASE WHEN NEW.amount_delta<0 THEN 'refund' ELSE 'sale' END,v_reason);
+ UPDATE financial_private.cashier_shifts SET revision=revision+1 WHERE id=s.id;
  INSERT INTO financial_private.cashier_shift_audit(store_id,shift_id,actor_id,action,detail)
  VALUES(s.store_id,s.id,auth.uid(),CASE WHEN v_admin THEN 'admin_pos_override' ELSE 'pos_payment' END,
   jsonb_build_object('eventId',e.id,'lineId',NEW.id,'wallet',NEW.subject_id,'paymentPiastres',NEW.amount_delta,'reason',v_reason));
@@ -158,7 +161,7 @@ CREATE FUNCTION public.record_cashier_shift(p_id text,p_store uuid,p_device uuid
 DECLARE p financial_private.cashier_shift_policy; s financial_private.cashier_shifts; v_old financial_private.cashier_shift_requests;
  v_admin boolean; v_action text:=p_input->>'action'; v_reason text:=nullif(btrim(p_input->>'reason'),'');
  v_result jsonb; v_before jsonb; v_open bigint; v_keep bigint; v_actual bigint; v_expected bigint; v_carry bigint:=0;
- v_cashier uuid; v_line record; v_count integer:=0; v_shift uuid; v_enabled boolean;
+ v_cashier uuid; v_line record; v_count integer:=0; v_shift uuid; v_enabled boolean; v_error text; v_constraint text;
 BEGIN
  IF auth.uid() IS NULL OR NOT coalesce(public.has_role(p_store,VARIADIC ARRAY['ADMIN','CASHIER_ONLY']),false)
   OR NOT coalesce(public.store_licensed(p_store),false) THEN RAISE EXCEPTION 'NEXUS_SHIFT_FORBIDDEN' USING ERRCODE='42501'; END IF;
@@ -172,11 +175,14 @@ BEGIN
   RETURN v_old.result||jsonb_build_object('replayed',true);
  END IF;
  v_admin:=coalesce(public.has_role(p_store,VARIADIC ARRAY['ADMIN']),false);
+ BEGIN
  IF length(v_reason)>500 THEN RAISE EXCEPTION 'NEXUS_SHIFT_REASON_REQUIRED' USING ERRCODE='23514'; END IF;
  SELECT * INTO p FROM financial_private.cashier_shift_policy WHERE store_id=p_store;
  IF v_action='configure' THEN
   IF NOT v_admin THEN RAISE EXCEPTION 'NEXUS_SHIFT_ADMIN_REQUIRED' USING ERRCODE='42501'; END IF;
   IF EXISTS(SELECT 1 FROM financial_private.cashier_shifts WHERE store_id=p_store AND status<>'closed') THEN RAISE EXCEPTION 'NEXUS_SHIFT_ACTIVE' USING ERRCODE='23514'; END IF;
+  IF coalesce(p_input->>'expectedPolicyRevision','') !~ '^[0-9]+$' OR (p_input->>'expectedPolicyRevision')::bigint IS DISTINCT FROM coalesce(p.revision,0)
+   THEN RAISE EXCEPTION 'NEXUS_SHIFT_POLICY_CHANGED' USING ERRCODE='23514'; END IF;
   IF coalesce(p_input->>'openingPiastres','') !~ '^[0-9]+$' OR coalesce(p_input->>'keepPiastres','') !~ '^[0-9]+$'
    OR jsonb_typeof(p_input->'enabled') IS DISTINCT FROM 'boolean' THEN RAISE EXCEPTION 'NEXUS_SHIFT_INVALID' USING ERRCODE='23514'; END IF;
   v_open:=(p_input->>'openingPiastres')::bigint;v_keep:=(p_input->>'keepPiastres')::bigint;v_cashier:=(p_input->>'cashierId')::uuid;v_enabled:=(p_input->>'enabled')::boolean;
@@ -185,15 +191,19 @@ BEGIN
   v_before:=to_jsonb(p);
   INSERT INTO financial_private.cashier_shift_policy(store_id,cashier_id,enabled,opening_piastre,keep_piastre,updated_by)
    VALUES(p_store,v_cashier,v_enabled,v_open,v_keep,auth.uid()) ON CONFLICT(store_id) DO UPDATE SET cashier_id=excluded.cashier_id,
-   enabled=excluded.enabled,opening_piastre=excluded.opening_piastre,keep_piastre=excluded.keep_piastre,updated_by=auth.uid(),updated_at=clock_timestamp();
+   enabled=excluded.enabled,opening_piastre=excluded.opening_piastre,keep_piastre=excluded.keep_piastre,updated_by=auth.uid(),updated_at=clock_timestamp(),revision=cashier_shift_policy.revision+1;
  ELSIF v_action='open' THEN
   IF p.store_id IS NULL OR NOT p.enabled THEN RAISE EXCEPTION 'NEXUS_SHIFT_DISABLED' USING ERRCODE='23514'; END IF;
   IF NOT v_admin AND auth.uid()<>p.cashier_id THEN RAISE EXCEPTION 'NEXUS_SHIFT_WRONG_CASHIER' USING ERRCODE='42501'; END IF;
   IF p_input->>'floatReceived' IS DISTINCT FROM 'true' THEN RAISE EXCEPTION 'NEXUS_SHIFT_FLOAT_CONFIRM_REQUIRED' USING ERRCODE='23514'; END IF;
+  IF coalesce(p_input->>'expectedPolicyRevision','') !~ '^[0-9]+$' OR (p_input->>'expectedPolicyRevision')::bigint IS DISTINCT FROM p.revision
+   THEN RAISE EXCEPTION 'NEXUS_SHIFT_POLICY_CHANGED' USING ERRCODE='23514'; END IF;
   IF v_admin AND coalesce(length(v_reason),0)<4 THEN RAISE EXCEPTION 'NEXUS_SHIFT_OVERRIDE_REASON_REQUIRED' USING ERRCODE='23514'; END IF;
   IF p.opening_piastre>(SELECT coalesce(sum(amount_delta),0) FROM public.ledger_lines WHERE store_id=p_store AND account='wallet' AND subject_id='inStoreSafe')
    THEN RAISE EXCEPTION 'NEXUS_SHIFT_FLOAT_UNFUNDED' USING ERRCODE='23514'; END IF;
   SELECT retained_piastre INTO v_carry FROM financial_private.cashier_shifts WHERE store_id=p_store AND status='closed' ORDER BY closed_at DESC LIMIT 1;
+  IF FOUND AND p.opening_piastre IS DISTINCT FROM v_carry AND p_input->>'floatAdjustmentConfirmed' IS DISTINCT FROM 'true'
+   THEN RAISE EXCEPTION 'NEXUS_SHIFT_FLOAT_TRANSFER_CONFIRM_REQUIRED' USING ERRCODE='23514'; END IF;
   INSERT INTO financial_private.cashier_shifts(store_id,cashier_id,shift_day,opened_by,planned_end_at,opening_piastre,keep_piastre,carry_in_piastre,float_adjustment_piastre,status)
    VALUES(p_store,p.cashier_id,(clock_timestamp() AT TIME ZONE 'Africa/Cairo')::date,auth.uid(),clock_timestamp()+interval '8 hours',p.opening_piastre,p.keep_piastre,
     coalesce(v_carry,0),p.opening_piastre-coalesce(v_carry,0),'open') RETURNING id INTO v_shift;
@@ -202,6 +212,8 @@ BEGIN
   SELECT * INTO s FROM financial_private.cashier_shifts WHERE id=v_shift AND store_id=p_store FOR UPDATE;
   IF NOT FOUND OR (NOT v_admin AND s.cashier_id<>auth.uid()) THEN RAISE EXCEPTION 'NEXUS_SHIFT_FORBIDDEN' USING ERRCODE='42501'; END IF;
   v_before:=to_jsonb(s);
+  IF coalesce(p_input->>'expectedRevision','') !~ '^[0-9]+$' OR (p_input->>'expectedRevision')::bigint IS DISTINCT FROM s.revision
+   THEN RAISE EXCEPTION 'NEXUS_SHIFT_STATE_CHANGED' USING ERRCODE='23514'; END IF;
   IF v_action='close' THEN
    IF s.status<>'open' THEN RAISE EXCEPTION 'NEXUS_SHIFT_NOT_OPEN' USING ERRCODE='23514'; END IF;
    IF coalesce(p_input->>'actualPiastres','') !~ '^[0-9]+$' OR p_input->>'countConfirmed' IS DISTINCT FROM 'true'
@@ -247,10 +259,23 @@ BEGIN
    IF v_count=0 THEN RAISE EXCEPTION 'NEXUS_SHIFT_MOVEMENT_INVALID' USING ERRCODE='23514'; END IF;
   ELSE RAISE EXCEPTION 'NEXUS_SHIFT_INVALID' USING ERRCODE='23514';
   END IF;
+  IF v_action='attach_movement' AND (SELECT s.opening_piastre+coalesce(sum(cash_piastre),0) FROM financial_private.cashier_shift_movements WHERE shift_id=s.id)<0
+   THEN RAISE EXCEPTION 'NEXUS_DRAWER_CASH_INSUFFICIENT' USING ERRCODE='23514'; END IF;
+  UPDATE financial_private.cashier_shifts SET revision=revision+1 WHERE id=s.id;
  END IF;
+ EXCEPTION WHEN check_violation OR insufficient_privilege OR unique_violation THEN
+  GET STACKED DIAGNOSTICS v_error=MESSAGE_TEXT,v_constraint=CONSTRAINT_NAME;
+  IF v_error LIKE 'NEXUS_SHIFT_%' OR v_error='NEXUS_DRAWER_CASH_INSUFFICIENT' THEN NULL;
+  ELSIF SQLSTATE='23505' AND v_constraint IN ('cashier_shifts_store_id_shift_day_key','cashier_shift_one_active','cashier_shift_movements_pkey') THEN v_error:='NEXUS_SHIFT_DUPLICATE';
+  ELSE RAISE; END IF;
+  -- Durable negative receipt: late retries can never make a rejected physical acknowledgement valid later.
+  v_result:=jsonb_build_object('requestId',p_id,'action',v_action,'replayed',false,'rejected',true,'code',v_error);
+  IF v_before IS NULL THEN v_shift:=NULL; END IF;
+ END;
  INSERT INTO financial_private.cashier_shift_audit(store_id,shift_id,actor_id,action,detail)
-  VALUES(p_store,v_shift,auth.uid(),v_action,jsonb_build_object('requestId',p_id,'input',p_input,'before',v_before));
- v_result:=jsonb_build_object('requestId',p_id,'shiftId',v_shift,'action',v_action,'replayed',false);
+  VALUES(p_store,v_shift,auth.uid(),CASE WHEN v_result->>'rejected'='true' THEN 'rejected_'||coalesce(v_action,'invalid') ELSE v_action END,
+   jsonb_build_object('requestId',p_id,'input',p_input,'before',v_before,'code',v_result->>'code'));
+ v_result:=coalesce(v_result,jsonb_build_object('requestId',p_id,'shiftId',v_shift,'action',v_action,'replayed',false));
  INSERT INTO financial_private.cashier_shift_requests(id,store_id,actor_id,request,result) VALUES(p_id,p_store,auth.uid(),p_input,v_result);
  RETURN v_result;
 END $$;

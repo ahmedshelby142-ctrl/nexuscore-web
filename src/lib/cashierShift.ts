@@ -4,6 +4,7 @@ import { captureReadAuthority, assertReadAuthority } from "@/services/operationa
 import { runFinancialCommand, resolvePendingFinancialCommand } from "./financialCommand";
 
 export interface CashierShift {
+  revision: number;
   id: string;
   cashier_id: string;
   shift_day: string;
@@ -39,10 +40,13 @@ export interface CashierShiftSnapshot {
   enabled: boolean;
   admin: boolean;
   policy: {
+    revision: number;
     cashier_id: string;
     opening_piastre: number;
     keep_piastre: number;
     updated_at: string;
+    previous_retained_piastre?: number;
+    has_previous_shift?: boolean;
   } | null;
   shift: CashierShift | null;
   cashiers: { id: string; email: string }[];
@@ -90,15 +94,27 @@ export async function readCashierShift(): Promise<CashierShiftSnapshot> {
   if (error) throw new Error(error.message);
   if (!data || typeof data.enabled !== "boolean" || typeof data.admin !== "boolean")
     throw new Error("تعذّر التحقق من حالة الوردية.");
+  if (
+    (data.policy && !Number.isSafeInteger(data.policy.revision)) ||
+    (data.shift && !Number.isSafeInteger(data.shift.revision))
+  )
+    throw new Error("تعذّر التحقق من إصدار بيانات الوردية؛ أعد تحديث التطبيق.");
   return data as CashierShiftSnapshot;
 }
-export const actOnCashierShift = (action: string, input: Record<string, unknown> = {}) =>
-  runFinancialCommand<{ shiftId: string | null; action: string; replayed: boolean }>(
+export const actOnCashierShift = async (action: string, input: Record<string, unknown> = {}) => {
+  // Resolve the ORIGINAL POS attempt before freezing cash, never submit it twice.
+  if (action === "close" && (await resolvePendingFinancialCommand("ledger:sale")))
+    throw new Error("تم تأكيد معاملة بيع سابقة. حدّث الوردية وأعد عدّ النقدية قبل الإغلاق.");
+  return runFinancialCommand<{ shiftId: string | null; action: string; replayed: boolean }>(
     "cashier_shift",
     { ...input, action },
     "cashier-shift",
   );
-export const resolveCashierShift = () => resolvePendingFinancialCommand("cashier-shift");
+};
+export const resolveCashierShift = async () => {
+  await resolvePendingFinancialCommand("ledger:sale");
+  return resolvePendingFinancialCommand("cashier-shift");
+};
 export function shiftError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const codes: Record<string, string> = {
@@ -106,9 +122,14 @@ export function shiftError(error: unknown): string {
     NEXUS_SHIFT_ADMIN_REQUIRED: "هذا الإجراء للمدير فقط.",
     NEXUS_SHIFT_FORBIDDEN: "تعذّر التحقق من صلاحية الوردية أو ترخيص المتجر.",
     NEXUS_SHIFT_WRONG_CASHIER: "الوردية مخصصة لكاشير آخر.",
+    NEXUS_SHIFT_POLICY_CHANGED: "تغيّرت سياسة العهدة. حدّثها وأعد تأكيد المبلغ المستلم فعليًا.",
+    NEXUS_SHIFT_STATE_CHANGED: "تغيّرت حركات أو حالة الوردية. حدّثها وأعد العدّ أو تأكيد التسليم.",
+    NEXUS_SHIFT_DUPLICATE: "توجد وردية أو حركة مسجلة بالفعل؛ حدّث السجل دون تكرارها.",
     NEXUS_SHIFT_OVERRIDE_REASON_REQUIRED: "اكتب سبب تدخل المدير في الوردية.",
     NEXUS_SHIFT_FLOAT_UNFUNDED:
       "الرصيد النقدي المسجل لا يغطي العهدة. راجع النقدية مع المدير دون إنشاء رصيد وهمي.",
+    NEXUS_SHIFT_FLOAT_TRANSFER_CONFIRM_REQUIRED:
+      "أكد استلام زيادة العهدة من الخزنة أو تسليم فرق تخفيضها فعليًا قبل فتح الوردية.",
     NEXUS_SHIFT_ACTIVE: "أكمل إغلاق الوردية وتسليم النقدية قبل تغيير السياسة.",
     NEXUS_DRAWER_CASH_INSUFFICIENT: "نقدية الدرج لا تكفي لهذه الحركة؛ لم تُسجل العملية.",
     NEXUS_SHIFT_NOT_OPEN: "الوردية ليست مفتوحة؛ حدّث الحالة قبل أي إجراء.",

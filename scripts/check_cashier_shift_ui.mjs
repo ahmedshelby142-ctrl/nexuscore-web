@@ -7,6 +7,7 @@ const money = (p) =>
 const shift = (status = "open", extra = {}) => ({
   id: "synthetic-shift",
   cashier_id: "synthetic-cashier",
+  revision: 1,
   shift_day: "2026-10-18",
   status,
   opened_at: "2026-10-18T08:00:00Z",
@@ -47,6 +48,7 @@ function fixture({ admin = false, s = shift(), enabled = true, busy = false, err
       admin,
       policy: {
         cashier_id: "synthetic-cashier",
+        revision: 1,
         opening_piastre: 50000,
         keep_piastre: 50000,
         updated_at: "synthetic-v1",
@@ -134,7 +136,13 @@ test("actual counted cash and explicit count confirmation are required;2700 clos
     assert.deepEqual(f.calls, [
       [
         "close",
-        { shiftId: "synthetic-shift", actualPiastres: 270000, countConfirmed: true, reason: "" },
+        {
+          shiftId: "synthetic-shift",
+          expectedRevision: 1,
+          actualPiastres: 270000,
+          countConfirmed: true,
+          reason: "",
+        },
       ],
     ]);
   } finally {
@@ -198,7 +206,10 @@ test("handover needs explicit cashier confirmation; pending owner receipt is dis
     );
     await f.h.perform(() => u.click(b));
     assert.deepEqual(f.calls, [
-      ["report_handover", { shiftId: "synthetic-shift", physicalHandoverConfirmed: true }],
+      [
+        "report_handover",
+        { shiftId: "synthetic-shift", expectedRevision: 1, physicalHandoverConfirmed: true },
+      ],
     ]);
   } finally {
     await f.h.cleanup();
@@ -233,7 +244,10 @@ test("ADMIN must explicitly confirm physical receipt;2400 total sales is never u
     );
     await f.h.perform(() => u.click(b));
     assert.deepEqual(f.calls, [
-      ["confirm_handover", { shiftId: "synthetic-shift", cashReceivedConfirmed: true }],
+      [
+        "confirm_handover",
+        { shiftId: "synthetic-shift", expectedRevision: 1, cashReceivedConfirmed: true },
+      ],
     ]);
   } finally {
     await f.h.cleanup();
@@ -250,9 +264,46 @@ test("opening is a conscious custody receipt, not an automatic timer, salary or 
       u.click(f.h.getByLabelText(document.body, /عدَدت واستلمت العهدة المخصصة فعليًا/)),
     );
     await f.h.perform(() => u.click(b));
-    assert.deepEqual(f.calls, [["open", { floatReceived: true, reason: "" }]]);
+    assert.deepEqual(f.calls, [
+      ["open", { expectedPolicyRevision: 1, floatReceived: true, reason: "" }],
+    ]);
   } finally {
     await f.h.cleanup();
+  }
+});
+test("changed next-day float requires a specific physical top-up/return acknowledgement", async () => {
+  for (const target of [40000, 60000]) {
+    const f = fixture({ s: null });
+    f.model.data.policy.opening_piastre = target;
+    f.model.data.policy.previous_retained_piastre = 50000;
+    f.model.data.policy.has_previous_shift = true;
+    try {
+      const user = await f.render(),
+        button = f.h.getByRole(document.body, "button", { name: "استلام العهدة وفتح الوردية" });
+      await f.h.perform(() =>
+        user.click(f.h.getByLabelText(document.body, /عدَدت واستلمت العهدة المخصصة فعليًا/)),
+      );
+      assert.equal(button.disabled, true);
+      const label =
+        target < 50000
+          ? /سلّمت فرق تخفيض العهدة .* إلى الخزنة فعليًا/
+          : /استلمت زيادة العهدة .* من الخزنة فعليًا/;
+      await f.h.perform(() => user.click(f.h.getByLabelText(document.body, label)));
+      await f.h.perform(() => user.click(button));
+      assert.deepEqual(f.calls, [
+        [
+          "open",
+          {
+            expectedPolicyRevision: 1,
+            floatReceived: true,
+            reason: "",
+            floatAdjustmentConfirmed: true,
+          },
+        ],
+      ]);
+    } finally {
+      await f.h.cleanup();
+    }
   }
 });
 test("ADMIN float form uses existing cashier and exact piastres; active shift prevents changing its float snapshot", async () => {
@@ -270,6 +321,7 @@ test("ADMIN float form uses existing cashier and exact piastres; active shift pr
       [
         "configure",
         {
+          expectedPolicyRevision: 1,
           cashierId: "synthetic-cashier",
           openingPiastres: 50001,
           keepPiastres: 50000,
@@ -341,6 +393,7 @@ test("same financial-command retry envelope is used for shift close after a lost
                   requestId: args.p_id,
                   action: args.p_input.action,
                   shiftId: "synthetic-shift",
+                  expectedRevision: 1,
                   replayed: true,
                 },
                 error: null,
@@ -364,7 +417,13 @@ test("same financial-command retry envelope is used for shift close after a lost
     const { runFinancialCommand } = h.load("src/lib/financialCommand.ts");
     await runFinancialCommand(
       "cashier_shift",
-      { action: "close", shiftId: "synthetic-shift", actualPiastres: 270000, countConfirmed: true },
+      {
+        action: "close",
+        shiftId: "synthetic-shift",
+        expectedRevision: 1,
+        actualPiastres: 270000,
+        countConfirmed: true,
+      },
       "cashier-shift",
     );
     assert.equal(calls.length, 2);
@@ -376,5 +435,104 @@ test("same financial-command retry envelope is used for shift close after a lost
     await h.cleanup();
     if (previous) Object.defineProperty(globalThis, "sessionStorage", previous);
     else delete globalThis.sessionStorage;
+  }
+});
+
+test("durable rejected response after a lost reply clears only that failed shift envelope", async () => {
+  const calls = [],
+    storage = new Map(),
+    previous = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+  const h = uiHarness({
+    "@/lib/supabase": {
+      getSupabaseClient: () => ({
+        rpc: async (name, args) => {
+          calls.push({ name, args });
+          return calls.length === 1
+            ? { error: { message: "Synthetic lost response" } }
+            : {
+                data: {
+                  requestId: args.p_id,
+                  action: args.p_input.action,
+                  replayed: calls.length === 2,
+                  ...(calls.length === 2
+                    ? { rejected: true, code: "NEXUS_SHIFT_STATE_CHANGED" }
+                    : { shiftId: "synthetic-shift" }),
+                },
+                error: null,
+              };
+        },
+      }),
+    },
+    "@/services/api/storeContext": {
+      getSyncIdentity: async () => ({ storeId: "synthetic-store", deviceId: "synthetic-device" }),
+    },
+  });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: {
+      getItem: (k) => storage.get(k) ?? null,
+      setItem: (k, v) => storage.set(k, v),
+      removeItem: (k) => storage.delete(k),
+    },
+  });
+  try {
+    const { runFinancialCommand } = h.load("src/lib/financialCommand.ts");
+    await assert.rejects(
+      () =>
+        runFinancialCommand(
+          "cashier_shift",
+          { action: "close", expectedRevision: 1 },
+          "cashier-shift",
+        ),
+      /STATE_CHANGED/,
+    );
+    assert.equal(storage.size, 0);
+    assert.equal(calls[0].args.p_id, calls[1].args.p_id);
+    await runFinancialCommand(
+      "cashier_shift",
+      { action: "close", expectedRevision: 2 },
+      "cashier-shift",
+    );
+    assert.notEqual(calls[2].args.p_id, calls[0].args.p_id);
+  } finally {
+    await h.cleanup();
+    if (previous) Object.defineProperty(globalThis, "sessionStorage", previous);
+    else delete globalThis.sessionStorage;
+  }
+});
+test("closing resolves the original pending POS sale first and requires a new cash count", async () => {
+  let resolved = 0,
+    shiftCalls = 0;
+  const h = uiHarness({
+    "@/lib/supabase": { getSupabaseClient: () => null },
+    "@/services/api/storeContext": { getSyncIdentity: async () => null },
+    "@/services/operationalSource": { captureReadAuthority() {}, assertReadAuthority() {} },
+    "./financialCommand": {
+      resolvePendingFinancialCommand: async (scope) => {
+        assert.equal(scope, "ledger:sale");
+        resolved++;
+        return { eventId: "original-committed-sale" };
+      },
+      runFinancialCommand: async () => {
+        shiftCalls++;
+      },
+    },
+  });
+  try {
+    const { actOnCashierShift } = h.load("src/lib/cashierShift.ts");
+    await assert.rejects(
+      () =>
+        actOnCashierShift("close", {
+          shiftId: "synthetic-shift",
+          expectedRevision: 1,
+          actualPiastres: 50000,
+          countConfirmed: true,
+        }),
+      /أعد عدّ النقدية/,
+    );
+    assert.equal(resolved, 1);
+    assert.equal(shiftCalls, 0);
+  } finally {
+    await h.cleanup();
   }
 });

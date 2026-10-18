@@ -1,6 +1,7 @@
 import { refreshReturnDocuments } from "@/lib/returnDocuments";
 import { stockIsAuthoritative } from "@/lib/ledger/stockSnapshot";
 import type {CashierShiftModel} from "@/hooks/useCashierShift";
+import {shiftError} from "@/lib/cashierShift";
 import { moneyFigure, statusOf } from "@/lib/figure";
 import { LoadError } from "@/components/ui/load-error";
 import { useState, useRef, useEffect, useMemo } from "react";
@@ -1143,7 +1144,7 @@ export default function CheckoutForm({shift}:{shift?:CashierShiftModel}={}) {
         // cashier can retry. Say that rather than leaving them guessing.
         setResult({
           success: false,
-          message: `لم تُسجَّل العملية ولم يتغيّر أي رصيد. ${e instanceof Error ? e.message : String(e)}`,
+          message: `لم تُسجَّل العملية ولم يتغيّر أي رصيد. ${shiftError(e)}`,
         });
       } else {
         // The ledger has it. Whatever failed after it, the basket goes, so a

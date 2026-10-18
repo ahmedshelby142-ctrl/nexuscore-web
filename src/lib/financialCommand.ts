@@ -152,6 +152,11 @@ export async function runFinancialCommand<T>(
           throw new Error("لم يصل تأكيد صالح لتصحيح رسوم التحصيل؛ أعد قراءة نفس العملية.");
         if(op.command==="cashier_shift"&&(data?.requestId!==op.id||data?.action!==(op.input as any).action))
           throw new Error("لم يصل تأكيد صالح لإجراء الوردية؛ تحقّق من نفس المحاولة دون تكرار الإقفال أو التسليم.");
+        if(op.command==="cashier_shift"&&data?.rejected===true){
+          // The server persisted a negative receipt. The original ID can NEVER commit later.
+          op.uncertain=false;clear();
+          throw Object.assign(new Error(String(data.code??"NEXUS_SHIFT_INVALID")),{definite:true});
+        }
         clear();
         if (changed)
           throw Object.assign(

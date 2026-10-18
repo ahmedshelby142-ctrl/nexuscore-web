@@ -13,14 +13,28 @@ const evidence = [];
 const q = async (c, name, args) =>
   (await c.query(`select public.${name}(${args.map((_, i) => "$" + (i + 1)).join(",")}) r`, args))
     .rows[0].r;
-const action = (f, c, name, input = {}, id = crypto.randomUUID()) =>
-  q(c, "record_cashier_shift", [
+const requestPins = new Map();
+const action = async (f, c, name, input = {}, id = crypto.randomUUID()) => {
+  // A test form pins its real server snapshot; the SAME request keeps that pin on replay.
+  if (!requestPins.has(id)) {
+    const view = await snap(f, c);
+    requestPins.set(
+      id,
+      name === "open" || name === "configure"
+        ? { expectedPolicyRevision: view.policy?.revision ?? 0 }
+        : { expectedRevision: view.shift?.revision ?? 0 },
+    );
+  }
+  const result = await q(c, "record_cashier_shift", [
     id,
     f.store,
     f.device,
     "cashier_shift",
-    { action: name, ...input },
+    { action: name, ...requestPins.get(id), ...input },
   ]);
+  if (result.rejected) throw Object.assign(new Error(result.code), { code: result.code });
+  return result;
+};
 const snap = (f, c = cashier) => q(c, "cashier_shift_snapshot", [f.store]);
 const money = async (f) =>
   (
@@ -392,9 +406,9 @@ test("one shift per day and one active drawer; same request replays without repe
     () => action(f, cashier, "open", { floatReceived: false }, id),
     /PAYLOAD_MISMATCH/,
   );
-  await assert.rejects(() => action(f, cashier, "open", input), /duplicate key/);
+  await assert.rejects(() => action(f, cashier, "open", input), /SHIFT_DUPLICATE/);
   await finish(f, (await snap(f)).shift, 50000);
-  await assert.rejects(() => open(f), /duplicate key/);
+  await assert.rejects(() => open(f), /SHIFT_DUPLICATE/);
   assert.equal((await snap(f)).history.length, 1);
   assert.equal(r.shiftId, (await snap(f)).shift.id);
 });
@@ -517,7 +531,7 @@ test("expense allocation uses immutable cash lines, not caller amounts, and cann
         eventId: id,
         reason: "Duplicate should fail",
       }),
-    /duplicate key/,
+    /SHIFT_DUPLICATE/,
   );
   assert.deepEqual(await money(f), b);
 });
@@ -574,7 +588,7 @@ test("a refund cannot consume main-safe money when the assigned drawer lacks cas
   assert.deepEqual(await money(f), b);
   assert.equal((await snap(f)).shift.movements.length, 0);
 });
-test("in-flight sale completes before closing snapshot; stale physical count creates visible review instead of losing the sale", async () => {
+test("in-flight sale completes before closing; stale count is rejected for recount without losing the sale", async () => {
   const f = await fixture(),
     s = await open(f),
     a = await db.client("CASHIER_ONLY"),
@@ -583,16 +597,21 @@ test("in-flight sale completes before closing snapshot; stale physical count cre
   let closing;
   try {
     await sell(f, 1, "inStoreSafe", {}, a);
-    closing = action(f, b, "close", { shiftId: s.id, actualPiastres: 50000, countConfirmed: true });
+    closing = action(f, b, "close", {
+      shiftId: s.id,
+      actualPiastres: 50000,
+      countConfirmed: true,
+      expectedRevision: s.revision,
+    });
     await a.query("COMMIT");
-    await closing;
+    await assert.rejects(() => closing, /STATE_CHANGED/);
   } finally {
     await a.query("ROLLBACK");
   }
   const r = (await snap(f)).shift;
-  assert.equal(r.expected_piastre, 51000);
-  assert.equal(r.variance_piastre, -1000);
-  assert.equal(r.status, "awaiting_review");
+  assert.equal(r.live_expected_piastre, 51000);
+  assert.equal(r.expected_piastre, null);
+  assert.equal(r.status, "open");
 });
 test("new policy changes only future shift floats; physical carry-in and reasoned override are recorded without ledger transfers", async () => {
   const f = await fixture(),
@@ -618,4 +637,101 @@ test("new policy changes only future shift floats; physical carry-in and reasone
   assert.equal((await snap(f)).policy.opening_piastre, 40000);
   assert.equal((await snap(f)).shift.opening_piastre, 50000);
   assert.deepEqual(await money(f), b);
+});
+test("next-day float decreases/increases require explicit physical transfer acknowledgement and never mint cash", async () => {
+  for (const target of [40000, 60000]) {
+    const f = await fixture({ opening: target, keep: target }),
+      previous = crypto.randomUUID();
+    // NEW synthetic custody fixture for yesterday; no historical financial row is rewritten.
+    await db.admin.query(
+      `insert into financial_private.cashier_shifts(id,store_id,cashier_id,shift_day,opened_at,opened_by,planned_end_at,opening_piastre,keep_piastre,status,expected_piastre,actual_piastre,variance_piastre,retained_piastre,handover_piastre,received_by,closed_at)
+   values($1,$2,$3,(clock_timestamp() at time zone 'Africa/Cairo')::date-1,clock_timestamp()-interval '1 day',$3,clock_timestamp()-interval '16 hours',50000,50000,'closed',50000,50000,0,50000,0,$4,clock_timestamp()-interval '16 hours')`,
+      [previous, f.store, db.users.CASHIER_ONLY, db.users.ADMIN],
+    );
+    const before = await money(f);
+    assert.equal((await snap(f)).policy.previous_retained_piastre, 50000);
+    await assert.rejects(
+      () => action(f, cashier, "open", { floatReceived: true }),
+      /FLOAT_TRANSFER_CONFIRM_REQUIRED/,
+    );
+    await action(f, cashier, "open", { floatReceived: true, floatAdjustmentConfirmed: true });
+    const s = (await snap(f)).shift;
+    assert.equal(s.opening_piastre, target);
+    assert.equal(s.carry_in_piastre, 50000);
+    assert.equal(s.float_adjustment_piastre, target - 50000);
+    assert.deepEqual(await money(f), before);
+  }
+});
+
+test("stale float policy and stale handover acknowledgements fail against monotonic revisions", async () => {
+  const f = await fixture(),
+    oldPolicy = (await snap(f)).policy.revision;
+  await action(f, admin, "configure", {
+    cashierId: db.users.CASHIER_ONLY,
+    openingPiastres: 60000,
+    keepPiastres: 50000,
+    enabled: true,
+  });
+  await assert.rejects(
+    () => action(f, cashier, "open", { floatReceived: true, expectedPolicyRevision: oldPolicy }),
+    /POLICY_CHANGED/,
+  );
+  const s = await open(f);
+  await action(f, cashier, "close", { shiftId: s.id, actualPiastres: 60000, countConfirmed: true });
+  const oldClosing = (await snap(f)).shift;
+  await action(f, admin, "reopen", { shiftId: s.id, reason: "Owner requested a physical recount" });
+  await action(f, cashier, "close", { shiftId: s.id, actualPiastres: 59999, countConfirmed: true });
+  await action(f, admin, "review_discrepancy", {
+    shiftId: s.id,
+    reason: "One piastre difference recorded after recount",
+  });
+  await assert.rejects(
+    () =>
+      action(f, cashier, "report_handover", {
+        shiftId: s.id,
+        physicalHandoverConfirmed: true,
+        expectedRevision: oldClosing.revision,
+      }),
+    /STATE_CHANGED/,
+  );
+  assert.equal((await snap(f)).shift.status, "awaiting_handover");
+});
+test("durable negative receipt remains rejected after policy changes, while a fresh reviewed request can proceed", async () => {
+  const f = await fixture({ funded: 100 }),
+    id = crypto.randomUUID(),
+    input = {
+      action: "open",
+      floatReceived: true,
+      expectedPolicyRevision: (await snap(f)).policy.revision,
+    };
+  const rejected = await q(cashier, "record_cashier_shift", [
+    id,
+    f.store,
+    f.device,
+    "cashier_shift",
+    input,
+  ]);
+  assert.equal(rejected.rejected, true);
+  assert.equal(rejected.code, "NEXUS_SHIFT_FLOAT_UNFUNDED");
+  const before = await money(f);
+  await action(f, admin, "configure", {
+    cashierId: db.users.CASHIER_ONLY,
+    openingPiastres: 5000,
+    keepPiastres: 5000,
+    enabled: true,
+  });
+  const replay = await q(cashier, "record_cashier_shift", [
+    id,
+    f.store,
+    f.device,
+    "cashier_shift",
+    input,
+  ]);
+  assert.equal(replay.rejected, true);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.code, rejected.code);
+  assert.equal((await snap(f)).shift, null);
+  await open(f);
+  assert.equal((await snap(f)).shift.opening_piastre, 5000);
+  assert.deepEqual(await money(f), before);
 });

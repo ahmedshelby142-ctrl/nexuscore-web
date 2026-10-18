@@ -39,6 +39,10 @@ before(async()=>{
  product=crypto.randomUUID();await command(admin,'product_catalog',{action:'create',unitCost:7.13,product:{id:product,name:'Synthetic privacy item',sku:product,quantity:60,unitPrice:10,metadata:{variants:[]}}});
  box=crypto.randomUUID();await db.insert('products',{id:box,store_id:db.store,device_id:db.device,name:'Synthetic privacy box',sku:box,quantity:0,unitPrice:10,isActive:true,isBundle:true,bundleItems:[{productId:product,quantity:2}],metadata:{variants:[]}});
  baseline=await snapshot();
+ // Actual Supabase public defaults grant DML to authenticated, and the
+ // released orders view already retains ALL. A read projection must revoke
+ // inherited writers explicitly, not depend on a narrower local fixture.
+ await db.admin.query('GRANT ALL ON public.orders_operational TO authenticated,service_role; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon,authenticated,service_role; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon,authenticated,service_role');
  const fingerprint=async()=>(await db.admin.query(`select jsonb_build_object('functions',(select md5(string_agg(pg_get_functiondef(p.oid),'|' order by p.oid)) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname in ('public','financial_private')),
   'policies',(select jsonb_agg(to_jsonb(t) order by tablename,policyname) from pg_policies t where schemaname='public'),'tables',(select jsonb_agg(table_name order by table_name) from information_schema.tables where table_schema='financial_private')) r`)).rows[0].r;
  const old=await fingerprint();await db.admin.query('BEGIN');try{await db.admin.query(read('supabase/migrations/'+migration));}finally{await db.admin.query('ROLLBACK');}
@@ -61,6 +65,15 @@ for(const role of ['CASHIER_ONLY','POS_ECOMMERCE','ECOMMERCE_ONLY'])test(role+' 
 });
 test('ADMIN and ACCOUNTANT retain exact stock valuation and full finance',async()=>{
  for(const role of ['ADMIN','ACCOUNTANT']){const r=(await clients[role].query("select * from ledger_balances($1,'stock')",[db.store])).rows.find(x=>x.subject_id===product);assert.equal(Number(r.amount),42780);}
+});
+
+test('operational views stay SELECT-only under actual released and default Supabase DML grants',async()=>{
+ for(const view of ['orders_operational','return_records_operational']){
+  assert.equal((await db.admin.query('select has_table_privilege(\'authenticated\',$1,\'SELECT\') allowed',[view])).rows[0].allowed,true);
+  for(const privilege of ['INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN'])
+   assert.equal((await db.admin.query('select has_table_privilege(\'authenticated\',$1,$2) allowed',[view,privilege])).rows[0].allowed,false,view+' '+privilege);
+  assert.equal((await db.admin.query('select has_table_privilege(\'anon\',$1,\'SELECT\') allowed',[view])).rows[0].allowed,false);
+ }
 });
 test('Cashier zero-cost sale snapshots server WAC, replays once and rejects changed request without effects',async()=>{
  const c=clients.CASHIER_ONLY,input=sale(),id=crypto.randomUUID(),r=await command(c,'pos_sale',input,id);
@@ -120,6 +133,11 @@ test('operational PATCH and public readers retain state/customer fields without 
  await unchanged(()=>q(c,'patch_operational_order',[crypto.randomUUID(),o.id,{status:'returned'}]),/FORBIDDEN/);
  await unchanged(()=>q(clients.CASHIER_ONLY,'patch_operational_order',[db.store,o.id,{status:'returned'}]),/FORBIDDEN/);
  await unchanged(()=>q(c,'patch_operational_order',[db.store,o.id,{status:'delivered'}]),/COMMAND|DELIVERY|STAMP/);
+ // The operational projection must not bypass that same command through its
+ // retained simple status column, nor expose an alternate return DELETE.
+ for(const sql of ["update orders_operational set status='delivered' where id=$1",'delete from orders_operational where id=$1','delete from return_records_operational where original_order_id=$1']){
+  const before=await snapshot();await assert.rejects(()=>c.query(sql,[o.id]),e=>e.code==='42501');assert.deepEqual(await snapshot(),before);
+ }
 });
 test('COD fee correction and its replay preserve allowed per-order fees without exposing hidden inventory costs',async()=>{
  const c=clients.ECOMMERCE_ONLY,o=await orderFixture(),input={orderId:o.id,before:0,amount:0.23,reason:'Synthetic fee correction'},id=crypto.randomUUID();

@@ -282,8 +282,11 @@ CREATE VIEW public.return_records_operational WITH (security_barrier=true) AS
  SELECT (jsonb_populate_record(NULL::public.return_records,CASE WHEN public.can_read_store_finance(r.store_id) THEN to_jsonb(r)
   ELSE public.strip_inventory_finance(to_jsonb(r)) END)).* FROM public.return_records r
  WHERE public.has_role(r.store_id,VARIADIC ARRAY['ADMIN','ACCOUNTANT','POS_ECOMMERCE','ECOMMERCE_ONLY']) OR public.can_read_pos_return(r.store_id,r.original_order_id);
-REVOKE ALL ON public.return_records_operational FROM PUBLIC,anon;
-GRANT SELECT ON public.return_records_operational TO authenticated;
+-- These are READ projections. Existing view ACLs and Supabase's table defaults
+-- can include INSERT/UPDATE/DELETE; preserve no alternate privileged writer.
+-- ADMIN's legitimate writes still use the base tables/validated commands.
+REVOKE ALL ON public.orders_operational,public.return_records_operational FROM PUBLIC,anon,authenticated;
+GRANT SELECT ON public.orders_operational,public.return_records_operational TO authenticated;
 
 -- The only remaining direct order mutation is an operational PATCH. No cost
 -- echo or full-row upsert. Existing financial/state/return-cause triggers stay

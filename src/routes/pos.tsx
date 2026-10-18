@@ -2,6 +2,8 @@ import { Component, lazy, Suspense, type ReactNode } from "react";
 import { ShoppingCart, AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useBusinessStore } from "@/store/useBusinessStore";
+import {useCashierShift} from "@/hooks/useCashierShift";
+import {CashierShiftPanel} from "@/components/sales/CashierShiftPanel";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   constructor(props: { children: ReactNode }) {
@@ -53,6 +55,7 @@ const LoadingFallback = () => (
 
 export function POS() {
   const products = useBusinessStore((s) => s.products);
+  const shift=useCashierShift();
 
   return (
     <div className="space-y-6">
@@ -73,8 +76,9 @@ export function POS() {
         </div>
       </div>
       <ErrorBoundary>
+        <CashierShiftPanel model={shift}/>
         <Suspense fallback={<LoadingFallback />}>
-          <CheckoutForm />
+          <CheckoutForm shift={shift}/>
         </Suspense>
       </ErrorBoundary>
     </div>

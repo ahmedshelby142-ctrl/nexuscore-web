@@ -77,7 +77,9 @@ export async function runFinancialCommand<T>(
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const rpc =
-          op.command === "document_number"
+          op.command === "cashier_shift"
+            ? "record_cashier_shift"
+            : op.command === "document_number"
             ? "record_document_number"
             : op.command === "order_place"
             ? "place_order"
@@ -148,6 +150,8 @@ export async function runFinancialCommand<T>(
           throw new Error("لم يصل تأكيد صالح لمستند الأصل؛ أعد قراءة نفس العملية.");
         if(op.command==="cod_service_fee"&&(!data?.order||data.order.id!==(op.input as any).orderId||data.order.store_id!==identity.storeId))
           throw new Error("لم يصل تأكيد صالح لتصحيح رسوم التحصيل؛ أعد قراءة نفس العملية.");
+        if(op.command==="cashier_shift"&&(data?.requestId!==op.id||data?.action!==(op.input as any).action))
+          throw new Error("لم يصل تأكيد صالح لإجراء الوردية؛ تحقّق من نفس المحاولة دون تكرار الإقفال أو التسليم.");
         clear();
         if (changed)
           throw Object.assign(

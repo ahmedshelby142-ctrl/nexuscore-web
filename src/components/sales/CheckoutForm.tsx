@@ -1,5 +1,6 @@
 import { refreshReturnDocuments } from "@/lib/returnDocuments";
 import { stockIsAuthoritative } from "@/lib/ledger/stockSnapshot";
+import type {CashierShiftModel} from "@/hooks/useCashierShift";
 import { moneyFigure, statusOf } from "@/lib/figure";
 import { LoadError } from "@/components/ui/load-error";
 import { useState, useRef, useEffect, useMemo } from "react";
@@ -179,7 +180,7 @@ function normalizeProduct(p: any, mode: "retail" | "wholesale" = "retail") {
   };
 }
 
-export default function CheckoutForm() {
+export default function CheckoutForm({shift}:{shift?:CashierShiftModel}={}) {
   const rawProducts = useBusinessStore((s) => s.products);
   // Archived customers are not selectable — same rule as the product picker.
   //
@@ -647,6 +648,10 @@ export default function CheckoutForm() {
     }
     // A مرتجع جملة has no cart by design — it is picked off invoices. Every
     // other movement still needs one.
+    if (saleMode === "retail" && shift && !shift.canSell) {
+      setResult({success:false,message:"راجع حالة الوردية وافتحها قبل البيع؛ تدخل المدير يتطلب سببًا موثقًا."});
+      return;
+    }
     if (cart.length === 0 && !isWholesaleReturn) {
       setResult({ success: false, message: "السلة فارغة" });
       return;
@@ -725,7 +730,7 @@ export default function CheckoutForm() {
         // sync with the money — that is the whole point.
         retailAttempted = true;
         if (isPosExchange) {
-          const exchange = await commitPosExchange({cart,wallet:selectedWallet,customerId:finalCustomerId||undefined,customerName,customerPhone,discountCodeId:appliedDiscount?.id,discountAmount});
+          const exchange = await commitPosExchange({cart,wallet:selectedWallet,customerId:finalCustomerId||undefined,customerName,customerPhone,discountCodeId:appliedDiscount?.id,discountAmount,shiftOverrideReason:shift?.overrideReason.trim()||undefined});
           retailReceiptId = exchange.eventId;
           retailDocumentNumber = exchange.replacementDocumentNumber;
           totalAmount = exchange.netPiastres / 100;
@@ -737,6 +742,7 @@ export default function CheckoutForm() {
           refType: "pos_sale",
           payload: {
             channel: "pos",
+            shiftOverrideReason: shift?.overrideReason.trim() || undefined,
             walletId: selectedWallet,
             itemCount: cart.length,
             lines: cart.map((i) => ({ name: i.productName, qty: i.quantity, variantName: i.variantName })),
@@ -788,6 +794,7 @@ export default function CheckoutForm() {
         // on nothing may say "nothing changed", and the basket must not survive
         // to be sold a second time.
         saleCommitted = true;
+        void shift?.refresh();
         if (appliedDiscount?.id) await refreshDiscountRow(appliedDiscount.id);
       } else {
         // The tab is hidden for these roles, but a stale mode in a restored
@@ -1821,7 +1828,7 @@ export default function CheckoutForm() {
               return (
                 <Button
                   onClick={handleCompleteSale}
-                  disabled={blocked || isProcessing}
+                  disabled={blocked || isProcessing || (saleMode === "retail" && !!shift && !shift.canSell)}
                   className={cn(
                     "w-full h-16 text-2xl font-black mt-2 text-white shadow-xl rounded-xl transition-all",
                     btnColor

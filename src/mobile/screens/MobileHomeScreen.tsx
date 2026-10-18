@@ -13,8 +13,11 @@ import { QueueRow } from "@/mobile/components/QueueRow";
 import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/components/States";
 import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { formatArabicCount } from "@/mobile/viewmodels/formatters";
+import {useCashierShift} from "@/hooks/useCashierShift";
+import {CashierShiftPanel} from "@/components/sales/CashierShiftPanel";
 
 export function MobileHomeScreen() {
+  const cashierShift=useCashierShift();
   const userRole = useAuthStore((state) => state.userRole);
   const username = useAuthStore((state) => state.username);
   const licenseDecision = useStoreLicense((state) => state.decision);
@@ -38,6 +41,7 @@ export function MobileHomeScreen() {
       <h1 id="mobile-home-title" className="sr-only">مركز العمليات</h1>
 
       <div className="mobile-home-body">
+        <CashierShiftPanel model={cashierShift}/>
         {isOffline ? (
           <OfflineState />
         ) : homeData.loading ? (

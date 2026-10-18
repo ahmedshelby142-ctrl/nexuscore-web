@@ -30,13 +30,14 @@ export interface PosExchangeResult {
 export async function commitPosExchange(input: {
   cart: readonly any[]; wallet: string; customerId?: string; customerName?: string; customerPhone?: string;
   discountCodeId?: string; discountAmount?: number;
+  shiftOverrideReason?: string;
 }): Promise<PosExchangeResult> {
   const returned = input.cart.filter(i => i.quantity < 0), replacement = input.cart.filter(i => i.quantity > 0);
   const sources = new Set(returned.map(i => i.returnOfEventId));
   if (!returned.length || !replacement.length || sources.size !== 1 || !returned[0].returnOfEventId)
     throw Object.assign(new Error("اختر مرتجعًا موثقًا وبديلًا من فاتورة أصلية واحدة."), { definite: true });
   const base = { kind: "sale", refType: "pos_sale", actor: "POS" };
-  const payload = { channel: "pos", walletId: input.wallet, customerId: input.customerId, customerName: input.customerName, customerPhone: input.customerPhone };
+  const payload = { channel: "pos", walletId: input.wallet, customerId: input.customerId, customerName: input.customerName, customerPhone: input.customerPhone, shiftOverrideReason:input.shiftOverrideReason };
   const items = returned.map(i => ({ productId: i.productId, productName: i.productName, variantName: i.variantName,
     quantity: i.quantity, unitPrice: i.unitPrice, ...returnStockFields(i.historicalCost ?? {}) }));
   const positive = replacement.map(i => ({ productId: i.productId, productName: i.productName, variantName: i.variantName,

@@ -54,15 +54,17 @@ export function useCashierShift() {
     setOverrideReason("");
   }, [data?.shift?.id, data?.shift?.status]);
   const execute = async (action: string, input: Record<string, unknown> = {}) => {
-    if (submitting.current) return;
+    if (submitting.current) return false;
     submitting.current = true;
     setBusy(true);
     setError("");
     try {
       await actOnCashierShift(action, input);
       await refresh();
+      return true;
     } catch (e) {
       setError(shiftError(e));
+      return false;
     } finally {
       submitting.current = false;
       setBusy(false);

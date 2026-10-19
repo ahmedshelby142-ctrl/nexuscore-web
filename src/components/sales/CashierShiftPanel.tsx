@@ -5,6 +5,7 @@ import { shiftMoneyInput } from "@/lib/cashierShift";
 import { WALLET_LABELS, type WalletType } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CashierShiftExpenseForm } from "./CashierShiftExpenseForm";
 
 const money = (n: number | null | undefined) =>
   n == null
@@ -26,6 +27,7 @@ const actions: Record<string, string> = {
   report_handover: "تأكيد الكاشير للتسليم",
   confirm_handover: "تأكيد المدير للاستلام",
   attach_movement: "تخصيص حركة مسجلة للدرج",
+  expense: "مصروف نقدي من العهدة",
   pos_payment: "دفعة فاتورة",
   admin_pos_override: "تدخل مدير في فاتورة",
 };
@@ -247,6 +249,16 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
           )}
         </dl>
       )}
+      {data?.enabled && !admin && s?.status === "open" && (
+        <CashierShiftExpenseForm
+          key={s.id}
+          availablePiastres={s.live_expected_piastre}
+          disabled={busy || loading || !!error}
+          onRecord={(input) =>
+            m.execute("expense", { shiftId: s.id, expectedRevision: s.revision, ...input })
+          }
+        />
+      )}
       {admin && (
         <details className="shift-disclosure shift-policy">
           <summary className="cursor-pointer font-medium">سياسة العهدة — للمدير فقط</summary>
@@ -415,7 +427,8 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
                           <summary>تخصيص مصروف أو حركة نقدية مسجلة للدرج</summary>
                           <p className="text-xs">
                             اختر حركة خرجت أو دخلت هذا الدرج فعلًا. لا تُنشأ حركة مالية جديدة هنا.
-                            الكاشير لا يملك صلاحية تسجيل المصروفات.
+                            مصروف الكاشير من زر «تسجيل مصروف من العهدة» يُربط تلقائيًا؛ لا تسجله أو
+                            تخصصه مرة أخرى.
                           </p>
                           <label>
                             الحركة المسجلة
@@ -714,6 +727,7 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
                           {new Date(x.recorded_at).toLocaleString("ar-EG")}
                         </time>
                       </div>
+                      {x.expense_description && <p>{x.expense_description} — تم الصرف من العهدة</p>}
                       <ShiftReference value={x.event_id} />
                     </li>
                   ))}

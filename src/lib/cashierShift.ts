@@ -33,6 +33,8 @@ export interface CashierShift {
     payment_piastre: number;
     cash_piastre: number;
     category: string;
+    expense_description?: string | null;
+    expense_category?: string | null;
     recorded_at: string;
   }[];
 }
@@ -133,6 +135,8 @@ export function shiftError(error: unknown): string {
     NEXUS_SHIFT_ACTIVE: "أكمل إغلاق الوردية وتسليم النقدية قبل تغيير السياسة.",
     NEXUS_DRAWER_CASH_INSUFFICIENT: "نقدية الدرج لا تكفي لهذه الحركة؛ لم تُسجل العملية.",
     NEXUS_SHIFT_NOT_OPEN: "الوردية ليست مفتوحة؛ حدّث الحالة قبل أي إجراء.",
+    NEXUS_SHIFT_EXPENSE_INVALID: "راجع مبلغ المصروف وبنده ووصفه؛ لم تُسجل حركة نقدية.",
+    NEXUS_OVER_BUDGET: "المصروف يتجاوز سقف البند الذي حدده المدير؛ لم يُخصم من العهدة.",
     NEXUS_SHIFT_STATE_INVALID: "تغيّرت حالة الوردية؛ حدّثها وراجع السجل.",
   };
   for (const [code, text] of Object.entries(codes)) if (message.includes(code)) return text;

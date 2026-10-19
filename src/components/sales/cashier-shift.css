@@ -1,0 +1,558 @@
+/* Presentation only. All selectors are scoped to the shared shift panel. */
+.cashier-shift-panel {
+  --shift-accent: oklch(0.43 0.08 185);
+  --shift-tint: color-mix(in oklch, var(--shift-accent) 7%, var(--card));
+  --shift-warning: oklch(0.48 0.1 70);
+  container: shift / inline-size;
+  display: grid;
+  gap: 1rem;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: clamp(0.875rem, 3vw, 1.5rem);
+  padding-block-end: max(1rem, env(safe-area-inset-bottom));
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  background: var(--card);
+  color: var(--foreground);
+  text-align: start;
+  line-height: 1.7;
+  font-family: var(--font-sans);
+}
+.dark .cashier-shift-panel {
+  --shift-accent: oklch(0.78 0.09 180);
+  --shift-warning: oklch(0.81 0.1 80);
+}
+.cashier-shift-panel :where(div, fieldset, dl, li, label, details) {
+  min-inline-size: 0;
+}
+.cashier-shift-panel :where(p, h2, dl, dt, dd, ul) {
+  margin: 0;
+}
+.cashier-shift-panel :where(p, dt, label, summary) {
+  overflow-wrap: anywhere;
+}
+.cashier-shift-panel button {
+  min-block-size: 44px;
+  block-size: auto;
+  white-space: normal;
+  line-height: 1.6;
+}
+.cashier-shift-panel :where(button, input, select, summary):focus-visible {
+  outline: 2px solid var(--shift-accent);
+  outline-offset: 3px;
+}
+.cashier-shift-panel .shift-primary-action.bg-primary {
+  background: var(--shift-accent);
+  color: var(--card);
+  box-shadow: none;
+}
+.cashier-shift-panel .shift-primary-action.bg-primary:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--shift-accent) 90%, var(--foreground));
+}
+.cashier-shift-panel .shift-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.cashier-shift-panel .shift-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+.cashier-shift-panel .shift-heading-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 42px;
+  block-size: 42px;
+  border-radius: 0.875rem;
+  background: var(--shift-tint);
+  color: var(--shift-accent);
+}
+.cashier-shift-panel .shift-heading-icon svg {
+  inline-size: 22px;
+  block-size: 22px;
+}
+.cashier-shift-panel .shift-eyebrow {
+  color: var(--shift-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.cashier-shift-panel h2 {
+  font-size: clamp(1rem, 4.8cqi, 1.25rem);
+  font-weight: 750;
+  line-height: 1.6;
+}
+.cashier-shift-panel .shift-refresh {
+  flex-shrink: 0;
+  min-inline-size: 44px;
+  padding: 0.625rem;
+  box-shadow: none;
+}
+.cashier-shift-panel .shift-refresh-label {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.cashier-shift-panel .shift-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+.cashier-shift-panel .shift-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-inline-size: 100%;
+  border-radius: 0.625rem;
+  padding: 0.3rem 0.65rem;
+  background: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+.cashier-shift-panel .shift-status > span {
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.cashier-shift-panel :is(.shift-status-open, .shift-status-closed) {
+  background: var(--shift-tint);
+  color: var(--shift-accent);
+}
+.cashier-shift-panel
+  :is(
+    .shift-status-awaiting_review,
+    .shift-status-awaiting_handover,
+    .shift-status-handover_reported
+  ) {
+  color: var(--shift-warning);
+  background: color-mix(in oklch, var(--shift-warning) 8%, var(--card));
+}
+.cashier-shift-panel :is(.shift-caption, .shift-day, .shift-timing, .shift-record-meta) {
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+}
+.cashier-shift-panel .shift-timing {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 1.25rem;
+  row-gap: 0.25rem;
+}
+.cashier-shift-panel .shift-timing > span {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.cashier-shift-panel .shift-timing svg {
+  inline-size: 14px;
+  block-size: 14px;
+  align-self: center;
+}
+.cashier-shift-panel
+  :is(.shift-summary, .shift-handover-summary, .shift-breakdown, .shift-history-money) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.625rem;
+}
+.cashier-shift-panel .shift-metric {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.875rem;
+  border-radius: 0.875rem;
+  background: color-mix(in oklch, var(--muted) 55%, var(--card));
+}
+.cashier-shift-panel .shift-metric dt {
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+}
+.cashier-shift-panel .shift-metric dd {
+  font-size: clamp(1rem, 4.9cqi, 1.5rem);
+  line-height: 1.5;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+.cashier-shift-panel .shift-metric dd bdi {
+  white-space: normal;
+}
+.cashier-shift-panel .shift-metric-primary {
+  background: var(--shift-tint);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--shift-accent) 16%, transparent);
+}
+.cashier-shift-panel .shift-metric-primary :is(dt, dd) {
+  color: var(--shift-accent);
+}
+.cashier-shift-panel .shift-metric-long {
+  grid-column: 1 / -1;
+}
+.cashier-shift-panel :is(.shift-details-body, .shift-workspace, .shift-actions, .shift-accounting) {
+  display: grid;
+  gap: 0.875rem;
+}
+.cashier-shift-panel .shift-details-body[hidden] {
+  display: none;
+}
+.cashier-shift-panel .shift-actions:empty {
+  display: none;
+}
+.cashier-shift-panel .shift-section-label {
+  margin-block: 0 0.625rem;
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+.cashier-shift-panel .shift-electronic-heading {
+  margin-block-start: 1rem;
+}
+.cashier-shift-panel .shift-history-group > .shift-disclosure + .shift-disclosure {
+  margin-block-start: 0.625rem;
+}
+.cashier-shift-panel .shift-disclosure {
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.875rem;
+  background: var(--card);
+}
+.cashier-shift-panel .shift-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-block-size: 44px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+.cashier-shift-panel .shift-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.cashier-shift-panel .shift-disclosure > summary::after {
+  content: "";
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  inline-size: 7px;
+  block-size: 7px;
+  border-inline-end: 1.5px solid currentColor;
+  border-block-end: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+.cashier-shift-panel .shift-disclosure[open] > summary::after {
+  transform: rotate(225deg);
+}
+.cashier-shift-panel .shift-disclosure[open] > summary {
+  margin-block-end: 0.75rem;
+}
+.cashier-shift-panel .shift-policy {
+  border-inline-start: 3px solid var(--shift-accent);
+  background: var(--shift-tint);
+}
+.cashier-shift-panel .shift-policy-fields {
+  display: grid;
+  gap: 0.875rem;
+}
+.cashier-shift-panel
+  :is(.shift-policy-fields, .shift-action-card)
+  label:not(:has(input[type="checkbox"])) {
+  display: grid;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+}
+.cashier-shift-panel
+  :is(.shift-policy-fields, .shift-action-card)
+  :is(input:not([type="checkbox"]), select) {
+  inline-size: 100%;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  min-block-size: 44px;
+  block-size: auto;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--input);
+  border-radius: 0.625rem;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+}
+.cashier-shift-panel input[inputmode="decimal"] {
+  font-variant-numeric: tabular-nums;
+}
+.cashier-shift-panel :is(.shift-policy-fields, .shift-action-card) button {
+  inline-size: 100%;
+}
+.cashier-shift-panel fieldset:disabled {
+  opacity: 0.65;
+}
+.cashier-shift-panel .shift-action-card {
+  display: grid;
+  gap: 0.875rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in oklch, var(--shift-accent) 20%, var(--border));
+  border-radius: 0.875rem;
+  background: var(--shift-tint);
+}
+.cashier-shift-panel .shift-action-card > * + * {
+  margin-block-start: 0;
+}
+.cashier-shift-panel label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  min-block-size: 48px;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: var(--card);
+  cursor: pointer;
+  font-size: 0.875rem;
+  line-height: 1.8;
+}
+.cashier-shift-panel input[type="checkbox"] {
+  flex-shrink: 0;
+  inline-size: 20px;
+  block-size: 20px;
+  margin-block-start: 0.2rem;
+  accent-color: var(--shift-accent);
+}
+.cashier-shift-panel .shift-policy-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.25rem;
+  padding-inline: 0.25rem;
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+}
+.cashier-shift-panel .shift-policy-summary strong {
+  color: var(--foreground);
+}
+.cashier-shift-panel .shift-expand-row {
+  display: grid;
+  gap: 0.5rem;
+}
+.cashier-shift-panel .shift-expand-row button {
+  justify-content: space-between;
+  box-shadow: none;
+}
+.cashier-shift-panel .shift-chevron {
+  transition: transform 150ms;
+}
+.cashier-shift-panel .shift-chevron-open {
+  transform: rotate(180deg);
+}
+.cashier-shift-panel :is(.shift-note, .shift-empty, .shift-error, .shift-loading) {
+  padding: 0.875rem 1rem;
+  border-radius: 0.875rem;
+  background: var(--muted);
+  font-size: 0.875rem;
+}
+.cashier-shift-panel :is(.shift-note, .shift-empty, .shift-loading) {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+.cashier-shift-panel :is(.shift-note, .shift-empty) svg {
+  inline-size: 20px;
+  block-size: 20px;
+  flex-shrink: 0;
+  margin-block-start: 0.15rem;
+}
+.cashier-shift-panel .shift-error {
+  display: grid;
+  gap: 0.75rem;
+  color: var(--destructive);
+  background: color-mix(in oklch, var(--destructive) 7%, var(--card));
+}
+.cashier-shift-panel .shift-warning {
+  color: var(--shift-warning);
+  background: color-mix(in oklch, var(--shift-warning) 7%, var(--card));
+}
+.cashier-shift-panel .shift-success {
+  color: var(--shift-accent);
+  background: var(--shift-tint);
+}
+.cashier-shift-panel .shift-empty {
+  color: var(--muted-foreground);
+}
+.cashier-shift-panel .shift-loading-mark {
+  inline-size: 16px;
+  block-size: 16px;
+  flex-shrink: 0;
+  margin-block-start: 0.25rem;
+  border: 2px solid var(--border);
+  border-block-start-color: var(--shift-accent);
+  border-radius: 50%;
+  animation: shift-loading 1s linear infinite;
+}
+.cashier-shift-panel .shift-count {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  min-inline-size: 1.5rem;
+  min-block-size: 1.5rem;
+  padding-inline: 0.25rem;
+  border-radius: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--shift-accent);
+  background: var(--shift-tint);
+  font-variant-numeric: tabular-nums;
+}
+.cashier-shift-panel .shift-records {
+  padding: 0;
+  list-style: none;
+}
+.cashier-shift-panel .shift-record {
+  padding-block: 0.875rem;
+}
+.cashier-shift-panel .shift-record + .shift-record {
+  border-block-start: 1px solid var(--border);
+}
+.cashier-shift-panel .shift-record-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+.cashier-shift-panel .shift-record-title {
+  font-size: 0.875rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.cashier-shift-panel .shift-record-kind {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.cashier-shift-panel .shift-record-amount {
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+.cashier-shift-panel .shift-record-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin-block-start: 0.25rem;
+}
+.cashier-shift-panel .shift-reference {
+  margin-block-start: 0.25rem;
+}
+.cashier-shift-panel .shift-reference summary {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 44px;
+  cursor: pointer;
+  color: var(--shift-accent);
+  font-size: 0.75rem;
+}
+.cashier-shift-panel .shift-reference code {
+  display: block;
+  max-inline-size: 100%;
+  padding: 0.625rem;
+  border-radius: 0.5rem;
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 0.75rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-align: start;
+  unicode-bidi: isolate;
+}
+.cashier-shift-panel .shift-history-money {
+  margin-block-start: 0.75rem;
+}
+.cashier-shift-panel .shift-history-money .shift-metric {
+  padding: 0.625rem;
+}
+.cashier-shift-panel .shift-history-money dd {
+  font-size: 1rem;
+}
+.cashier-shift-panel .shift-payment {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-block: 0.625rem;
+  font-size: 0.875rem;
+}
+.cashier-shift-panel .shift-audit-record {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 0.75rem;
+}
+.cashier-shift-panel .shift-audit-dot {
+  inline-size: 7px;
+  block-size: 7px;
+  margin-block-start: 0.6rem;
+  border-radius: 50%;
+  background: var(--shift-accent);
+}
+.cashier-shift-panel .shift-audit-reason {
+  margin-block-start: 0.5rem;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.cashier-shift-panel .shift-explanation {
+  border: 0;
+  padding-block: 0;
+  background: transparent;
+}
+.cashier-shift-panel .shift-explanation summary {
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+}
+@container shift (min-width: 500px) {
+  .cashier-shift-panel .shift-refresh-label {
+    position: static;
+    inline-size: auto;
+    block-size: auto;
+    clip-path: none;
+    overflow: visible;
+    white-space: normal;
+  }
+  .cashier-shift-panel .shift-policy-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cashier-shift-panel .shift-policy-fields > label:first-child {
+    grid-column: 1 / -1;
+  }
+}
+@container shift (min-width: 720px) {
+  .cashier-shift-panel .shift-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .cashier-shift-panel .shift-summary:has(> :nth-child(2):last-child) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cashier-shift-panel .shift-workspace {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  .cashier-shift-panel .shift-history {
+    grid-column: 1 / -1;
+  }
+  .cashier-shift-panel .shift-actions:empty + .shift-accounting {
+    grid-column: 1 / -1;
+  }
+}
+@keyframes shift-loading {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cashier-shift-panel .shift-loading-mark {
+    animation: none;
+  }
+  .cashier-shift-panel .shift-chevron {
+    transition: none;
+  }
+}

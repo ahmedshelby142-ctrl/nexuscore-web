@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ChevronDown, Clock3, RefreshCw, ShieldCheck, WalletCards } from "lucide-react";
 import type { CashierShiftModel } from "@/hooks/useCashierShift";
 import { shiftMoneyInput } from "@/lib/cashierShift";
 import { WALLET_LABELS, type WalletType } from "@/types";
@@ -28,6 +29,39 @@ const actions: Record<string, string> = {
   pos_payment: "دفعة فاتورة",
   admin_pos_override: "تدخل مدير في فاتورة",
 };
+
+function ShiftMetric({
+  label,
+  value,
+  emphasis = false,
+}: {
+  label: string;
+  value: string;
+  emphasis?: boolean;
+}) {
+  return (
+    <div
+      className={
+        (emphasis ? "shift-metric shift-metric-primary" : "shift-metric") +
+        (value.length > 18 ? " shift-metric-long" : "")
+      }
+    >
+      <dt>{label}</dt>
+      <dd>
+        <bdi>{value}</bdi>
+      </dd>
+    </div>
+  );
+}
+
+function ShiftReference({ value }: { value: string | number }) {
+  return (
+    <details className="shift-reference">
+      <summary>المرجع الكامل</summary>
+      <code dir="ltr">{value}</code>
+    </details>
+  );
+}
 
 export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
   const { data, loading, busy, error } = m,
@@ -127,46 +161,68 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
     : 0;
   return (
     <section
-      className="rounded-2xl border border-border bg-card p-4 space-y-4"
+      className="cashier-shift-panel"
       aria-label="وردية الكاشير"
+      aria-busy={busy || loading}
+      dir="rtl"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-bold">وردية الكاشير — ٨ ساعات</h2>
-        <Button variant="outline" disabled={busy || loading} onClick={() => void m.refresh()}>
-          تحديث الوردية
-        </Button>
-      </div>
-      {s?.status === "open" && (
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span>
-            مفتوحة — العهدة {money(s.opening_piastre)} — المتوقع بالدرج{" "}
-            {money(s.live_expected_piastre)}
+      <header className="shift-header">
+        <div className="shift-heading">
+          <span className="shift-heading-icon" aria-hidden="true">
+            <WalletCards />
           </span>
-          <Button
-            variant="outline"
-            aria-expanded={expanded}
-            aria-controls="cashier-shift-details"
-            onClick={() => setExpanded(!expanded)}
-          >
-            تفاصيل الوردية والإقفال
-          </Button>
-          {admin && !m.overrideReason.trim() && (
-            <span>تدخل المدير في البيع يتطلب سببًا من تفاصيل الوردية.</span>
-          )}
+          <div>
+            <p className="shift-eyebrow">العهدة والإقفال</p>
+            <h2>وردية الكاشير — ٨ ساعات</h2>
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          className="shift-refresh"
+          disabled={busy || loading}
+          onClick={() => void m.refresh()}
+        >
+          <RefreshCw aria-hidden="true" className={loading ? "animate-spin" : ""} />
+          <span className="shift-refresh-label">تحديث الوردية</span>
+        </Button>
+      </header>
+      {data?.enabled && s && (
+        <div className="shift-status-row">
+          <span className={"shift-status shift-status-" + s.status}>
+            <span aria-hidden="true" />
+            {states[s.status]}
+          </span>
+          <bdi className="shift-day">{s.shift_day}</bdi>
+        </div>
+      )}
+      {data?.enabled && s && (
+        <div className="shift-timing">
+          <span>
+            <Clock3 aria-hidden="true" />
+            بدأت:{" "}
+            <time dateTime={s.opened_at}>{new Date(s.opened_at).toLocaleString("ar-EG")}</time>
+          </span>
+          <span>
+            موعد المراجعة:{" "}
+            <time dateTime={s.planned_end_at}>
+              {new Date(s.planned_end_at).toLocaleString("ar-EG")}
+            </time>
+          </span>
         </div>
       )}
       {s?.status === "open" && Date.now() > Date.parse(s.planned_end_at) && (
-        <p role="status">
+        <p role="status" className="shift-note shift-warning">
           انتهت الثماني ساعات؛ أكمل العملية الجارية ثم راجع الإغلاق. لا يوجد إغلاق تلقائي.
         </p>
       )}
-      <p className="text-sm text-muted-foreground">
-        الدرج والخزنة عهدتان لنفس النقدية؛ تسليم العهدة لا ينشئ إيرادًا أو مصروفًا. مدة الثماني
-        ساعات تذكير فقط.
-      </p>
-      {loading && <p role="status">جارٍ التحقق من الوردية…</p>}
+      {loading && (
+        <div role="status" className="shift-loading">
+          <span className="shift-loading-mark" aria-hidden="true" />
+          جارٍ التحقق من الوردية…
+        </div>
+      )}
       {(error || inputError) && (
-        <div role="alert" className="text-destructive">
+        <div role="alert" className="shift-error">
           <p>{inputError || error}</p>
           {error && (
             <Button variant="outline" disabled={busy} onClick={() => void m.resolve()}>
@@ -175,432 +231,565 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
           )}
         </div>
       )}
-      <div id="cashier-shift-details" hidden={!expanded} className="space-y-4">
-        {admin && (
-          <details>
-            <summary className="cursor-pointer font-medium">سياسة العهدة — للمدير فقط</summary>
-            <fieldset disabled={busy || active || loading} className="grid gap-3 mt-3">
-              <label>
-                الكاشير المخصص
-                <select
-                  className="w-full border rounded p-2 bg-background"
-                  value={cashier}
-                  onChange={(e) => setCashier(e.target.value)}
-                >
-                  <option value="">اختر الكاشير الموجود</option>
-                  {data?.cashiers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.email}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                عهدة بداية الوردية (جنيه)
-                <Input
-                  inputMode="decimal"
-                  value={opening}
-                  onChange={(e) => setOpening(e.target.value)}
-                />
-              </label>
-              <label>
-                المبلغ الذي يبقى للوردية التالية (جنيه)
-                <Input inputMode="decimal" value={keep} onChange={(e) => setKeep(e.target.value)} />
-              </label>
-              <Button disabled={!cashier} onClick={() => configure(true)}>
-                حفظ وتفعيل سياسة العهدة
+      {data?.enabled && s && (
+        <dl className="shift-summary" role="group" aria-label="ملخص نقدية الوردية">
+          <ShiftMetric
+            label="النقدية المتوقعة"
+            value={money(s.expected_piastre ?? s.live_expected_piastre)}
+            emphasis
+          />
+          <ShiftMetric label="عهدة البداية" value={money(s.opening_piastre)} />
+          {s.actual_piastre != null && (
+            <ShiftMetric label="النقدية المعدودة" value={money(s.actual_piastre)} />
+          )}
+          {s.variance_piastre != null && (
+            <ShiftMetric label="الزيادة / العجز" value={money(s.variance_piastre)} />
+          )}
+        </dl>
+      )}
+      {admin && (
+        <details className="shift-disclosure shift-policy">
+          <summary className="cursor-pointer font-medium">سياسة العهدة — للمدير فقط</summary>
+          <fieldset disabled={busy || active || loading} className="shift-policy-fields">
+            <label>
+              الكاشير المخصص
+              <select
+                className="w-full border rounded p-2 bg-background"
+                value={cashier}
+                onChange={(e) => setCashier(e.target.value)}
+              >
+                <option value="">اختر الكاشير الموجود</option>
+                {data?.cashiers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.email}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              عهدة بداية الوردية (جنيه)
+              <Input
+                inputMode="decimal"
+                value={opening}
+                onChange={(e) => setOpening(e.target.value)}
+              />
+            </label>
+            <label>
+              المبلغ الذي يبقى للوردية التالية (جنيه)
+              <Input inputMode="decimal" value={keep} onChange={(e) => setKeep(e.target.value)} />
+            </label>
+            <Button disabled={!cashier} onClick={() => configure(true)}>
+              حفظ وتفعيل سياسة العهدة
+            </Button>
+            {data?.enabled && (
+              <Button variant="outline" onClick={() => configure(false)}>
+                إيقاف السياسة بعد اكتمال التسليم
               </Button>
-              {data?.enabled && (
-                <Button variant="outline" onClick={() => configure(false)}>
-                  إيقاف السياسة بعد اكتمال التسليم
-                </Button>
-              )}
-            </fieldset>
-            {active && (
-              <p className="text-sm">تُعدّل السياسة بعد استلام المدير وإغلاق الوردية الحالية.</p>
             )}
-          </details>
-        )}
+          </fieldset>
+          {active && (
+            <p className="text-sm">تُعدّل السياسة بعد استلام المدير وإغلاق الوردية الحالية.</p>
+          )}
+        </details>
+      )}
+      {s?.status === "open" && (
+        <div className="shift-expand-row">
+          <Button
+            variant="outline"
+            aria-expanded={expanded}
+            aria-controls="cashier-shift-details"
+            onClick={() => setExpanded(!expanded)}
+          >
+            تفاصيل الوردية والإقفال
+            <ChevronDown
+              aria-hidden="true"
+              className={expanded ? "shift-chevron shift-chevron-open" : "shift-chevron"}
+            />
+          </Button>
+          {admin && !m.overrideReason.trim() && (
+            <p className="shift-caption">تدخل المدير في البيع يتطلب سببًا من تفاصيل الوردية.</p>
+          )}
+        </div>
+      )}
+      <div id="cashier-shift-details" hidden={!expanded} className="shift-details-body">
         {data && !data.enabled && (
-          <p>سياسة الوردية غير مفعلة؛ يحدد المدير العهدة والكاشير أولًا.</p>
+          <div className="shift-empty">
+            <ShieldCheck aria-hidden="true" />
+            <p>سياسة الوردية غير مفعلة؛ يحدد المدير العهدة والكاشير أولًا.</p>
+          </div>
         )}
         {data?.enabled && (
           <>
             {data.policy && (
-              <p>
-                عهدة البداية المخصصة: <strong>{money(data.policy.opening_piastre)}</strong> —
-                السياسة التالية: {money(data.policy.keep_piastre)}
-              </p>
+              <div className="shift-policy-summary">
+                <span>
+                  عهدة البداية المخصصة:{" "}
+                  <strong>
+                    <bdi>{money(data.policy.opening_piastre)}</bdi>
+                  </strong>
+                </span>
+                <span>
+                  السياسة التالية: <bdi>{money(data.policy.keep_piastre)}</bdi>
+                </span>
+              </div>
             )}
             {(!s || s.status === "closed") && (
-              <div className="space-y-2">
-                <label className="flex gap-2">
-                  <input
-                    type="checkbox"
-                    checked={receivedFloat}
-                    onChange={(e) => setReceivedFloat(e.target.checked)}
-                  />
-                  عدَدت واستلمت العهدة المخصصة فعليًا، بما فيها المبلغ المتبقي من الوردية السابقة
-                </label>
-                {admin && (
-                  <label>
-                    سبب فتح المدير نيابة عن الكاشير
-                    <Input
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
-                      maxLength={500}
-                    />
-                  </label>
-                )}
-                {floatAdjustment !== 0 && (
+              <details className="shift-disclosure shift-receive" open={!s}>
+                <summary>استلام عهدة الوردية</summary>
+                <div className="shift-action-card">
                   <label className="flex gap-2">
                     <input
                       type="checkbox"
-                      checked={adjustmentConfirmed}
-                      onChange={(e) => setAdjustmentConfirmed(e.target.checked)}
+                      checked={receivedFloat}
+                      onChange={(e) => setReceivedFloat(e.target.checked)}
                     />
-                    {floatAdjustment > 0
-                      ? `استلمت زيادة العهدة ${money(floatAdjustment)} من الخزنة فعليًا`
-                      : `سلّمت فرق تخفيض العهدة ${money(-floatAdjustment)} إلى الخزنة فعليًا`}
+                    عدَدت واستلمت العهدة المخصصة فعليًا، بما فيها المبلغ المتبقي من الوردية السابقة
                   </label>
-                )}
-                <Button
-                  disabled={
-                    busy ||
-                    loading ||
-                    !receivedFloat ||
-                    !data.policy ||
-                    (floatAdjustment !== 0 && !adjustmentConfirmed) ||
-                    (admin && reason.trim().length < 4)
-                  }
-                  onClick={() =>
-                    execute("open", {
-                      floatReceived: receivedFloat,
-                      reason,
-                      ...(floatAdjustment !== 0
-                        ? { floatAdjustmentConfirmed: adjustmentConfirmed }
-                        : {}),
-                    })
-                  }
-                >
-                  استلام العهدة وفتح الوردية
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  وردية واحدة يوميًا؛ إذا أغلقتها اليوم فلن يُفتح سجل ثانٍ.
-                </p>
-              </div>
-            )}
-            {s && (
-              <div className="space-y-3">
-                <p>
-                  <strong>{states[s.status]}</strong> — {s.shift_day}
-                </p>
-                <p className="text-sm">
-                  بدأت: {new Date(s.opened_at).toLocaleString("ar-EG")} — موعد المراجعة:{" "}
-                  {new Date(s.planned_end_at).toLocaleString("ar-EG")}
-                </p>
-                {s.status === "open" && Date.now() > Date.parse(s.planned_end_at) && (
-                  <p role="status">
-                    انتهت الثماني ساعات؛ راجع العدّ والإغلاق عندما تنتهي العمليات الجارية. لن تُغلق
-                    الوردية تلقائيًا.
-                  </p>
-                )}
-                <dl className="grid grid-cols-2 gap-2 text-sm">
-                  <dt>عهدة البداية</dt>
-                  <dd>{money(s.opening_piastre)}</dd>
-                  <dt>المبيعات النقدية</dt>
-                  <dd>{money(s.cash_sales_piastre)}</dd>
-                  <dt>المرتجعات النقدية</dt>
-                  <dd>{money(s.cash_refunds_piastre)}</dd>
-                  <dt>المصروفات النقدية المخصصة للدرج</dt>
-                  <dd>{money(s.cash_expenses_piastre)}</dd>
-                  <dt>الحركات النقدية الأخرى</dt>
-                  <dd>{money(s.other_cash_piastre)}</dd>
-                  <dt>النقدية المتوقعة</dt>
-                  <dd>{money(s.expected_piastre ?? s.live_expected_piastre)}</dd>
-                  <dt>النقدية المعدودة</dt>
-                  <dd>{money(s.actual_piastre)}</dd>
-                  <dt>الزيادة / العجز</dt>
-                  <dd>{money(s.variance_piastre)}</dd>
-                  <dt>المبلغ الذي يبقى للوردية التالية</dt>
-                  <dd>{money(s.retained_piastre ?? s.keep_piastre)}</dd>
-                  <dt>المبلغ المطلوب تسليمه للخزنة</dt>
-                  <dd>{money(s.handover_piastre)}</dd>
-                </dl>
-                <p className="text-sm">
-                  المدفوعات الإلكترونية تخص فواتير هذه الوردية فقط، ولا تدخل عدّ الدرج:
-                </p>
-                <ul>
-                  {s.electronic.map((x) => (
-                    <li key={x.wallet_id}>
-                      {WALLET_LABELS[x.wallet_id as WalletType] ?? x.wallet_id}:{" "}
-                      {money(x.amount_piastre)}
-                    </li>
-                  ))}
-                </ul>
-                {s.status === "open" && (
-                  <fieldset disabled={busy || loading} className="space-y-2">
-                    {admin && (
-                      <label>
-                        سبب تدخل المدير في مبيعات أو مرتجعات هذه الوردية
-                        <Input
-                          value={m.overrideReason}
-                          onChange={(e) => m.setOverrideReason(e.target.value)}
-                          maxLength={500}
-                        />
-                      </label>
-                    )}
-                    {admin && (
-                      <details>
-                        <summary>تخصيص مصروف أو حركة نقدية مسجلة للدرج</summary>
-                        <p className="text-xs">
-                          اختر حركة خرجت أو دخلت هذا الدرج فعلًا. لا تُنشأ حركة مالية جديدة هنا.
-                          الكاشير لا يملك صلاحية تسجيل المصروفات.
-                        </p>
-                        <label>
-                          الحركة المسجلة
-                          <select
-                            className="w-full border rounded p-2 bg-background"
-                            value={eventId}
-                            onChange={(e) => setEventId(e.target.value)}
-                          >
-                            <option value="">اختر حركة نقدية</option>
-                            {data.allocatable?.map((x) => (
-                              <option key={x.event_id} value={x.event_id}>
-                                {x.description} — {money(x.amount_piastre)}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          سبب تخصيص الحركة للدرج
-                          <Input
-                            value={reason}
-                            onChange={(e) => setReason(e.target.value)}
-                            maxLength={500}
-                          />
-                        </label>
-                        <Button
-                          disabled={!eventId || reason.trim().length < 4}
-                          onClick={() =>
-                            execute("attach_movement", { shiftId: s.id, eventId, reason })
-                          }
-                        >
-                          تأكيد تخصيص الحركة
-                        </Button>
-                      </details>
-                    )}
+                  {admin && (
                     <label>
-                      النقدية الفعلية الموجودة (جنيه)
-                      <Input
-                        inputMode="decimal"
-                        value={actual}
-                        onChange={(e) => setActual(e.target.value)}
-                      />
-                    </label>
-                    {previewVariance != null && previewVariance !== 0 && (
-                      <p role="alert" className="text-destructive">
-                        فرق النقدية: {money(previewVariance)} — يتطلب توثيق ومراجعة المدير، ولن
-                        تُعدّل الأرصدة تلقائيًا.
-                      </p>
-                    )}
-                    {counted != null && (
-                      <p>
-                        يبقى: {money(Math.min(s.keep_piastre, counted))} — يُسلّم للخزنة:{" "}
-                        {money(counted - Math.min(s.keep_piastre, counted))}
-                      </p>
-                    )}
-                    <label className="flex gap-2">
-                      <input
-                        type="checkbox"
-                        checked={countConfirmed}
-                        onChange={(e) => setCountConfirmed(e.target.checked)}
-                      />
-                      عدَدت النقدية فعليًا وأوقفت معاملات هذه الوردية
-                    </label>
-                    {admin && (
-                      <label>
-                        سبب إغلاق المدير نيابة عن الكاشير
-                        <Input
-                          value={reason}
-                          onChange={(e) => setReason(e.target.value)}
-                          maxLength={500}
-                        />
-                      </label>
-                    )}
-                    <Button
-                      disabled={
-                        !countConfirmed || counted == null || (admin && reason.trim().length < 4)
-                      }
-                      onClick={close}
-                    >
-                      إغلاق الوردية وحفظ العدّ
-                    </Button>
-                  </fieldset>
-                )}
-                {s.status === "awaiting_review" && (
-                  <div role="alert">
-                    <p>
-                      يوجد فرق نقدية؛ التسليم متوقف حتى مراجعة المدير. لم يُنشأ مصروف ولم يُصحح
-                      الرصيد.
-                    </p>
-                    {admin && (
-                      <>
-                        <label>
-                          توثيق سبب الفرق وخطة معالجته
-                          <Input
-                            value={reason}
-                            onChange={(e) => setReason(e.target.value)}
-                            maxLength={500}
-                          />
-                        </label>
-                        <Button
-                          disabled={busy || reason.trim().length < 4}
-                          onClick={() => execute("review_discrepancy", { shiftId: s.id, reason })}
-                        >
-                          اعتماد الإقفال مع توثيق الفرق
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                )}
-                {admin && ["awaiting_review", "awaiting_handover"].includes(s.status) && (
-                  <div>
-                    <label>
-                      سبب إعادة العدّ
+                      سبب فتح المدير نيابة عن الكاشير
                       <Input
                         value={reason}
                         onChange={(e) => setReason(e.target.value)}
                         maxLength={500}
                       />
                     </label>
-                    <Button
-                      variant="outline"
-                      disabled={busy || reason.trim().length < 4}
-                      onClick={() => execute("reopen", { shiftId: s.id, reason })}
-                    >
-                      إعادة فتح الوردية للعدّ
-                    </Button>
-                  </div>
-                )}
-                {s.status === "awaiting_handover" && (
-                  <div className="space-y-2">
-                    <p>
-                      لم تسلّم النقدية بعد. المطلوب: {money(s.handover_piastre)}، ويبقى بالدرج{" "}
-                      {money(s.retained_piastre)}.
-                    </p>
-                    <label>
+                  )}
+                  {floatAdjustment !== 0 && (
+                    <label className="flex gap-2">
                       <input
                         type="checkbox"
-                        checked={handed}
-                        onChange={(e) => setHanded(e.target.checked)}
+                        checked={adjustmentConfirmed}
+                        onChange={(e) => setAdjustmentConfirmed(e.target.checked)}
                       />
-                      سلّمت المبلغ فعليًا للمدير / الخزنة
+                      {floatAdjustment > 0
+                        ? `استلمت زيادة العهدة ${money(floatAdjustment)} من الخزنة فعليًا`
+                        : `سلّمت فرق تخفيض العهدة ${money(-floatAdjustment)} إلى الخزنة فعليًا`}
                     </label>
-                    {admin && (
+                  )}
+                  <Button
+                    className="shift-primary-action"
+                    disabled={
+                      busy ||
+                      loading ||
+                      !receivedFloat ||
+                      !data.policy ||
+                      (floatAdjustment !== 0 && !adjustmentConfirmed) ||
+                      (admin && reason.trim().length < 4)
+                    }
+                    onClick={() =>
+                      execute("open", {
+                        floatReceived: receivedFloat,
+                        reason,
+                        ...(floatAdjustment !== 0
+                          ? { floatAdjustmentConfirmed: adjustmentConfirmed }
+                          : {}),
+                      })
+                    }
+                  >
+                    استلام العهدة وفتح الوردية
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    وردية واحدة يوميًا؛ إذا أغلقتها اليوم فلن يُفتح سجل ثانٍ.
+                  </p>
+                </div>
+              </details>
+            )}
+            {s && (
+              <div className="shift-workspace">
+                <div className="shift-actions">
+                  {s.status === "open" && (
+                    <fieldset disabled={busy || loading} className="shift-action-card">
+                      {admin && (
+                        <label>
+                          سبب تدخل المدير في مبيعات أو مرتجعات هذه الوردية
+                          <Input
+                            value={m.overrideReason}
+                            onChange={(e) => m.setOverrideReason(e.target.value)}
+                            maxLength={500}
+                          />
+                        </label>
+                      )}
+                      {admin && (
+                        <details className="shift-disclosure shift-allocation">
+                          <summary>تخصيص مصروف أو حركة نقدية مسجلة للدرج</summary>
+                          <p className="text-xs">
+                            اختر حركة خرجت أو دخلت هذا الدرج فعلًا. لا تُنشأ حركة مالية جديدة هنا.
+                            الكاشير لا يملك صلاحية تسجيل المصروفات.
+                          </p>
+                          <label>
+                            الحركة المسجلة
+                            <select
+                              className="w-full border rounded p-2 bg-background"
+                              value={eventId}
+                              onChange={(e) => setEventId(e.target.value)}
+                            >
+                              <option value="">اختر حركة نقدية</option>
+                              {data.allocatable?.map((x) => (
+                                <option key={x.event_id} value={x.event_id}>
+                                  {x.description} — {money(x.amount_piastre)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            سبب تخصيص الحركة للدرج
+                            <Input
+                              value={reason}
+                              onChange={(e) => setReason(e.target.value)}
+                              maxLength={500}
+                            />
+                          </label>
+                          <Button
+                            className="shift-primary-action"
+                            disabled={!eventId || reason.trim().length < 4}
+                            onClick={() =>
+                              execute("attach_movement", { shiftId: s.id, eventId, reason })
+                            }
+                          >
+                            تأكيد تخصيص الحركة
+                          </Button>
+                        </details>
+                      )}
                       <label>
-                        سبب تأكيد المدير للتسليم بدل الكاشير
+                        النقدية الفعلية الموجودة (جنيه)
+                        <Input
+                          inputMode="decimal"
+                          value={actual}
+                          onChange={(e) => setActual(e.target.value)}
+                        />
+                      </label>
+                      {previewVariance != null && previewVariance !== 0 && (
+                        <p role="alert" className="text-destructive">
+                          فرق النقدية: {money(previewVariance)} — يتطلب توثيق ومراجعة المدير، ولن
+                          تُعدّل الأرصدة تلقائيًا.
+                        </p>
+                      )}
+                      {counted != null && (
+                        <p>
+                          يبقى: {money(Math.min(s.keep_piastre, counted))} — يُسلّم للخزنة:{" "}
+                          {money(counted - Math.min(s.keep_piastre, counted))}
+                        </p>
+                      )}
+                      <label className="flex gap-2">
+                        <input
+                          type="checkbox"
+                          checked={countConfirmed}
+                          onChange={(e) => setCountConfirmed(e.target.checked)}
+                        />
+                        عدَدت النقدية فعليًا وأوقفت معاملات هذه الوردية
+                      </label>
+                      {admin && (
+                        <label>
+                          سبب إغلاق المدير نيابة عن الكاشير
+                          <Input
+                            value={reason}
+                            onChange={(e) => setReason(e.target.value)}
+                            maxLength={500}
+                          />
+                        </label>
+                      )}
+                      <Button
+                        className="shift-primary-action"
+                        disabled={
+                          !countConfirmed || counted == null || (admin && reason.trim().length < 4)
+                        }
+                        onClick={close}
+                      >
+                        إغلاق الوردية وحفظ العدّ
+                      </Button>
+                    </fieldset>
+                  )}
+                  {s.status === "awaiting_review" && (
+                    <div role="alert" className="shift-action-card shift-warning">
+                      <p>
+                        يوجد فرق نقدية؛ التسليم متوقف حتى مراجعة المدير. لم يُنشأ مصروف ولم يُصحح
+                        الرصيد.
+                      </p>
+                      {admin && (
+                        <>
+                          <label>
+                            توثيق سبب الفرق وخطة معالجته
+                            <Input
+                              value={reason}
+                              onChange={(e) => setReason(e.target.value)}
+                              maxLength={500}
+                            />
+                          </label>
+                          <Button
+                            className="shift-primary-action"
+                            disabled={busy || reason.trim().length < 4}
+                            onClick={() => execute("review_discrepancy", { shiftId: s.id, reason })}
+                          >
+                            اعتماد الإقفال مع توثيق الفرق
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {admin && ["awaiting_review", "awaiting_handover"].includes(s.status) && (
+                    <div className="shift-action-card shift-recount">
+                      <label>
+                        سبب إعادة العدّ
                         <Input
                           value={reason}
                           onChange={(e) => setReason(e.target.value)}
                           maxLength={500}
                         />
                       </label>
-                    )}
-                    <Button
-                      disabled={busy || !handed || (admin && reason.trim().length < 4)}
-                      onClick={() =>
-                        execute("report_handover", {
-                          shiftId: s.id,
-                          physicalHandoverConfirmed: handed,
-                          ...(admin ? { reason } : {}),
-                        })
-                      }
-                    >
-                      تأكيد التسليم الفعلي
-                    </Button>
-                  </div>
-                )}
-                {s.status === "handover_reported" && (
-                  <div>
-                    <p>أبلغ الكاشير التسليم؛ لا يُعد الاستلام مكتملًا حتى يؤكده المدير.</p>
-                    {admin && (
-                      <>
+                      <Button
+                        className="shift-primary-action"
+                        variant="outline"
+                        disabled={busy || reason.trim().length < 4}
+                        onClick={() => execute("reopen", { shiftId: s.id, reason })}
+                      >
+                        إعادة فتح الوردية للعدّ
+                      </Button>
+                    </div>
+                  )}
+                  {s.status === "awaiting_handover" && (
+                    <div className="space-y-2">
+                      <p>
+                        لم تسلّم النقدية بعد. المطلوب: {money(s.handover_piastre)}، ويبقى بالدرج{" "}
+                        {money(s.retained_piastre)}.
+                      </p>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={handed}
+                          onChange={(e) => setHanded(e.target.checked)}
+                        />
+                        سلّمت المبلغ فعليًا للمدير / الخزنة
+                      </label>
+                      {admin && (
                         <label>
-                          <input
-                            type="checkbox"
-                            checked={received}
-                            onChange={(e) => setReceived(e.target.checked)}
+                          سبب تأكيد المدير للتسليم بدل الكاشير
+                          <Input
+                            value={reason}
+                            onChange={(e) => setReason(e.target.value)}
+                            maxLength={500}
                           />
-                          استلمت {money(s.handover_piastre)} فعليًا وتحققت من العهدة المتبقية
                         </label>
-                        <Button
-                          disabled={busy || !received}
-                          onClick={() =>
-                            execute("confirm_handover", {
-                              shiftId: s.id,
-                              cashReceivedConfirmed: received,
-                            })
-                          }
-                        >
-                          تأكيد الاستلام واعتماد الإغلاق
-                        </Button>
-                      </>
+                      )}
+                      <Button
+                        className="shift-primary-action"
+                        disabled={busy || !handed || (admin && reason.trim().length < 4)}
+                        onClick={() =>
+                          execute("report_handover", {
+                            shiftId: s.id,
+                            physicalHandoverConfirmed: handed,
+                            ...(admin ? { reason } : {}),
+                          })
+                        }
+                      >
+                        تأكيد التسليم الفعلي
+                      </Button>
+                    </div>
+                  )}
+                  {s.status === "handover_reported" && (
+                    <div className="shift-action-card">
+                      <p>أبلغ الكاشير التسليم؛ لا يُعد الاستلام مكتملًا حتى يؤكده المدير.</p>
+                      {admin && (
+                        <>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={received}
+                              onChange={(e) => setReceived(e.target.checked)}
+                            />
+                            استلمت {money(s.handover_piastre)} فعليًا وتحققت من العهدة المتبقية
+                          </label>
+                          <Button
+                            className="shift-primary-action"
+                            disabled={busy || !received}
+                            onClick={() =>
+                              execute("confirm_handover", {
+                                shiftId: s.id,
+                                cashReceivedConfirmed: received,
+                              })
+                            }
+                          >
+                            تأكيد الاستلام واعتماد الإغلاق
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {!!s.variance_piastre && (
+                    <p role="status" className="shift-note shift-warning">
+                      فرق موثق: <bdi>{money(s.variance_piastre)}</bdi>. {s.discrepancy_reason} —
+                      توثيق الفرق ليس تسوية مالية أو خصم راتب.
+                    </p>
+                  )}
+                </div>
+                <div className="shift-accounting">
+                  <dl className="shift-handover-summary" aria-label="العهدة المتبقية والتسليم">
+                    <ShiftMetric
+                      label="المبلغ الذي يبقى للوردية التالية"
+                      value={money(s.retained_piastre ?? s.keep_piastre)}
+                    />
+                    {s.handover_piastre != null && (
+                      <ShiftMetric
+                        label="المبلغ المطلوب تسليمه للخزنة"
+                        value={money(s.handover_piastre)}
+                      />
                     )}
-                  </div>
-                )}
-                {!!s.variance_piastre && (
-                  <p role="status">
-                    فرق موثق: {money(s.variance_piastre)}. {s.discrepancy_reason} — توثيق الفرق ليس
-                    تسوية مالية أو خصم راتب.
-                  </p>
-                )}
-                <details>
-                  <summary>آخر ٢٠٠ حركة من هذه الوردية</summary>
-                  <ul>
-                    {s.movements.map((x, i) => (
-                      <li key={`${x.event_id}:${i}`}>
-                        {x.document_number} —{" "}
-                        {WALLET_LABELS[x.wallet_id as WalletType] ?? x.wallet_id} —{" "}
-                        {money(x.payment_piastre)}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
+                  </dl>
+                  <details className="shift-disclosure">
+                    <summary>التفاصيل المحاسبية</summary>
+                    <h3 className="shift-section-label">تفاصيل الحركات النقدية</h3>
+                    <dl className="shift-breakdown">
+                      <ShiftMetric label="المبيعات النقدية" value={money(s.cash_sales_piastre)} />
+                      <ShiftMetric
+                        label="المرتجعات النقدية"
+                        value={money(s.cash_refunds_piastre)}
+                      />
+                      <ShiftMetric
+                        label="المصروفات النقدية المخصصة للدرج"
+                        value={money(s.cash_expenses_piastre)}
+                      />
+                      <ShiftMetric
+                        label="الحركات النقدية الأخرى"
+                        value={money(s.other_cash_piastre)}
+                      />
+                    </dl>
+                    <h3 className="shift-section-label shift-electronic-heading">
+                      المدفوعات الإلكترونية
+                    </h3>
+                    <p className="shift-caption">
+                      المدفوعات الإلكترونية تخص فواتير هذه الوردية فقط، ولا تدخل عدّ الدرج:
+                    </p>
+                    <ul className="shift-records">
+                      {s.electronic.map((x) => (
+                        <li className="shift-payment" key={x.wallet_id}>
+                          <span>{WALLET_LABELS[x.wallet_id as WalletType] ?? x.wallet_id}</span>
+                          <strong>
+                            <bdi>{money(x.amount_piastre)}</bdi>
+                          </strong>
+                        </li>
+                      ))}
+                    </ul>
+                    {!s.electronic.length && (
+                      <p className="shift-caption">لا توجد مدفوعات إلكترونية في هذه الوردية.</p>
+                    )}
+                  </details>
+                </div>
               </div>
             )}
           </>
         )}
-        {!!data?.history.length && (
-          <details>
-            <summary>آخر ١٤ ملخص وردية</summary>
-            <ul>
-              {data.history.map((x) => (
-                <li key={x.id}>
-                  {x.shift_day} — {states[x.status]} — المتوقع {money(x.expected_piastre)} — المعدود{" "}
-                  {money(x.actual_piastre)} — الفرق {money(x.variance_piastre)} — التسليم{" "}
-                  {money(x.handover_piastre)}
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
-        {!!data?.audit.length && (
-          <details>
-            <summary>سجل إجراءات العهدة والتسليم</summary>
-            <ul>
-              {data.audit.map((x) => (
-                <li key={x.id}>
-                  {new Date(x.recorded_at).toLocaleString("ar-EG")} —{" "}
-                  {actions[x.action] ??
-                    (x.action.startsWith("rejected_") ? "محاولة وردية مرفوضة" : "إجراء وردية")}{" "}
-                  {x.detail.input?.reason}
-                </li>
-              ))}
-            </ul>
+        {((data?.enabled && s) || !!data?.history.length || !!data?.audit.length) && (
+          <details className="shift-disclosure shift-history-group">
+            <summary>الحركات والسجلات</summary>
+            {data?.enabled && s && (
+              <details className="shift-disclosure shift-history">
+                <summary>
+                  آخر ٢٠٠ حركة من هذه الوردية
+                  <span className="shift-count">{s.movements.length.toLocaleString("ar-EG")}</span>
+                </summary>
+                <ul className="shift-records">
+                  {s.movements.map((x, i) => (
+                    <li className="shift-record" key={x.event_id + ":" + i}>
+                      <div className="shift-record-top">
+                        <div>
+                          <span className="shift-record-kind">
+                            {{
+                              sale: "بيع",
+                              refund: "مرتجع",
+                              expense: "مصروف",
+                              other: "حركة نقدية",
+                            }[x.category] ?? x.category}
+                          </span>
+                          <p className="shift-record-title">
+                            <bdi>{x.document_number}</bdi>
+                          </p>
+                        </div>
+                        <strong className="shift-record-amount">
+                          <bdi>{money(x.payment_piastre)}</bdi>
+                        </strong>
+                      </div>
+                      <div className="shift-record-meta">
+                        <span>{WALLET_LABELS[x.wallet_id as WalletType] ?? x.wallet_id}</span>
+                        <time dateTime={x.recorded_at}>
+                          {new Date(x.recorded_at).toLocaleString("ar-EG")}
+                        </time>
+                      </div>
+                      <ShiftReference value={x.event_id} />
+                    </li>
+                  ))}
+                </ul>
+                {!s.movements.length && (
+                  <p className="shift-caption">لا توجد حركات مسجلة في هذه الوردية.</p>
+                )}
+              </details>
+            )}
+            {!!data?.history.length && (
+              <details className="shift-disclosure shift-history">
+                <summary>
+                  آخر ١٤ ملخص وردية
+                  <span className="shift-count">{data.history.length.toLocaleString("ar-EG")}</span>
+                </summary>
+                <ul className="shift-records">
+                  {data.history.map((x) => (
+                    <li className="shift-record" key={x.id}>
+                      <div className="shift-record-top">
+                        <bdi className="shift-record-title">{x.shift_day}</bdi>
+                        <span className={"shift-status shift-status-" + x.status}>
+                          {states[x.status]}
+                        </span>
+                      </div>
+                      <dl className="shift-history-money">
+                        <ShiftMetric label="المتوقع" value={money(x.expected_piastre)} />
+                        <ShiftMetric label="المعدود" value={money(x.actual_piastre)} />
+                        <ShiftMetric label="الفرق" value={money(x.variance_piastre)} />
+                        <ShiftMetric label="التسليم" value={money(x.handover_piastre)} />
+                      </dl>
+                      <ShiftReference value={x.id} />
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {!!data?.audit.length && (
+              <details className="shift-disclosure shift-history">
+                <summary>
+                  سجل إجراءات العهدة والتسليم
+                  <span className="shift-count">{data.audit.length.toLocaleString("ar-EG")}</span>
+                </summary>
+                <ul className="shift-records">
+                  {data.audit.map((x) => (
+                    <li className="shift-record shift-audit-record" key={x.id}>
+                      <span className="shift-audit-dot" aria-hidden="true" />
+                      <div>
+                        <p className="shift-record-title">
+                          {actions[x.action] ??
+                            (x.action.startsWith("rejected_")
+                              ? "محاولة وردية مرفوضة"
+                              : "إجراء وردية")}
+                        </p>
+                        <time className="shift-caption" dateTime={x.recorded_at}>
+                          {new Date(x.recorded_at).toLocaleString("ar-EG")}
+                        </time>
+                        {x.detail.input?.reason && (
+                          <p className="shift-audit-reason">{x.detail.input.reason}</p>
+                        )}
+                        <ShiftReference value={x.id} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
           </details>
         )}
       </div>
+      <details className="shift-disclosure shift-explanation">
+        <summary>معلومات العهدة</summary>
+        <p className="shift-caption">
+          الدرج والخزنة عهدتان لنفس النقدية؛ تسليم العهدة لا ينشئ إيرادًا أو مصروفًا. مدة الثماني
+          ساعات تذكير فقط.
+        </p>
+      </details>
     </section>
   );
 }

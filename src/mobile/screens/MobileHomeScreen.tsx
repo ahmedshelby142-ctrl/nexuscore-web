@@ -14,7 +14,7 @@ import { EmptyState, ErrorState, OfflineState, SkeletonState } from "@/mobile/co
 import { useIsOffline } from "@/mobile/data/useIsOffline";
 import { formatArabicCount } from "@/mobile/viewmodels/formatters";
 import {useCashierShift} from "@/hooks/useCashierShift";
-import {CashierShiftPanel} from "@/components/sales/CashierShiftPanel";
+import {CashierShiftWorkspace} from "@/components/sales/CashierShiftWorkspace";
 
 export function MobileHomeScreen() {
   const cashierShift=useCashierShift();
@@ -31,6 +31,7 @@ export function MobileHomeScreen() {
   const home = homeData.data;
 
   return (
+    <CashierShiftWorkspace model={cashierShift} homeLabel="الرئيسية" mobile>
     <section className="mobile-home" aria-labelledby="mobile-home-title">
       <MobileAppBar
         title="الرئيسية"
@@ -41,7 +42,6 @@ export function MobileHomeScreen() {
       <h1 id="mobile-home-title" className="sr-only">مركز العمليات</h1>
 
       <div className="mobile-home-body">
-        <CashierShiftPanel model={cashierShift}/>
         {isOffline ? (
           <OfflineState />
         ) : homeData.loading ? (
@@ -89,5 +89,6 @@ export function MobileHomeScreen() {
         </section>
       </div>
     </section>
+    </CashierShiftWorkspace>
   );
 }

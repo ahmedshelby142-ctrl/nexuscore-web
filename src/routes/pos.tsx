@@ -2,8 +2,8 @@ import { Component, lazy, Suspense, type ReactNode } from "react";
 import { ShoppingCart, AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useBusinessStore } from "@/store/useBusinessStore";
-import {useCashierShift} from "@/hooks/useCashierShift";
-import {CashierShiftPanel} from "@/components/sales/CashierShiftPanel";
+import { useCashierShift } from "@/hooks/useCashierShift";
+import { CashierShiftWorkspace } from "@/components/sales/CashierShiftWorkspace";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   constructor(props: { children: ReactNode }) {
@@ -55,32 +55,33 @@ const LoadingFallback = () => (
 
 export function POS() {
   const products = useBusinessStore((s) => s.products);
-  const shift=useCashierShift();
+  const shift = useCashierShift();
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div
-          className="size-10 rounded-xl flex items-center justify-center"
-          style={{ background: "var(--gradient-primary)" }}
-        >
-          <ShoppingCart className="size-5 text-primary-foreground" />
+    <ErrorBoundary>
+      <CashierShiftWorkspace model={shift}>
+        <div className="space-y-6">
+          <div className="flex items-center gap-3">
+            <div
+              className="size-10 rounded-xl flex items-center justify-center"
+              style={{ background: "var(--gradient-primary)" }}
+            >
+              <ShoppingCart className="size-5 text-primary-foreground" />
+            </div>
+            <div>
+              <h2 className="text-3xl font-display font-bold leading-tight">نقطة البيع</h2>
+              <p className="text-muted-foreground mt-1">
+                {products.length === 0
+                  ? "لا توجد منتجات بعد — أضف منتجات ووريدها أولاً"
+                  : "إدارة المبيعات والمعاملات"}
+              </p>
+            </div>
+          </div>
+          <Suspense fallback={<LoadingFallback />}>
+            <CheckoutForm shift={shift} />
+          </Suspense>
         </div>
-        <div>
-          <h2 className="text-3xl font-display font-bold leading-tight">نقطة البيع</h2>
-          <p className="text-muted-foreground mt-1">
-            {products.length === 0
-              ? "لا توجد منتجات بعد — أضف منتجات ووريدها أولاً"
-              : "إدارة المبيعات والمعاملات"}
-          </p>
-        </div>
-      </div>
-      <ErrorBoundary>
-        <CashierShiftPanel model={shift}/>
-        <Suspense fallback={<LoadingFallback />}>
-          <CheckoutForm shift={shift}/>
-        </Suspense>
-      </ErrorBoundary>
-    </div>
+      </CashierShiftWorkspace>
+    </ErrorBoundary>
   );
 }

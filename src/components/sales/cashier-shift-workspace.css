@@ -1,0 +1,97 @@
+/* Frontend view organization only; no routing or financial permission rules. */
+.cashier-shift-workspace {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  text-align: start;
+}
+.cashier-shift-workspace > [hidden] {
+  display: none !important;
+}
+.cashier-shift-workspace .shift-selling-view :is(input, select) {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  min-block-size: 44px;
+}
+.cashier-shift-workspace .shift-selling-view button {
+  min-block-size: 44px;
+  min-inline-size: 44px;
+  white-space: normal;
+}
+.cashier-shift-workspace .shift-selling-view button[role="switch"] {
+  border-block-width: 12px;
+  padding-block: 0;
+  background-clip: padding-box;
+}
+.cashier-shift-workspace .shift-view-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block-end: 1rem;
+}
+.cashier-shift-workspace .shift-view-nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-block-size: 44px;
+  max-inline-size: 100%;
+  padding: 0.65rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 650;
+  line-height: 1.6;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.cashier-shift-workspace .shift-view-nav a[aria-current="page"] {
+  border-color: var(--foreground);
+  background: var(--muted);
+}
+.cashier-shift-workspace .shift-view-nav svg {
+  inline-size: 18px;
+  block-size: 18px;
+  flex-shrink: 0;
+}
+.cashier-shift-workspace .shift-view-nav a:focus-visible,
+.cashier-shift-workspace .shift-page-header h1:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.cashier-shift-workspace .shift-management-view {
+  display: grid;
+  gap: 1rem;
+  inline-size: min(100%, 72rem);
+  margin-inline: auto;
+  padding-block-end: max(1rem, env(safe-area-inset-bottom));
+}
+.cashier-shift-workspace .shift-page-header {
+  display: grid;
+  gap: 0.25rem;
+}
+.cashier-shift-workspace .shift-page-header h1 {
+  margin: 0;
+  font-size: clamp(1.25rem, 4vw, 1.75rem);
+  line-height: 1.6;
+  font-weight: 750;
+}
+.cashier-shift-workspace .shift-page-header p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+}
+.cashier-shift-workspace.shift-workspace-mobile > .shift-view-nav {
+  padding: 0.75rem 0.875rem 0;
+  margin-block-end: 0.75rem;
+}
+.cashier-shift-workspace.shift-workspace-mobile > .shift-management-view {
+  padding-inline: 0.875rem;
+}
+@media (max-width: 430px) {
+  .cashier-shift-workspace .shift-view-nav a {
+    flex: 1 1 auto;
+  }
+}

@@ -536,3 +536,152 @@ test("closing resolves the original pending POS sale first and requires a new ca
     await h.cleanup();
   }
 });
+
+test("compact overview preserves expected cash and keeps closing controls behind explicit expansion", async () => {
+  const f = fixture();
+  try {
+    await f.render(false);
+    const overview = f.h.getByRole(document.body, "group", { name: "ملخص نقدية الوردية" });
+    assert.ok(overview.textContent.includes(money(f.model.data.shift.live_expected_piastre)));
+    assert.ok(overview.textContent.includes(money(f.model.data.shift.opening_piastre)));
+    assert.equal(overview.querySelectorAll("dt").length, 2);
+    assert.equal(
+      f.h.queryByRole(document.body, "button", { name: "إغلاق الوردية وحفظ العدّ" }),
+      null,
+    );
+    assert.equal(f.calls.length, 0);
+  } finally {
+    await f.h.cleanup();
+  }
+});
+
+test("all ten financial labels retain their exact original source values after counted closing", async () => {
+  const s = shift("closed");
+  s.expected_piastre = s.live_expected_piastre;
+  s.actual_piastre = s.live_expected_piastre;
+  s.variance_piastre = 0;
+  s.retained_piastre = s.keep_piastre;
+  s.handover_piastre = s.live_expected_piastre - s.keep_piastre;
+  const f = fixture({ s });
+  try {
+    await f.render();
+    const values = new Map(
+      [...document.querySelectorAll("dt")].map((dt) => [
+        dt.textContent,
+        dt.nextElementSibling.textContent,
+      ]),
+    );
+    for (const [label, amount] of [
+      ["عهدة البداية", s.opening_piastre],
+      ["المبيعات النقدية", s.cash_sales_piastre],
+      ["المرتجعات النقدية", s.cash_refunds_piastre],
+      ["المصروفات النقدية المخصصة للدرج", s.cash_expenses_piastre],
+      ["الحركات النقدية الأخرى", s.other_cash_piastre],
+      ["النقدية المتوقعة", s.expected_piastre],
+      ["النقدية المعدودة", s.actual_piastre],
+      ["الزيادة / العجز", s.variance_piastre],
+      ["المبلغ الذي يبقى للوردية التالية", s.retained_piastre],
+      ["المبلغ المطلوب تسليمه للخزنة", s.handover_piastre],
+    ])
+      assert.equal(values.get(label), money(amount), label);
+    assert.equal(f.calls.length, 0);
+  } finally {
+    await f.h.cleanup();
+  }
+});
+
+test("movement, history and audit disclosures retain complete references and original reasons", async () => {
+  const f = fixture(),
+    reference = "presentation-reference-with-a-long-suffix:".repeat(5),
+    s = f.model.data.shift;
+  s.movements = [
+    {
+      event_id: reference,
+      document_number: "receipt-reference",
+      wallet_id: "bankAccount",
+      payment_piastre: s.electronic[0].amount_piastre,
+      category: "sale",
+      recorded_at: s.opened_at,
+    },
+  ];
+  f.model.data.history = [{ ...s, id: reference }];
+  f.model.data.audit = [
+    {
+      id: reference,
+      action: "reopen",
+      recorded_at: s.opened_at,
+      detail: { input: { reason: "سبب المراجعة الأصلي — محفوظ كاملًا" } },
+    },
+  ];
+  try {
+    const user = await f.render();
+    for (const label of [
+      "الحركات والسجلات",
+      "آخر ٢٠٠ حركة من هذه الوردية",
+      "آخر ١٤ ملخص وردية",
+      "سجل إجراءات العهدة والتسليم",
+    ])
+      await f.h.perform(() => user.click(f.h.getByText(document.body, label, { exact: false })));
+    for (const summary of f.h.getAllByText(document.body, "المرجع الكامل"))
+      await f.h.perform(() => user.click(summary));
+    const refs = [...document.querySelectorAll(".shift-reference code")];
+    assert.equal(refs.length, 3);
+    assert.ok(refs.every((x) => x.textContent === reference && x.getAttribute("dir") === "ltr"));
+    assert.ok(document.body.textContent.includes(f.model.data.audit[0].detail.input.reason));
+    assert.equal(f.calls.length, 0);
+  } finally {
+    await f.h.cleanup();
+  }
+});
+
+test("loading and empty states create no operation; error recovery preserves the existing resolver", async () => {
+  const f = fixture({ s: null });
+  f.model.data = null;
+  f.model.loading = true;
+  try {
+    await f.render(false);
+    assert.equal(document.querySelector(".cashier-shift-panel").getAttribute("aria-busy"), "true");
+    assert.match(document.body.textContent, /جارٍ التحقق من الوردية/);
+    assert.equal(f.calls.length, 0);
+  } finally {
+    await f.h.cleanup();
+  }
+  const g = fixture({ s: null, error: "Synthetic lost response" });
+  g.model.data = null;
+  try {
+    const user = await g.render(false);
+    assert.ok(g.h.getByRole(document.body, "alert"));
+    await g.h.perform(() =>
+      user.click(g.h.getByRole(document.body, "button", { name: "تأكيد نتيجة المحاولة السابقة" })),
+    );
+    assert.deepEqual(g.calls, [["resolve"]]);
+  } finally {
+    await g.h.cleanup();
+  }
+});
+
+test("manager policy remains visible in compact mode while its active-shift form stays disabled", async () => {
+  const f = fixture({ admin: true });
+  try {
+    const user = await f.render(false);
+    await f.h.perform(() => user.click(f.h.getByText(document.body, "سياسة العهدة — للمدير فقط")));
+    const field = f.h.getByLabelText(document.body, "عهدة بداية الوردية (جنيه)");
+    assert.equal(field.closest("fieldset").disabled, true);
+    assert.ok(!field.closest("#cashier-shift-details"));
+    assert.equal(f.calls.length, 0);
+  } finally {
+    await f.h.cleanup();
+  }
+});
+
+test("ineligible users still render no shift or manager controls even when stale data exists", async () => {
+  const f = fixture({ admin: true });
+  f.model.eligible = false;
+  try {
+    await f.render(false);
+    assert.equal(document.querySelector(".cashier-shift-panel"), null);
+    assert.equal(f.calls.length, 0);
+  } finally {
+    await f.h.cleanup();
+  }
+});

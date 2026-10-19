@@ -121,7 +121,7 @@ test("historical UI discards late response and removes previously loaded data af
       u = await h.render(() => {
         const [, setTick] = h.React.useState(0);
         rerender = () => setTick((x) => x + 1);
-        return h.React.createElement(C, { shiftId: shift.id });
+        return h.React.createElement(C, { shiftId: shift.id, authority });
       });
     await h.perform(() =>
       u.click(h.getByRole(document.body, "button", { name: "عرض حركات الوردية للقراءة فقط" })),

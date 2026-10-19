@@ -31,7 +31,6 @@ const shift = (status = "open", extra = {}) => ({
 function fixture({ admin = false, s = shift(), enabled = true, busy = false, error = "" } = {}) {
   const calls = [],
     h = uiHarness({
-      "@/store/useAuthStore": { useAuthStore: (select) => select({ accessRevision: 1 }) },
       "@/lib/supabase": { getSupabaseClient: () => null },
       "@/services/api/storeContext": { getSyncIdentity: async () => null },
       "@/services/operationalSource": { captureReadAuthority() {}, assertReadAuthority() {} },

@@ -93,6 +93,7 @@ export function useCashierShift() {
       (!data.enabled ||
         (data.shift?.status === "open" && (!data.admin || overrideReason.trim().length >= 4))));
   return {
+    accessRevision: revision,
     eligible,
     data,
     loading,

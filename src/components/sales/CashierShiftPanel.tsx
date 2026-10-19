@@ -755,7 +755,11 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
                         <ShiftMetric label="التسليم" value={money(x.handover_piastre)} />
                       </dl>
                       <ShiftReference value={x.id} />
-                      <CashierShiftHistoryDetails key={x.id} shiftId={x.id} />
+                      <CashierShiftHistoryDetails
+                        key={x.id}
+                        shiftId={x.id}
+                        authority={m.accessRevision}
+                      />
                     </li>
                   ))}
                 </ul>

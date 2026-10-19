@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { readCashierShiftHistory, shiftError } from "@/lib/cashierShift";
-import { useAuthStore } from "@/store/useAuthStore";
 import { Button } from "@/components/ui/button";
 import { CashierShiftMovements } from "./CashierShiftMovements";
 
 type HistoryResult = Awaited<ReturnType<typeof readCashierShiftHistory>>;
-export function CashierShiftHistoryDetails({ shiftId }: { shiftId: string }) {
-  const authority = useAuthStore((s) => s.accessRevision);
+export function CashierShiftHistoryDetails({
+  shiftId,
+  authority = 0,
+}: {
+  shiftId: string;
+  authority?: number;
+}) {
   const [result, setResult] = useState<{ authority: number; value: HistoryResult } | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);

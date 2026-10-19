@@ -6,6 +6,8 @@ import { WALLET_LABELS, type WalletType } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CashierShiftExpenseForm } from "./CashierShiftExpenseForm";
+import { CashierShiftHistoryDetails } from "./CashierShiftHistoryDetails";
+import { CashierShiftMovements } from "./CashierShiftMovements";
 
 const money = (n: number | null | undefined) =>
   n == null
@@ -346,8 +348,11 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
               </div>
             )}
             {(!s || s.status === "closed") && (
-              <details className="shift-disclosure shift-receive" open={!s}>
-                <summary>استلام عهدة الوردية</summary>
+              <details
+                className="shift-disclosure shift-receive"
+                open={!s || s.status === "closed"}
+              >
+                <summary>{s ? "فتح وردية جديدة" : "استلام عهدة الوردية"}</summary>
                 <div className="shift-action-card">
                   <label className="flex gap-2">
                     <input
@@ -386,11 +391,13 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
                       loading ||
                       !receivedFloat ||
                       !data.policy ||
+                      data.sequential_opening !== true ||
                       (floatAdjustment !== 0 && !adjustmentConfirmed) ||
                       (admin && reason.trim().length < 4)
                     }
                     onClick={() =>
                       execute("open", {
+                        expectedPreviousShiftId: data.policy?.previous_shift_id ?? null,
                         floatReceived: receivedFloat,
                         reason,
                         ...(floatAdjustment !== 0
@@ -399,11 +406,17 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
                       })
                     }
                   >
-                    استلام العهدة وفتح الوردية
+                    {s ? "فتح وردية جديدة" : "استلام العهدة وفتح الوردية"}
                   </Button>
                   <p className="text-xs text-muted-foreground">
-                    وردية واحدة يوميًا؛ إذا أغلقتها اليوم فلن يُفتح سجل ثانٍ.
+                    يمكنك بدء سجل جديد بعد استلام المدير وإغلاق الوردية السابقة بالكامل، حتى في
+                    اليوم نفسه. يظل السجل السابق محفوظًا.
                   </p>
+                  {data.sequential_opening !== true && (
+                    <p role="status" className="shift-note">
+                      يلزم تحديث الخادم والتطبيق قبل فتح وردية جديدة؛ حدّث الوردية أو راجع المدير.
+                    </p>
+                  )}
                 </div>
               </details>
             )}
@@ -700,41 +713,7 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
                   آخر ٢٠٠ حركة من هذه الوردية
                   <span className="shift-count">{s.movements.length.toLocaleString("ar-EG")}</span>
                 </summary>
-                <ul className="shift-records">
-                  {s.movements.map((x, i) => (
-                    <li className="shift-record" key={x.event_id + ":" + i}>
-                      <div className="shift-record-top">
-                        <div>
-                          <span className="shift-record-kind">
-                            {{
-                              sale: "بيع",
-                              refund: "مرتجع",
-                              expense: "مصروف",
-                              other: "حركة نقدية",
-                            }[x.category] ?? x.category}
-                          </span>
-                          <p className="shift-record-title">
-                            <bdi>{x.document_number}</bdi>
-                          </p>
-                        </div>
-                        <strong className="shift-record-amount">
-                          <bdi>{money(x.payment_piastre)}</bdi>
-                        </strong>
-                      </div>
-                      <div className="shift-record-meta">
-                        <span>{WALLET_LABELS[x.wallet_id as WalletType] ?? x.wallet_id}</span>
-                        <time dateTime={x.recorded_at}>
-                          {new Date(x.recorded_at).toLocaleString("ar-EG")}
-                        </time>
-                      </div>
-                      {x.expense_description && <p>{x.expense_description} — تم الصرف من العهدة</p>}
-                      <ShiftReference value={x.event_id} />
-                    </li>
-                  ))}
-                </ul>
-                {!s.movements.length && (
-                  <p className="shift-caption">لا توجد حركات مسجلة في هذه الوردية.</p>
-                )}
+                <CashierShiftMovements shift={s} />
               </details>
             )}
             {!!data?.history.length && (
@@ -752,6 +731,23 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
                           {states[x.status]}
                         </span>
                       </div>
+                      {x.opened_at && (
+                        <p className="shift-caption">
+                          بدأت:{" "}
+                          <time dateTime={x.opened_at}>
+                            {new Date(x.opened_at).toLocaleString("ar-EG")}
+                          </time>
+                          {x.closed_at && (
+                            <>
+                              {" "}
+                              — أغلقت:{" "}
+                              <time dateTime={x.closed_at}>
+                                {new Date(x.closed_at).toLocaleString("ar-EG")}
+                              </time>
+                            </>
+                          )}
+                        </p>
+                      )}
                       <dl className="shift-history-money">
                         <ShiftMetric label="المتوقع" value={money(x.expected_piastre)} />
                         <ShiftMetric label="المعدود" value={money(x.actual_piastre)} />
@@ -759,6 +755,7 @@ export function CashierShiftPanel({ model: m }: { model: CashierShiftModel }) {
                         <ShiftMetric label="التسليم" value={money(x.handover_piastre)} />
                       </dl>
                       <ShiftReference value={x.id} />
+                      <CashierShiftHistoryDetails key={x.id} shiftId={x.id} />
                     </li>
                   ))}
                 </ul>

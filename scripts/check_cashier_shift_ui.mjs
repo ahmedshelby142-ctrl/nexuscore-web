@@ -31,6 +31,7 @@ const shift = (status = "open", extra = {}) => ({
 function fixture({ admin = false, s = shift(), enabled = true, busy = false, error = "" } = {}) {
   const calls = [],
     h = uiHarness({
+      "@/store/useAuthStore": { useAuthStore: (select) => select({ accessRevision: 1 }) },
       "@/lib/supabase": { getSupabaseClient: () => null },
       "@/services/api/storeContext": { getSyncIdentity: async () => null },
       "@/services/operationalSource": { captureReadAuthority() {}, assertReadAuthority() {} },
@@ -44,6 +45,7 @@ function fixture({ admin = false, s = shift(), enabled = true, busy = false, err
   const model = {
     eligible: true,
     data: {
+      sequential_opening: true,
       enabled,
       admin,
       policy: {
@@ -52,6 +54,7 @@ function fixture({ admin = false, s = shift(), enabled = true, busy = false, err
         opening_piastre: 50000,
         keep_piastre: 50000,
         updated_at: "synthetic-v1",
+        previous_shift_id: null,
       },
       shift: s,
       cashiers: [{ id: "synthetic-cashier", email: "synthetic@qa.invalid" }],
@@ -265,7 +268,15 @@ test("opening is a conscious custody receipt, not an automatic timer, salary or 
     );
     await f.h.perform(() => u.click(b));
     assert.deepEqual(f.calls, [
-      ["open", { expectedPolicyRevision: 1, floatReceived: true, reason: "" }],
+      [
+        "open",
+        {
+          expectedPolicyRevision: 1,
+          expectedPreviousShiftId: null,
+          floatReceived: true,
+          reason: "",
+        },
+      ],
     ]);
   } finally {
     await f.h.cleanup();
@@ -295,6 +306,7 @@ test("changed next-day float requires a specific physical top-up/return acknowle
           "open",
           {
             expectedPolicyRevision: 1,
+            expectedPreviousShiftId: null,
             floatReceived: true,
             reason: "",
             floatAdjustmentConfirmed: true,
@@ -590,6 +602,68 @@ test("all ten financial labels retain their exact original source values after c
   }
 });
 
+test("new closed-shift action pins its predecessor, confirms physical float, and preserves the closed summary", async () => {
+  const old = shift("closed", {
+    actual_piastre: 50000,
+    expected_piastre: 50000,
+    variance_piastre: 0,
+    retained_piastre: 50000,
+    handover_piastre: 0,
+  });
+  const f = fixture({ s: old });
+  f.model.data.policy.previous_shift_id = old.id;
+  f.model.data.policy.has_previous_shift = true;
+  f.model.data.policy.previous_retained_piastre = 50000;
+  try {
+    const u = await f.render(),
+      b = f.h.getByRole(document.body, "button", { name: "فتح وردية جديدة" });
+    assert.equal(b.disabled, true);
+    assert.match(document.body.textContent, /حتى في اليوم نفسه/);
+    assert.doesNotMatch(document.body.textContent, /وردية واحدة يوميًا/);
+    await f.h.perform(() => u.click(f.h.getByLabelText(document.body, /عدَدت واستلمت/)));
+    await f.h.perform(() => u.click(b));
+    assert.deepEqual(f.calls, [
+      [
+        "open",
+        {
+          expectedPolicyRevision: 1,
+          expectedPreviousShiftId: old.id,
+          floatReceived: true,
+          reason: "",
+        },
+      ],
+    ]);
+    assert.equal(old.status, "closed");
+    assert.match(document.body.textContent, /مغلقة — استلم المدير النقدية/);
+  } finally {
+    await f.h.cleanup();
+  }
+});
+test("new opening is unavailable while handover is incomplete or the backend lacks the sequential contract", async () => {
+  for (const status of ["open", "awaiting_review", "awaiting_handover", "handover_reported"]) {
+    const f = fixture({ s: shift(status) });
+    try {
+      await f.render();
+      assert.equal(f.h.queryByRole(document.body, "button", { name: "فتح وردية جديدة" }), null);
+    } finally {
+      await f.h.cleanup();
+    }
+  }
+  const f = fixture({ s: shift("closed") });
+  f.model.data.sequential_opening = undefined;
+  try {
+    const u = await f.render();
+    await f.h.perform(() => u.click(f.h.getByLabelText(document.body, /عدَدت واستلمت/)));
+    assert.equal(
+      f.h.getByRole(document.body, "button", { name: "فتح وردية جديدة" }).disabled,
+      true,
+    );
+    assert.match(document.body.textContent, /يلزم تحديث الخادم والتطبيق/);
+    assert.equal(f.calls.length, 0);
+  } finally {
+    await f.h.cleanup();
+  }
+});
 test("movement, history and audit disclosures retain complete references and original reasons", async () => {
   const f = fixture(),
     reference = "presentation-reference-with-a-long-suffix:".repeat(5),

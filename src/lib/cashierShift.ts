@@ -33,12 +33,14 @@ export interface CashierShift {
     payment_piastre: number;
     cash_piastre: number;
     category: string;
+    actor_id?: string;
     expense_description?: string | null;
     expense_category?: string | null;
     recorded_at: string;
   }[];
 }
 export interface CashierShiftSnapshot {
+  sequential_opening?: boolean;
   enabled: boolean;
   admin: boolean;
   policy: {
@@ -49,6 +51,7 @@ export interface CashierShiftSnapshot {
     updated_at: string;
     previous_retained_piastre?: number;
     has_previous_shift?: boolean;
+    previous_shift_id?: string | null;
   } | null;
   shift: CashierShift | null;
   cashiers: { id: string; email: string }[];
@@ -56,6 +59,9 @@ export interface CashierShiftSnapshot {
     CashierShift,
     | "id"
     | "shift_day"
+    | "opened_at"
+    | "closed_at"
+    | "cashier_id"
     | "status"
     | "opening_piastre"
     | "expected_piastre"
@@ -103,6 +109,28 @@ export async function readCashierShift(): Promise<CashierShiftSnapshot> {
     throw new Error("تعذّر التحقق من إصدار بيانات الوردية؛ أعد تحديث التطبيق.");
   return data as CashierShiftSnapshot;
 }
+export async function readCashierShiftHistory(shiftId: string): Promise<{
+  shift: CashierShift;
+  audit: CashierShiftSnapshot["audit"];
+}> {
+  const authority = captureReadAuthority(),
+    identity = await getSyncIdentity(),
+    sb = getSupabaseClient();
+  if (!identity || !sb) throw new Error("يلزم اتصال بمتجر مسجل.");
+  const { data, error } = await sb.rpc("read_cashier_shift_history", {
+    p_store: identity.storeId,
+    p_shift: shiftId,
+  });
+  assertReadAuthority(authority);
+  if (error) throw new Error(error.message);
+  if (
+    data?.shift?.id !== shiftId ||
+    !Array.isArray(data.shift.movements) ||
+    !Array.isArray(data.audit)
+  )
+    throw new Error("تعذّر التحقق من سجل الوردية.");
+  return data;
+}
 export const actOnCashierShift = async (action: string, input: Record<string, unknown> = {}) => {
   // Resolve the ORIGINAL POS attempt before freezing cash, never submit it twice.
   if (action === "close" && (await resolvePendingFinancialCommand("ledger:sale")))
@@ -126,6 +154,8 @@ export function shiftError(error: unknown): string {
     NEXUS_SHIFT_WRONG_CASHIER: "الوردية مخصصة لكاشير آخر.",
     NEXUS_SHIFT_POLICY_CHANGED: "تغيّرت سياسة العهدة. حدّثها وأعد تأكيد المبلغ المستلم فعليًا.",
     NEXUS_SHIFT_STATE_CHANGED: "تغيّرت حركات أو حالة الوردية. حدّثها وأعد العدّ أو تأكيد التسليم.",
+    NEXUS_SHIFT_OPEN_SNAPSHOT_REQUIRED:
+      "حدّث التطبيق والوردية قبل فتح سجل جديد؛ لا تكرر طلبًا قديمًا.",
     NEXUS_SHIFT_DUPLICATE: "توجد وردية أو حركة مسجلة بالفعل؛ حدّث السجل دون تكرارها.",
     NEXUS_SHIFT_OVERRIDE_REASON_REQUIRED: "اكتب سبب تدخل المدير في الوردية.",
     NEXUS_SHIFT_FLOAT_UNFUNDED:
@@ -141,7 +171,7 @@ export function shiftError(error: unknown): string {
   };
   for (const [code, text] of Object.entries(codes)) if (message.includes(code)) return text;
   if (/cashier_shift_one_active|cashier_shifts_store_id_shift_day_key/.test(message))
-    return "توجد وردية لهذا اليوم أو وردية سابقة لم يكتمل تسليمها.";
+    return "توجد وردية لم يكتمل تسليمها، أو يلزم تحديث التطبيق لدعم وردية جديدة في اليوم نفسه.";
   return /NEXUS_SHIFT_|permission denied/i.test(message)
     ? "تعذّر تأكيد إجراء الوردية. حدّث الحالة وراجع البيانات والصلاحية."
     : message;

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { uiHarness } from "./helpers/ui-harness.mjs";
 const services = {
+  "@/store/useAuthStore": { useAuthStore: (select) => select({ accessRevision: 1 }) },
   "@/lib/supabase": { getSupabaseClient: () => null },
   "@/services/api/storeContext": { getSyncIdentity: async () => null },
   "@/services/operationalSource": { captureReadAuthority() {}, assertReadAuthority() {} },

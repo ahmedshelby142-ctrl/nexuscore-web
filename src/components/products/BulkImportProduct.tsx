@@ -1,506 +1,305 @@
-import { useRunOnce } from "@/hooks/useSubmitGate";
-import { useState, useRef, useCallback } from "react";
-import * as XLSX from "xlsx";
-import {
-  Upload,
-  Download,
-  AlertCircle,
-  CheckCircle2,
-  FileSpreadsheet,
-  X,
-  Search,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import { useBusinessStore } from "@/store/useBusinessStore";
-import { saveCatalogProduct, resolvePendingCatalog } from "@/lib/catalogStockCommand";
-
-
-import { useStock } from "@/lib/ledger/useStock";
-import {
-  parseImportRows,
-  openingBalanceOf,
-  findImportedProduct,
-  type ImportRow,
-} from "@/lib/productImport";
-import { useAuthStore } from "@/store/useAuthStore";
-import { toAppRole } from "@/lib/roles";
+import { useEffect, useRef, useState } from "react";
+import { FileSpreadsheet, Upload, Download, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { Product } from "@/types";
-
-type ParsedRow = ImportRow;
-
-interface RowError {
-  row: number;
-  field: keyof ParsedRow | "general";
-  message: string;
-}
-
-const COLUMNS: {
-  key: keyof ParsedRow;
-  label: string;
-  required: boolean;
-  type: "text" | "number";
-}[] = [
-  { key: "sku", label: "الباركود", required: false, type: "text" },
-  { key: "name", label: "اسم المنتج", required: true, type: "text" },
-  { key: "category", label: "القسم", required: false, type: "text" },
-  { key: "purchase_price", label: "سعر الشراء", required: false, type: "number" },
-  { key: "retail_price", label: "سعر البيع قطاعي", required: false, type: "number" },
-  { key: "wholesale_price", label: "سعر البيع جملة", required: false, type: "number" },
-  { key: "stock_qty", label: "الكمية الحالية", required: false, type: "number" },
-  { key: "variants_raw", label: "درجات الألوان (الاسم:الكمية,الاسم:الكمية)", required: false, type: "text" },
-];
-
-function generateTemplateBuffer(): Uint8Array {
-  const wb = XLSX.utils.book_new();
-  const wsData = [COLUMNS.map((c) => c.label)];
-  wsData.push(["SKU-001", "منتج تجريبي 1", "إلكترونيات", "100", "250", "200", "50", "احمر:30, ازرق:20"]);
-  wsData.push(["", "", "", "", "", "", "", ""]);
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-  ws["!cols"] = COLUMNS.map(() => ({ wch: 20 }));
-  XLSX.utils.book_append_sheet(wb, ws, "نموذج استيراد");
-  return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as Uint8Array;
-}
+import { useRunOnce } from "@/hooks/useSubmitGate";
+import { useAuthStore } from "@/store/useAuthStore";
+import { cloudList } from "@/services/cloudData";
+import { cloudErrorMessage } from "@/lib/cloudError";
+import { getSyncIdentity } from "@/services/api/storeContext";
+import { executeProductImport, type ImportResult } from "@/lib/productImportCommand";
+import {
+  IMPORT_LIMIT,
+  checkImportDuplicates,
+  importProductId,
+  type ImportPlan,
+} from "@/lib/productImportWorkflow";
 
 interface BulkImportProductProps {
   onClose: () => void;
-  /** Re-read the ledger after import so the table behind shows the new stock. */
   onImported?: () => void;
 }
-
 export function BulkImportProduct({ onClose, onImported }: BulkImportProductProps) {
-  const { products } = useBusinessStore();
-  const { qtyOf } = useStock();
-  const userRole = useAuthStore((s) => s.userRole);
-  const isOwner = toAppRole(userRole) === "ADMIN";
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  const [rows, setRows] = useState<ParsedRow[]>([]);
-  const [rowErrors, setRowErrors] = useState<Map<number, RowError[]>>(new Map());
+  const role = useAuthStore((s) => s.userRole);
+  const authorityRevision = useAuthStore((s) => s.accessRevision);
+  const [plan, setPlan] = useState<ImportPlan | null>(null);
   const [fileName, setFileName] = useState("");
-  const [status, setStatus] = useState<"idle" | "preview" | "importing" | "done">("idle");
-  const [importCount, setImportCount] = useState(0);
-  // What actually happened, so the success screen can state it instead of
-  // claiming a number nobody checked.
-  const [openedCount, setOpenedCount] = useState(0);
-  const [openedUnits, setOpenedUnits] = useState(0);
-  const [skippedCount, setSkippedCount] = useState(0);
-  const [importError, setImportError] = useState<string | null>(null);
-
-  const validateRow = useCallback((row: ParsedRow, idx: number): RowError[] => {
-    const errors: RowError[] = [];
-    if (!row.name) errors.push({ row: idx, field: "name", message: "اسم المنتج مطلوب" });
-    return errors;
-  }, []);
-
-  const handleFile = useCallback(
-    (file: File) => {
-      setFileName(file.name);
-      setStatus("idle");
-      setRows([]);
-      setRowErrors(new Map());
-
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const data = new Uint8Array(e.target?.result as ArrayBuffer);
-        const wb = XLSX.read(data, { type: "array" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw: Record<string, unknown>[] = XLSX.utils.sheet_to_json(ws, { defval: "" });
-
-        const parsed = parseImportRows(raw);
-        const errors = new Map<number, RowError[]>();
-
-        parsed.forEach((row, i) => {
-          const rowErrs = validateRow(row, i);
-          if (rowErrs.length) errors.set(i, rowErrs);
-        });
-
-        setRows(parsed);
-        setRowErrors(errors);
-        setStatus("preview");
-      };
-      reader.readAsArrayBuffer(file);
-    },
-    [validateRow],
+  const [status, setStatus] = useState<"idle" | "reading" | "preview" | "importing" | "done">(
+    "idle",
   );
-
-  function autoSku(): string {
-    return `NX-${Math.floor(100000 + Math.random() * 900000)}`;
-  }
-
-  // One in-flight write at a time; see `useRunOnce`.
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<ImportResult | null>(null);
+  const [progress, setProgress] = useState(0);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const generation = useRef(0);
+  const previewStore = useRef<string | undefined>(undefined);
   const runOnce = useRunOnce();
-
-  const handleImport = async () => runOnce(async () => {
-    if (rowErrors.size > 0) return;
-    if (rows.length === 0) return;
-
-    setStatus("importing");
-    setImportError(null);
-    let count = 0;
-    let opened = 0;
-    let units = 0;
-    let skipped = 0;
-
+  useEffect(
+    () => () => {
+      generation.current++;
+    },
+    [],
+  );
+  useEffect(() => {
+    generation.current++;
+    setPlan(null);
+    setFileName("");
+    setResult(null);
+    setStatus("idle");
+  }, [authorityRevision]);
+  const busy = status === "reading" || status === "importing";
+  const readFile = async (file: File) => {
+    const current = ++generation.current;
+    setStatus("reading");
+    setError("");
+    setPlan(null);
+    setResult(null);
+    setFileName(file.name);
     try {
-      await resolvePendingCatalog();
-      for (const row of rows) {
-        const generatedSku = row.sku || autoSku();
-        const price = Math.max(0, row.retail_price || 0);
-        
-        let variants: { name: string; stock: number }[] | undefined = undefined;
-        let finalStockQty = row.stock_qty;
-
-        if (row.variants_raw) {
-          variants = [];
-          const pairs = row.variants_raw.split(",");
-          for (const pair of pairs) {
-            const [vName, vStock] = pair.split(":");
-            if (vName && vName.trim()) {
-              const parsedStock = parseInt(vStock) || 0;
-              variants.push({ name: vName.trim(), stock: parsedStock });
-            }
-          }
-          if (variants.length > 0) {
-            finalStockQty = variants.reduce((sum, v) => sum + v.stock, 0);
-            row.stock_qty = finalStockQty; // So openingBalanceOf sees it
-          }
-        }
-
-        const fields = {
-          name: row.name,
-          sku: generatedSku,
-          barcode: row.sku || generatedSku,
-          category: row.category || "أخرى",
-          costPrice: Math.max(0, Number(row.purchase_price) || 0),
-          purchasePrice: Math.max(0, Number(row.purchase_price) || 0),
-          unitPrice: Math.max(0, Number(price) || 1),
-          wholesalePrice: Math.max(0, Number(row.wholesale_price) || Number(price) || 0),
-          totalQuantity: Math.max(0, Number(finalStockQty) || 0),
-          minStockLevel: 0,
-          maxStockLevel: 0,
-          supplier: undefined,
-          description: undefined,
-          isActive: true,
-          metadata: variants ? { variants } : undefined,
-        };
-
-        const existing = findImportedProduct(products, row);
-        const previous = existing ? qtyOf(existing.id) : 0;
-        await saveCatalogProduct({
-          ...fields,
-          ...(existing ? { sku: existing.sku, barcode: existing.barcode } : {}),
-          // An omitted variant column preserves existing identities; quantity
-          // redistribution needs explicit counts rather than an inferred shade.
-          ...(!variants && existing ? { metadata: existing.metadata } : {}),
-        }, { existing, quantity: finalStockQty, unitCost: openingBalanceOf(row).unitCost });
-        if (existing) skipped++;
-        else count++;
-        if (finalStockQty !== previous) {
-          opened++;
-          units += finalStockQty - previous;
+      const { readProductFile } = await import("@/lib/productImportFile");
+      const parsed = await readProductFile(file);
+      if (current !== generation.current) return;
+      let preview = parsed;
+      if (!parsed.errors.length) {
+        try {
+          const identity = await getSyncIdentity();
+          if (!identity) throw { status: 401 };
+          const products = await cloudList("products");
+          const ownIds = new Map(
+            await Promise.all(
+              parsed.rows.map(
+                async (row) =>
+                  [row.excelRow, await importProductId(identity.storeId, row)] as const,
+              ),
+            ),
+          );
+          preview = checkImportDuplicates(parsed, products, ownIds);
+          previewStore.current = identity.storeId;
+        } catch (e) {
+          if (current !== generation.current) return;
+          setError(
+            cloudErrorMessage(e, "المنتجات") + " لم يبدأ الحفظ؛ أعد اختيار الملف بعد معالجة السبب.",
+          );
+          setStatus("idle");
+          return;
         }
       }
+      if (current !== generation.current) return;
+      setPlan(preview);
+      setStatus("preview");
     } catch (e) {
-      // Say exactly where it stopped. The products already created keep the
-      // stock already recorded — nothing is half-written, each row is its own
-      // atomic event.
-      setImportError(
-        `الاستيراد وقف بعد ${count} منتج. باقي الصفوف متسجلتش. ${e instanceof Error ? e.message : String(e)}`,
-      );
+      if (current !== generation.current) return;
+      setError(e instanceof Error ? e.message : "تعذّرت قراءة الملف. أعد المحاولة.");
+      setStatus("idle");
     }
-
-    setImportCount(count);
-    setOpenedCount(opened);
-    setOpenedUnits(units);
-    setSkippedCount(skipped);
-    onImported?.();
-    setStatus("done");
-  });
-
-  const downloadTemplate = () => {
-    const buf = generateTemplateBuffer();
-    const blob = new Blob([buf as any], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "نموذج_استيراد_المنتجات.xlsx";
-    a.click();
-    URL.revokeObjectURL(url);
   };
-
-  const totalValidRows = rows.length - rowErrors.size;
-
+  const confirm = () =>
+    runOnce(async () => {
+      if (!plan || plan.errors.length || !plan.rows.length || busy) return;
+      setStatus("importing");
+      setError("");
+      setProgress(0);
+      try {
+        const saved = await executeProductImport(
+          plan,
+          (done) => setProgress(done),
+          previewStore.current,
+        );
+        setResult(saved);
+        setStatus("done");
+        if (saved.created || saved.recovered) onImported?.();
+      } catch {
+        setError("تعذّر تأكيد الاستيراد. أعد محاولة نفس الملف للتحقق دون تكرار المخزون.");
+        setStatus("preview");
+      }
+    });
+  const template = async () => {
+    try {
+      const { productTemplate } = await import("@/lib/productImportFile");
+      const bytes = productTemplate();
+      const url = URL.createObjectURL(
+        new Blob([new Uint8Array(bytes)], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }),
+      );
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "nexus-products-template.xlsx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      setError("تعذّر تحميل النموذج. حاول مرة أخرى.");
+    }
+  };
+  if (role !== "ADMIN") return null;
+  const invalid = new Set(plan?.errors.map((e) => e.row));
   return (
-    <div className="rounded-2xl border border-border bg-card p-6 space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div
-            className="size-10 rounded-xl flex items-center justify-center"
-            style={{ background: "var(--gradient-primary)" }}
-          >
-            <FileSpreadsheet className="size-5 text-primary-foreground" />
-          </div>
-          <div>
-            <h3 className="font-display text-lg font-bold">استيراد المنتجات عبر إكسل</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              رفع ملف Excel أو CSV لإضافة مئات المنتجات دفعة واحدة
-            </p>
-          </div>
-        </div>
-        <button
-          aria-label="إغلاق استيراد المنتجات"
+    <section
+      dir="rtl"
+      aria-label="استيراد المنتجات"
+      data-pwa-unsaved="true"
+      className="rounded-2xl border border-border bg-card p-4 sm:p-6 space-y-4"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-bold flex items-center gap-2">
+          <FileSpreadsheet className="size-5" />
+          استيراد المنتجات عبر إكسل
+        </h3>
+        <Button
           type="button"
+          variant="ghost"
+          disabled={busy}
+          aria-label="إغلاق استيراد المنتجات"
           onClick={onClose}
-          className="size-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted transition-colors"
         >
           <X className="size-4" />
-        </button>
+        </Button>
       </div>
-
-      {/* File Upload + Template */}
+      <p className="text-sm text-muted-foreground">
+        إضافة منتجات جديدة فقط؛ لن تتغير المنتجات الموجودة. حتى {IMPORT_LIMIT} منتج و5 MB لكل ملف.
+        الأنواع والألوان والمقاسات: أحمر / M:2, أزرق / L:3.
+      </p>
+      {error && (
+        <p role="alert" className="text-destructive">
+          {error}
+        </p>
+      )}
       {status === "idle" && (
-        <div className="space-y-4">
-          <div
-            onClick={() => fileRef.current?.click()}
-            className="border-2 border-dashed border-border rounded-2xl p-10 text-center cursor-pointer hover:border-primary/50 hover:bg-muted/30 transition-all"
-          >
-            <Upload className="size-10 mx-auto text-muted-foreground mb-3" />
-            <p className="text-sm font-medium">اضغط لاختيار ملف Excel (.xlsx / .xls / .csv)</p>
-            <p className="text-xs text-muted-foreground mt-1">أو اسحب الملف وأفلته هنا</p>
-          </div>
+        <>
+          <Button type="button" variant="outline" onClick={() => fileRef.current?.click()}>
+            <Upload className="size-4" />
+            اختيار ملف Excel أو CSV
+          </Button>
           <input
             ref={fileRef}
+            aria-label="ملف المنتجات"
             type="file"
             accept=".xlsx,.xls,.csv"
             className="hidden"
             onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleFile(f);
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void readFile(file);
             }}
           />
-          <Button variant="outline" size="sm" onClick={downloadTemplate} className="gap-2">
-            <Download className="size-3.5" />
+          <Button type="button" variant="outline" onClick={() => void template()}>
+            <Download className="size-4" />
             تحميل نموذج الإكسل الاسترشادي (Template)
           </Button>
-        </div>
+        </>
       )}
-
-      {/* Preview Grid */}
-      {status === "preview" && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span className="text-sm font-medium">{fileName}</span>
-              <span
-                className={cn(
-                  "text-xs px-2 py-0.5 rounded-full font-medium",
-                  rowErrors.size === 0
-                    ? "bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-400"
-                    : "bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400",
-                )}
-              >
-                {rows.length} صف · {totalValidRows} صحيح
-                {rowErrors.size > 0 && ` · ${rowErrors.size} بحاجة لاسم`}
-              </span>
-            </div>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setStatus("idle");
-                  setRows([]);
-                  setRowErrors(new Map());
-                  fileRef.current!.value = "";
-                }}
-              >
-                اختيار ملف آخر
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => void handleImport()}
-                disabled={rowErrors.size > 0}
-                className="gap-2"
-              >
-                <Upload className="size-3.5" />
-                تأكيد وحفظ البيانات
-              </Button>
-            </div>
-          </div>
-
-          {rowErrors.size > 0 && (
-            <div className="rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 p-3 space-y-1">
-              <p className="text-xs font-semibold text-red-700 dark:text-red-400 flex items-center gap-1.5">
-                <AlertCircle className="size-3.5" />
-                يوجد {rowErrors.size} صف/صفوف تفتقد اسم المنتج. يرجى تصحيحها في الملف وإعادة الرفع.
-              </p>
-              {Array.from(rowErrors.entries())
-                .slice(0, 5)
-                .map(([rowIdx]) => (
-                  <p key={rowIdx} className="text-xs text-red-600 dark:text-red-300 mr-5">
-                    الصف #{rowIdx + 1}: اسم المنتج مفقود
-                  </p>
-                ))}
+      {status === "reading" && <p role="status">جاري قراءة وفحص {fileName}…</p>}
+      {status === "preview" && plan && (
+        <>
+          <p>
+            {fileName} · {plan.rows.length} صف ·{" "}
+            {plan.rows.filter((r) => !invalid.has(r.excelRow)).length} صالح مبدئيًا · {invalid.size}{" "}
+            غير صالح · {plan.duplicates} مكرر · {plan.alreadyImported ?? 0} محفوظ من نفس الملف ·{" "}
+            {plan.rows.filter((r) => !invalid.has(r.excelRow)).length - (plan.alreadyImported ?? 0)}{" "}
+            جديد
+          </p>
+          <p className="text-sm">
+            ستُفحص الباركودات مرة أخرى من المتجر قبل الحفظ. التكرار يوقف الدفعة قبل تعديل أي منتج.
+          </p>
+          {!!plan.errors.length && (
+            <div role="alert" className="text-destructive">
+              {plan.errors.slice(0, 30).map((e, i) => (
+                <p key={i}>
+                  الصف {e.row}: {e.message}
+                </p>
+              ))}
+              {plan.errors.length > 30 && <p>وأخطاء إضافية؛ صحّح الملف كاملًا ثم أعد رفعه.</p>}
             </div>
           )}
-
-          {/* Scrollable table */}
-          <div
-            className="overflow-x-auto rounded-xl border border-border"
-            style={{ maxHeight: 420 }}
-          >
+          <div className="overflow-auto max-h-96 border rounded-xl">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+              <thead>
                 <tr>
-                  <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                    #
-                  </th>
-                  <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                    الباركود
-                  </th>
-                  <th className="text-right p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                    اسم المنتج
-                  </th>
-                  <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                    القسم
-                  </th>
-                  {isOwner && (
-                    <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                      سعر الشراء
+                  {[
+                    "صف Excel",
+                    "المنتج",
+                    "SKU / الباركود",
+                    "الكمية",
+                    "سعر الشراء",
+                    "سعر البيع",
+                    "الأنواع",
+                  ].map((s) => (
+                    <th key={s} className="p-2">
+                      {s}
                     </th>
-                  )}
-                  <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                    قطاعي
-                  </th>
-                  {isOwner && (
-                    <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                      جملة
-                    </th>
-                  )}
-                  <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                    الكمية
-                  </th>
-                  <th className="text-center p-2.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                    الأنواع (درجات)
-                  </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, i) => {
-                  const hasNameErr = rowErrors.get(i)?.some((e) => e.field === "name");
-                  return (
-                    <tr
-                      key={i}
-                      className={cn(
-                        "border-t border-border transition-colors",
-                        hasNameErr ? "bg-red-50/60 dark:bg-red-950/15" : "hover:bg-muted/30",
-                      )}
-                    >
-                      <td className="text-center p-2.5 text-xs text-muted-foreground">{i + 1}</td>
-                      <td className="text-center p-2.5 font-mono text-xs whitespace-nowrap">
-                        {row.sku || (
-                          <span className="text-muted-foreground italic">سيتم إنشاؤه تلقائياً</span>
-                        )}
-                      </td>
-                      <td className="p-2.5 font-medium">
-                        <span className={cn(hasNameErr && "text-destructive")}>
-                          {row.name || "—"}
-                        </span>
-                        {hasNameErr && (
-                          <span className="block text-[10px] text-destructive mt-0.5">
-                            اسم المنتج مفقود
-                          </span>
-                        )}
-                      </td>
-                      <td className="text-center p-2.5 text-xs whitespace-nowrap">
-                        {row.category || "—"}
-                      </td>
-                      {isOwner && (
-                        <td className="text-center p-2.5 text-xs whitespace-nowrap">
-                          {row.purchase_price > 0 ? row.purchase_price.toLocaleString() : "—"}
-                        </td>
-                      )}
-                      <td className="text-center p-2.5 text-xs font-semibold whitespace-nowrap">
-                        {row.retail_price > 0 ? row.retail_price.toLocaleString() : "—"}
-                      </td>
-                      {isOwner && (
-                        <td className="text-center p-2.5 text-xs whitespace-nowrap">
-                          {row.wholesale_price > 0 ? row.wholesale_price.toLocaleString() : "—"}
-                        </td>
-                      )}
-                      <td className="text-center p-2.5 text-xs whitespace-nowrap">
-                        {row.stock_qty}
-                      </td>
-                      <td className="text-center p-2.5 text-xs whitespace-nowrap">
-                        {row.variants_raw || "—"}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {plan.rows.slice(0, 200).map((r) => (
+                  <tr key={r.excelRow} className="border-t">
+                    <td>{r.excelRow}</td>
+                    <td>{r.name}</td>
+                    <td>{r.sku || r.barcode || "تلقائي"}</td>
+                    <td>{r.stock_qty}</td>
+                    <td>{r.purchase_price}</td>
+                    <td>{r.retail_price}</td>
+                    <td>{r.variants_raw || "—"}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-
-      {/* Success */}
-      {status === "importing" && (
-        <div className="flex items-center justify-center py-12">
-          <div className="text-center">
-            <div className="size-10 mx-auto rounded-full border-2 border-primary border-t-transparent animate-spin mb-3" />
-            <p className="text-sm font-medium">جاري حفظ المنتجات في المخزن...</p>
+          {plan.rows.length > 200 && (
+            <p>المعاينة لأول 200 صف؛ تم فحص جميع الصفوف ({plan.rows.length}).</p>
+          )}
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              disabled={!!plan.errors.length || !plan.rows.length}
+              onClick={() => void confirm()}
+            >
+              تأكيد وحفظ المنتجات الجديدة والتحقق من السابق
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setPlan(null);
+                setStatus("idle");
+                setError("");
+              }}
+            >
+              اختيار ملف آخر
+            </Button>
           </div>
-        </div>
+        </>
       )}
-
-      {status === "done" && (
-        <div
-          className={cn(
-            "rounded-xl border p-6 text-center space-y-3",
-            importError
-              ? "bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800"
-              : "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800",
-          )}
-        >
-          {importError ? (
-            <AlertCircle className="size-10 mx-auto text-amber-600" />
-          ) : (
-            <CheckCircle2 className="size-10 mx-auto text-green-600" />
-          )}
-          <p className="text-lg font-bold">تم استيراد {importCount} منتج بنجاح!</p>
-          {importError && <p className="text-sm text-amber-700 dark:text-amber-400">{importError}</p>}
-          <p className="text-sm text-muted-foreground">
-            {openedCount > 0
-              ? `اتسجّل رصيد افتتاحي لـ ${openedCount} منتج بإجمالي ${openedUnits.toLocaleString("ar-EG")} قطعة — الكميات دي ظاهرة في المخزون ونقاط البيع من غير ما تعمل توريد.`
-              : "مفيش كميات في الملف، فالمنتجات بدأت من صفر. سجّل الكمية بتوريد أو من شاشة الجرد."}
+      {status === "importing" && (
+        <p role="status">
+          جاري حفظ المنتجات في المخزن… {progress} / {plan?.rows.length} — لا تغلق الصفحة.
+        </p>
+      )}
+      {status === "done" && result && (
+        <div role="status" className="space-y-2">
+          <p className="font-bold">{result.error ? "توقف الاستيراد" : "اكتمل الاستيراد"}</p>
+          <p>
+            تم إنشاء {result.created} منتج جديد. تأكد حفظ {result.recovered} منتج سابق من نفس الملف
+            دون تكراره. رصيد افتتاحي جديد: {result.units} قطعة.
           </p>
-          {skippedCount > 0 && (
-            <p className="text-sm text-muted-foreground">
-              {skippedCount} منتج كان متسجّل قبل كده بنفس الباركود — بياناته اتحدّثت، وتم تسوية المخزون الخاص به ليطابق الملف إذا كان هناك اختلاف.
+          {result.error && (
+            <p role="alert" className="text-destructive">
+              {result.error}
             </p>
           )}
-          <p className="text-sm text-muted-foreground">
-            المنتجات متاحة الآن للبيع في نقاط البيع والمتجر الإلكتروني. تم توليد باركود تلقائي
-            للمنتجات التي لم تحدد باركود لها.
+          <p>
+            المتبقي غير المحفوظ: {(plan?.rows.length ?? 0) - result.created - result.recovered}. لا
+            تتغير المنتجات الموجودة أو الأرصدة السابقة.
           </p>
-          <Button
-            onClick={() => {
-              setStatus("idle");
-              setRows([]);
-              setRowErrors(new Map());
-              fileRef.current!.value = "";
-              onClose();
-            }}
-            variant="outline"
-          >
+          {result.error && (
+            <Button type="button" onClick={() => void confirm()}>
+              إعادة محاولة نفس الملف بأمان
+            </Button>
+          )}
+          <Button type="button" variant="outline" onClick={onClose}>
             العودة للمنتجات
           </Button>
         </div>
       )}
-    </div>
+    </section>
   );
 }

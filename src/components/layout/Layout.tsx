@@ -198,7 +198,7 @@ export function Layout() {
                     {online ? (
                       <>
                         <Wifi className="size-3.5 text-green-500" />
-                        <span className="text-green-600 dark:text-green-400">متصل</span>
+                        <span className="text-green-600 dark:text-green-400">الإنترنت متصل</span>
                       </>
                     ) : (
                       <>

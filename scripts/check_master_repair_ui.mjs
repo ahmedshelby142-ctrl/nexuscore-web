@@ -10,7 +10,7 @@ import { JSDOM } from "jsdom";
 import { exchangeShippingFrom } from "../src/lib/exchangeShipping.ts";
 import { bundleComponentDetails } from "../src/lib/bundleDetails.ts";
 import { originalPosCustomer } from "../src/lib/posReturn.ts";
-import { findImportedProduct, openingBalanceOf } from "../src/lib/productImport.ts";
+import { buildImportPlan } from "../src/lib/productImportWorkflow.ts";
 import { returnableUnits, remainingUnits, ordinaryReturnValue, returnUnitKey } from "../src/lib/exchange.ts";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
@@ -565,15 +565,14 @@ test('catalog actual product control uses one atomic create/opening; selected va
 test('catalog actual product control retains draft on rejected/uncertain command; no success close or stock refresh',async()=>{
  const refused=productSubmit({refuse:true});await refused.invoke();assert.ok(refused.calls.some(x=>x[0]==='error'));assert.equal(refused.calls.filter(x=>['clear','dialog','read'].includes(x[0])).length,0);assert.ok(refused.calls.some(x=>x[0]==='release'));
 });
-test('catalog actual import control performs atomic matched adjustment and new opening, preserving prior successes on failure',async()=>{
- const calls=[],products=[{id:'existing',sku:'EX',barcode:'EX',name:'Existing',updated_at:1}],rows=[{sku:'EX',name:'Updated',stock_qty:12,purchase_price:2,retail_price:5},{sku:'NEW',name:'New',stock_qty:4,purchase_price:3,retail_price:6}];
- const ctx={exports:{},rows,products,rowErrors:new Map(),runOnce:fn=>fn(),autoSku:()=>{throw Error('Unexpected auto SKU')},findImportedProduct,openingBalanceOf,
-  qtyOf:()=>9,resolvePendingCatalog:async()=>{},saveCatalogProduct:async(fields,opts)=>{calls.push(['catalog',fields,opts])},onImported:()=>calls.push(['read']),
-  ...Object.fromEntries(['setStatus','setImportError','setImportCount','setOpenedCount','setOpenedUnits','setSkippedCount'].map(name=>[name,v=>calls.push([name,v])]))};
- vm.runInNewContext(compile(control('src/components/products/BulkImportProduct.tsx','handleImport')+'\nexports.invoke=handleImport;'),ctx);
- await ctx.exports.invoke();assert.deepEqual(calls.filter(x=>x[0]==='catalog').map(x=>x[2].quantity),[12,4]);assert.equal(calls.find(x=>x[0]==='setOpenedUnits')[1],7);assert.equal(calls.find(x=>x[0]==='setSkippedCount')[1],1);
- calls.length=0;ctx.saveCatalogProduct=async(fields,opts)=>{calls.push(['catalog',fields,opts]);if(fields.sku==='NEW')throw Error('Synthetic row failure')};await ctx.exports.invoke();
- assert.match(calls.find(x=>x[0]==='setImportError'&&x[1])[1],/Synthetic row failure/);assert.equal(calls.find(x=>x[0]==='setSkippedCount')[1],1);assert.equal(calls.find(x=>x[0]==='setOpenedUnits')[1],3);
+// The P0 onboarding contract is now create-only. The real React/controller/PG
+// retry and partial-success coverage lives in check_product_import_hotfix*.mjs.
+test('catalog import rejects a matched barcode before confirmation and preserves the existing product',()=>{
+ const products=[{id:'existing',sku:'EX',barcode:'EX',name:'Existing',quantity:9,updated_at:1}];
+ const before=structuredClone(products);
+ const plan=buildImportPlan([['sku','name','stock_qty','purchase_price'],['EX','Unwanted replacement',12,2],['NEW','New',4,3]],products);
+ assert.equal(plan.duplicates,1);assert.equal(plan.errors[0].row,2);assert.match(plan.errors[0].message,/لن يتم تعديل/);
+ assert.deepEqual(products,before);
 });
 
 test('ordinary return actual selection/quantity controls separate shades and exact discounted original-unit refunds',()=>{

@@ -4,8 +4,13 @@
  * The session-scoped flag prevents an offline or malformed deployment from
  * causing a reload loop. Both Vite entry points install this exact behavior.
  */
+import {unsafeReloadReason} from "@/mobile/pwa/updateLifecycle";
+
 export function installStaleChunkRecovery(): void {
   window.addEventListener("vite:preloadError", (event) => {
+    // A missing optional chunk must reject back to its caller while a file,
+    // cart or financial form is open. Never destroy that work to update code.
+    if (unsafeReloadReason(document)) return;
     const reloadOnce = "nexus-chunk-reload";
     if (sessionStorage.getItem(reloadOnce)) return;
     try {

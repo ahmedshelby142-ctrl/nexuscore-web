@@ -132,7 +132,7 @@ test("hydrateTable is the one reader: same list call, same sink, status recorded
   assert.match(fn, /sink\(rows\)/);
   assert.match(fn, /markTable\(table, "ready"\)/);
   assert.match(fn, /markTable\(table, "failed"/);
-  assert.match(fn, /if \(hydrating\.has\(table\)\) return -1;/, "a double retry would read the table twice");
+  assert.match(fn, /if \(hydrating\.has\(key\)\) return hydrating\.get\(key\)!;/, "same-authority retries share the acknowledged read rather than returning a false count");
   assert.ok(!/clearCloudOwnedState\(/.test(fn), "a single-table retry must not blank every other screen");
 });
 

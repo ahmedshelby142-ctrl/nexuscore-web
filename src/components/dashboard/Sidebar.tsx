@@ -309,6 +309,7 @@ export function Sidebar() {
   const online = useOnline();
   const lastSyncAt = useSyncStatus((s) => s.lastSyncAt);
   const syncing = useSyncStatus((s) => s.syncing);
+  const cloudFailed = useSyncStatus((s) => Object.values(s.tables).includes("failed"));
 
   /**
    * «مزامنة الآن» — the same `hydrateAll` boot and `online` already call, so
@@ -322,7 +323,6 @@ export function Sidebar() {
     try {
       const { hydrateAll } = await import("@/services/cloudHydrate");
       await hydrateAll();
-      useSyncStatus.getState().markSynced();
     } catch (e) {
       // A failed refresh must not stamp a fresh «آخر مزامنة» — that would
       // claim a read that did not happen.
@@ -417,7 +417,7 @@ export function Sidebar() {
               <span
                 className={cn(
                   "size-2 rounded-full shrink-0",
-                  online
+                  online && !cloudFailed
                     ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
                     : "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.6)]",
                 )}
@@ -427,15 +427,15 @@ export function Sidebar() {
                   <p
                     className={cn(
                       "text-xs font-medium leading-tight",
-                      online
+                      online && !cloudFailed
                         ? "text-green-600 dark:text-green-400"
                         : "text-amber-600 dark:text-amber-400",
                     )}
                   >
-                    {online ? "سحابي متصل" : "غير متصل بالإنترنت"}
+                    {!online ? "غير متصل بالإنترنت" : cloudFailed ? "تعذّر تحميل بعض البيانات" : "الإنترنت متصل"}
                   </p>
                   <p className="text-[10px] text-muted-foreground leading-relaxed mt-px truncate">
-                    {syncing
+                    {cloudFailed ? "أعد محاولة المزامنة" : syncing
                       ? "جارٍ المزامنة…"
                       : (lastSyncLabel(lastSyncAt) ??
                         (online ? "لم تتم مزامنة بعد" : "آخر نسخة محفوظة محلياً"))}

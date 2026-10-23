@@ -23,6 +23,8 @@ import { useSyncStatus } from "@/store/useSyncStatus";
 import { useAuthStore } from "@/store/useAuthStore";
 import { readsDesktopBusinessData } from "@/lib/roles";
 import { cloudList } from "./cloudData";
+import { cloudErrorMessage } from "@/lib/cloudError";
+import { captureReadAuthority, assertReadAuthority } from "./operationalSource";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { useCourierStore } from "@/store/useCourierStore";
 import { useCustomerStore } from "@/store/useCustomerStore";
@@ -84,13 +86,27 @@ export interface HydrationResult {
  * One table failing must not stop the others: a screen with five of seven
  * tables is usable, a blank app is not.
  */
+let activeHydration: { key: string; promise: Promise<HydrationResult> } | undefined;
+let clearedAuthority: string | undefined;
 export async function hydrateAll(): Promise<HydrationResult> {
+  if (!mayReadBusinessData()) return {loaded:{},failed:{}};
+  const key = JSON.stringify(captureReadAuthority());
+  if (activeHydration?.key === key) return activeHydration.promise;
+  const promise = performHydration(key);
+  activeHydration = {key,promise};
+  try { return await promise; }
+  finally { if (activeHydration?.promise === promise) activeHydration = undefined; }
+}
+
+async function performHydration(key: string): Promise<HydrationResult> {
   const loaded: Record<string, number> = {};
   const failed: Record<string, string> = {};
 
   // Discard whatever survived rehydration before asking the server.
-  clearCloudOwnedState();
+  // Clear on a new authority, not every reconnect/manual refresh.
+  if (clearedAuthority !== key) { clearCloudOwnedState(); clearedAuthority = key; }
   if (!mayReadBusinessData()) return { loaded, failed };
+  useSyncStatus.getState().markSyncing(true);
 
   // Store settings live in `public.stores`, not in a synced table, so they are
   // not one of the SINKS above — but they are just as cloud-owned.
@@ -117,6 +133,7 @@ export async function hydrateAll(): Promise<HydrationResult> {
   for (const table of Object.keys(SINKS)) useSyncStatus.getState().markTable(table, "loading");
 
   for (const table of Object.keys(SINKS)) {
+    if (key !== JSON.stringify(captureReadAuthority())) break;
     try {
       loaded[table] = await hydrateTable(table);
     } catch (e) {
@@ -125,6 +142,19 @@ export async function hydrateAll(): Promise<HydrationResult> {
     }
   }
 
+  if (key === JSON.stringify(captureReadAuthority())) {
+    useSyncStatus.getState().markSynced();
+    const first = Object.values(failed)[0];
+    // Notifications are ancillary; table failure/status remains authoritative
+    // even if a non-browser caller or a broken toast renderer has no DOM.
+    if (typeof window !== "undefined") {
+      try {
+        const {toast} = await import("sonner");
+        if (first) toast.error(first,{id:"cloud-hydration-error"});
+        else toast.dismiss("cloud-hydration-error");
+      } catch { /* the readable per-table error is still recorded above */ }
+    }
+  }
   return { loaded, failed };
 }
 
@@ -145,7 +175,7 @@ function mayReadBusinessData(): boolean {
 }
 
 /** Tables with a read in flight. A second ask for the same one is a no-op. */
-const hydrating = new Set<string>();
+const hydrating = new Map<string, Promise<number>>();
 
 /**
  * Re-read ONE table into its store. The body of `hydrateAll`'s loop, and the
@@ -155,31 +185,35 @@ const hydrating = new Set<string>();
  * Unlike `hydrateAll` it empties nothing: a products screen retrying its
  * failed read must not blank the orders another screen is showing.
  *
- * Returns the row count; THROWS on failure, having recorded it in
- * `useSyncStatus` for every screen that lists this table. Resolves to -1
- * without reading when the same table is already being read — the answer
- * that read is waiting for is this call's answer too.
+ * Returns the row count; shares the same promise for an in-flight read under
+ * the same verified authority. A changed authority never consumes that response.
  */
 export async function hydrateTable(table: string): Promise<number> {
   const sink = SINKS[table];
   if (!sink) throw new Error(`[Hydrate] no sink for ${table}`);
-  if (hydrating.has(table)) return -1;
-
   if (!mayReadBusinessData()) return 0;
+  const proof = captureReadAuthority();
+  const key = JSON.stringify([table,proof]);
+  if (hydrating.has(key)) return hydrating.get(key)!;
+  const promise = readTable();
+  hydrating.set(key,promise);
+  try {return await promise;} finally {if(hydrating.get(key)===promise)hydrating.delete(key);}
 
-  hydrating.add(table);
+  async function readTable() {
   const status = useSyncStatus.getState();
   status.markTable(table, "loading");
   try {
     const rows = await cloudList(table);
+    assertReadAuthority(proof);
     sink(rows);
     status.markTable(table, "ready");
     return rows.length;
   } catch (e) {
-    status.markTable(table, "failed", e instanceof Error ? e.message : String(e));
-    throw e;
-  } finally {
-    hydrating.delete(table);
+    if (JSON.stringify(proof) !== JSON.stringify(captureReadAuthority())) throw e;
+    const message = cloudErrorMessage(e,table === "products" ? "المنتجات" : table === "orders" ? "الطلبات" : "بعض البيانات");
+    status.markTable(table, "failed", message);
+    throw Object.assign(new Error(message),{cause:e});
+  }
   }
 }
 

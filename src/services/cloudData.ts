@@ -85,7 +85,7 @@ export async function cloudList(table: string): Promise<any[]> {
         noTombstone.add(table);
         continue;
       }
-      throw new Error(`[${table}] ${message}`);
+      throw Object.assign(new Error(`[${table}] ${message}`), {code:e?.code,status:e?.status});
     }
   }
 

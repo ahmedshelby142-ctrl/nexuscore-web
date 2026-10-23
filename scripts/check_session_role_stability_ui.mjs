@@ -59,3 +59,31 @@ for(const role of ['CASHIER_ONLY','ECOMMERCE_ONLY','POS_ECOMMERCE','ADMIN'])test
 test('routine proof renewal preserves an already verified Cashier cart, but failure suspends its access',async()=>{
  const f=fixture();try{await f.run();let release,entered;const started=new Promise(r=>entered=r);f.setQuery(()=>{entered();return new Promise(r=>release=r);});const pending=f.run({background:true});await started;assert.equal(f.auth.userRole,'CASHIER_ONLY');assert.equal(f.auth.permissionsVerified,true);release({data:null,error:{message:'Synthetic background transport error'}});assert.equal(await pending,'unavailable');assert.equal(f.auth.permissionsVerified,false);assert.equal(f.auth.userRole,'UNVERIFIED');assert.equal(canAccess(f.auth.userRole,'/orders'),false);}finally{await f.h.cleanup();}
 });
+
+test('focus, same-account SIGNED_IN and TOKEN_REFRESHED renew without destroying a selected file; sign-out still fails closed',async()=>{
+ const f=fixture({role:'ADMIN'});try{
+  const {useSessionReconciliation}=f.h.load('src/lib/auth/useSessionReconciliation.ts');
+  let mounts=0;
+  function Draft(){f.h.React.useEffect(()=>{mounts++;},[]);return f.h.React.createElement('input',{type:'file','aria-label':'preserved-file'});}
+  function Shell(){const state=useSessionReconciliation();return state==='authenticated'?f.h.React.createElement(Draft):f.h.React.createElement('output',null,state);}
+  await f.h.render(Shell);const original=document.querySelector('input');assert.ok(original);assert.equal(mounts,1);
+  for(const action of [()=>window.dispatchEvent(new window.Event('focus')),()=>f.callback('SIGNED_IN',{user:{id:uid}}),()=>f.callback('TOKEN_REFRESHED',{user:{id:uid}})]){
+   await f.h.perform(async()=>{action();await new Promise(r=>setTimeout(r,15));});
+   assert.equal(document.querySelector('input'),original);assert.equal(mounts,1);assert.equal(f.auth.permissionsVerified,true);
+  }
+  await f.h.perform(()=>f.callback('SIGNED_OUT',null));assert.equal(document.querySelector('input'),null);assert.equal(f.auth.permissionsVerified,false);
+ }finally{await f.h.cleanup();}
+});
+
+test('same-identity background renewal failure blocks access; recovery revalidates role instead of falling back',async()=>{
+ const f=fixture({role:'CASHIER_ONLY'});try{
+  const {useSessionReconciliation}=f.h.load('src/lib/auth/useSessionReconciliation.ts');
+  await f.h.render(()=>f.h.React.createElement('output',null,useSessionReconciliation()));
+  f.setQuery(async()=>({data:null,error:{message:'synthetic network failure'}}));
+  await f.h.perform(async()=>{window.dispatchEvent(new window.Event('focus'));await new Promise(r=>setTimeout(r,10));});
+  assert.equal(f.auth.permissionsVerified,false);assert.equal(f.auth.userRole,'UNVERIFIED');assert.match(document.body.textContent,/unavailable/);
+  f.setQuery(async()=>({data:{role:'CASHIER_ONLY',store_id:store},error:null}));
+  await f.h.perform(async()=>{window.dispatchEvent(new window.Event('focus'));await new Promise(r=>setTimeout(r,10));});
+  assert.equal(f.auth.userRole,'CASHIER_ONLY');assert.match(document.body.textContent,/authenticated/);
+ }finally{await f.h.cleanup();}
+});

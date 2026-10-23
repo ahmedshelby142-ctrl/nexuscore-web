@@ -19,25 +19,25 @@ async function publish(result: Result, storeId: string): Promise<Product> {
 }
 
 /** Recover the original operation before minting a new product identity. */
-export async function resolvePendingCatalog(): Promise<void> {
+export async function resolvePendingCatalog(options: { continueAfterRecovery?: boolean } = {}): Promise<void> {
   const identity = await getSyncIdentity();
   if (!identity) throw new Error("لا يوجد متجر مسجل");
   const result = await resolvePendingFinancialCommand<Result>(SCOPE);
   if (result) {
     await publish(result, identity.storeId);
-    throw new Error("تم تأكيد حفظ المنتج السابق. راجع القائمة قبل حفظ بيانات جديدة.");
+    if (!options.continueAfterRecovery) throw new Error("تم تأكيد حفظ المنتج السابق. راجع القائمة قبل حفظ بيانات جديدة.");
   }
   // Older saved opening requests retain their original financial identity.
   await resolvePendingOpeningBalance();
 }
 
 export async function saveCatalogProduct(fields: Partial<Product>, options: {
-  existing?: Product; quantity: number; unitCost?: number;
+  existing?: Product; quantity: number; unitCost?: number; createId?: string;
 }): Promise<Product> {
   await resolvePendingCatalog();
   const identity = await getSyncIdentity();
   if (!identity) throw new Error("لا يوجد متجر مسجل");
-  const id = options.existing?.id ?? crypto.randomUUID();
+  const id = options.existing?.id ?? options.createId ?? crypto.randomUUID();
   const result = await runFinancialCommand<Result>("product_catalog", {
     action: options.existing ? "update" : "create",
     product: toRemoteRow("products", { ...fields, id, totalQuantity: options.quantity }),

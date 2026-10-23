@@ -61,7 +61,8 @@ export const useSyncStatus = create<SyncStatusState>()((set) => ({
     }),
   // Deliberately NOT persisted: a "last synced" time restored from
   // localStorage would claim a read that never happened this session.
-  markSynced: (at = Date.now()) => set({ lastSyncAt: at, syncing: false }),
+  markSynced: (at = Date.now()) => set(s => Object.values(s.tables).some(status=>status!=="ready")
+    ? {syncing:false} : { lastSyncAt: at, syncing: false }),
 }));
 
 /** «منذ ٣ دقائق» — how long ago, in Arabic, or null when nothing has synced. */

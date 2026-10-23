@@ -17,5 +17,5 @@ export function captureReadAuthority() {
 export function assertReadAuthority(proof: ReturnType<typeof captureReadAuthority>) {
  const current=captureReadAuthority();
  if(current.id!==proof.id||current.role!==proof.role||current.revision!==proof.revision)
-  throw new Error("تغيّرت صلاحيات الجلسة أثناء القراءة؛ أعد تحميل البيانات بالحساب الحالي.");
+  throw Object.assign(new Error("تغيّرت صلاحيات الجلسة أثناء القراءة؛ أعد تحميل البيانات بالحساب الحالي."),{code:"STALE_AUTHORITY"});
 }

@@ -30,7 +30,7 @@ export async function pageAll<T>(
   const out: T[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await build(from, from + PAGE - 1);
-    if (error) throw new Error(error.message);
+    if (error) throw Object.assign(new Error(error.message), error);
     const rows = (data ?? []) as T[];
     out.push(...rows);
     if (rows.length < PAGE) return out;

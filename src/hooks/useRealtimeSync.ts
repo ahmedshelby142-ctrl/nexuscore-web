@@ -262,13 +262,9 @@ export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
       const { loaded, failed } = await hydrateAll();
       // Recorded only on a read that actually returned, so «آخر مزامنة» can
       // never claim a sync that failed. The sidebar reads this.
-      useSyncStatus.getState().markSynced();
       const total = Object.values(loaded).reduce((a, b) => a + b, 0);
       console.info(`[Hydrate] ${total} row(s) from the cloud`, loaded);
-      if (Object.keys(failed).length > 0) {
-        const { toast } = await import("sonner");
-        toast.error("تعذّر تحميل بعض البيانات من السحابة. تحقّق من الاتصال.");
-      }
+      // hydrateAll reports the failed reader once using a stable toast ID.
     })();
   }, [authenticated]);
 
@@ -283,7 +279,6 @@ export const useRealtimeSync = (): "checking" | SessionReconciliationState => {
       useSyncStatus.getState().markSyncing(true);
       void import("../services/cloudHydrate")
         .then((m) => m.hydrateAll())
-        .then(() => useSyncStatus.getState().markSynced())
         .catch((e) => {
           useSyncStatus.getState().markSyncing(false);
           console.error('[RealtimeSync] catch-up hydrate failed:', e);

@@ -150,7 +150,8 @@ test("the echo guard compares a column that exists", () => {
 
 test("the sidebar reports the real connection, not a painted-on green dot", () => {
   assert.match(sidebarCode, /const online = useOnline\(\)/, "from navigator.onLine");
-  assert.match(sidebarCode, /online\s*\?\s*"سحابي متصل"\s*:\s*"غير متصل بالإنترنت"/);
+  assert.match(sidebarCode, /cloudFailed \? "تعذّر تحميل بعض البيانات" : "الإنترنت متصل"/);
+  assert.match(sidebarCode, /online && !cloudFailed/);
   // The old block hardcoded both the dot colour and the caption.
   assert.ok(
     !/bg-green-500[\s\S]{0,200}سحابي متصل/.test(sidebarCode.replace(/online[\s\S]{0,40}\?/g, "")),
@@ -160,9 +161,10 @@ test("the sidebar reports the real connection, not a painted-on green dot", () =
 
 test("«آخر مزامنة» comes from a read that actually returned", () => {
   assert.match(sidebarCode, /lastSyncLabel\(lastSyncAt\)/);
-  // markSynced is called only AFTER hydrateAll resolves, never before it.
-  const boot = realtimeCode.slice(realtimeCode.indexOf("hydrateAll()"));
-  assert.match(boot, /markSynced\(\)/, "boot records a successful sync");
+  // The shared hydration service now owns completion for every caller.
+  const hydration = strip(read("../src/services/cloudHydrate.ts"));
+  assert.match(hydration, /markSynced\(\)/, "the acknowledged read records sync status");
+  assert.match(syncStatus, /status!=="ready"/, "partial failures cannot stamp a successful sync");
   assert.match(realtimeCode, /markSyncing\(false\)[\s\S]{0,200}catch-up hydrate failed|catch[\s\S]{0,120}markSyncing\(false\)/,
     "a failed catch-up must not stamp a fresh timestamp");
   assert.ok(

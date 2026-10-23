@@ -327,7 +327,8 @@ export function ProductsPage() {
           </Button>
           {isOwner && (
             <Button
-              onClick={() => setShowBulkImport(!showBulkImport)}
+              type="button"
+              onClick={() => setShowBulkImport(true)}
               variant="outline"
               className="gap-2 h-10 px-5"
             >

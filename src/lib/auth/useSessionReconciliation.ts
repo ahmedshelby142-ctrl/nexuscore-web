@@ -7,6 +7,7 @@ import { clearStoreIdCache, primeActiveStoreId } from "@/services/api/storeConte
 export type SessionReconciliationState = "authenticated" | "unauthenticated" | "unavailable";
 
 let verificationGeneration = 0;
+let verifiedMembership: {uid:string; storeId:string | undefined} | undefined;
 
 /** Invalidates in-flight answers as well as the previous identity's UI rights. */
 export function suspendVerifiedAccess(): number {
@@ -157,6 +158,12 @@ async function resolveVerifiedSession(generation: number): Promise<SessionReconc
 
   // The same row carries the store: hand it to `storeContext` so the first
   // `getActiveStoreId()` does not ask `auth/user` and `store_members` again.
+  if (verifiedMembership?.uid === uid && verifiedMembership.storeId !== membership?.store_id) {
+    useAuthStore.getState().beginVerification();
+    clearStoreIdCache();
+    window.dispatchEvent(new Event("nexus-membership-changed"));
+  }
+  verifiedMembership = {uid,storeId:membership?.store_id};
   if (!membershipError) primeActiveStoreId(membership?.store_id);
   useAuthStore.getState().setSystemOwner(isSystemOwner);
 
@@ -197,9 +204,10 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
     let membershipChannel: ReturnType<NonNullable<ReturnType<typeof getSupabaseClient>>["channel"]> | undefined;
     let rechecking = false;
     let queuedRecheck = false;
+    let queuedForeground = false;
     const recheck = async (background = false) => {
       if (cancelled) return;
-      if (rechecking) { queuedRecheck = true; return; }
+      if (rechecking) { queuedRecheck = true; queuedForeground ||= !background; return; }
       rechecking = true;
       if (!background) setState("checking");
       try {
@@ -217,10 +225,17 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
         if (!cancelled) setState("unavailable");
       } finally {
         rechecking = false;
-        if (queuedRecheck && !cancelled) { queuedRecheck = false; void recheck(); }
+        if (queuedRecheck && !cancelled) {
+          const nextBackground = !queuedForeground;
+          queuedRecheck = false; queuedForeground = false;
+          void recheck(nextBackground);
+        }
       }
     };
-    const onFocus = () => { void recheck(); };
+    // Returning from a native file picker is also a focus event. Renew the
+    // SAME verified identity without destroying the file preview/live cart.
+    // A failed renewal still suspends access; role/account changes still invalidate reads.
+    const onFocus = () => { void recheck(true); };
     window.addEventListener("focus", onFocus);
     const membershipTimer = window.setInterval(() => { void recheck(true); }, 30000);
     let watchedUid: string | undefined;
@@ -233,7 +248,7 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
       if (uid && typeof supabase.channel === "function") {
         membershipChannel = supabase.channel(`staff-access-${uid}-${crypto.randomUUID()}`)
           .on("postgres_changes", {event:"*",schema:"public",table:"store_members",filter:`user_id=eq.${uid}`},
-            () => { window.setTimeout(onFocus, 0); })
+            () => { suspendVerifiedAccess(); setState("checking"); window.setTimeout(() => void recheck(), 0); })
           .subscribe();
       }
     };
@@ -274,6 +289,14 @@ export function useSessionReconciliation(): "checking" | SessionReconciliationSt
         // conjure a session, and the next boot re-runs the full membership
         // check and signs out anyone whose membership has gone.
         if (session) {
+          const current = useAuthStore.getState();
+          const sameIdentity = current.permissionsVerified && current.isAuthenticated &&
+            current.session?.user.id === session.user.id;
+          if (sameIdentity && ["INITIAL_SESSION", "SIGNED_IN", "TOKEN_REFRESHED", "USER_UPDATED"].includes(event)) {
+            watchMembership(session.user.id);
+            window.setTimeout(() => { void recheck(true); }, 0);
+            return;
+          }
           suspendVerifiedAccess();
           watchMembership(session.user?.id);
           setState("checking");

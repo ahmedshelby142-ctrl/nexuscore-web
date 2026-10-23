@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useBusinessStore } from "@/store/useBusinessStore";
 import { saveCatalogProduct } from "@/lib/catalogStockCommand";
+import { productSaveError } from "@/lib/productArchive";
 
 
 import { useStock } from "@/lib/ledger/useStock";
@@ -145,6 +146,8 @@ export function ProductsPage() {
   // One submit at a time; state cannot close the same-tick window.
   const gate = useSubmitGate();
   const [stockStatusFilter, setStockStatusFilter] = useState<StockFilter>("all");
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const restoringGate = useRef(false);
   const [categoryFilter, setCategoryFilter] = useState("all");
 
   // The categories actually in use, not the default list — a filter offering
@@ -281,6 +284,20 @@ export function ProductsPage() {
   function handleDelete(product: Product) {
     setPendingRemoval(product);
   }
+  async function restoreArchived(product: Product) {
+    if (restoringGate.current) return;
+    restoringGate.current = true;
+    setRestoringId(product.id);
+    try {
+      await restoreProduct(product.id);
+      toast.success("تم تأكيد حالة المنتج من الخادم.");
+    } catch (e) {
+      toast.error(productSaveError(e));
+    } finally {
+      restoringGate.current = false;
+      setRestoringId(null);
+    }
+  }
 
   function updateField<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -361,6 +378,7 @@ export function ProductsPage() {
       {!showArchived && (
         <StockSummaryCards
           products={products}
+          valuationProducts={allProducts}
           value={stockStatusFilter}
           onChange={setStockStatusFilter}
           costOf={costOf}
@@ -560,10 +578,11 @@ export function ProductsPage() {
                             variant="outline"
                             size="sm"
                             className="gap-1.5"
-                            onClick={() => restoreProduct(product.id)}
+                            disabled={restoringId !== null}
+                            onClick={() => void restoreArchived(product)}
                           >
                             <RotateCcw className="size-3.5" />
-                            استرجاع
+                            {restoringId === product.id ? "جارٍ التحقق…" : "استرجاع"}
                           </Button>
                         ) : (
                           <div className="flex items-center justify-center gap-1">

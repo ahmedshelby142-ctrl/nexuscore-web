@@ -23,10 +23,10 @@ before(async () => {
       resolvePendingFinancialCommand: async () => null,
       resolvePendingOpeningBalance: async () => {},
       runFinancialCommand: async (command, input) => {
-        assert.equal(command, "product_catalog");
+        assert.equal(command, "product_import");
         return (
           await admin.query(
-            "select public.record_product_catalog($1,$2,$3,'product_catalog',$4) r",
+            "select public.record_product_import($1,$2,$3,'product_import',$4) r",
             [crypto.randomUUID(), db.store, db.device, input],
           )
         ).rows[0].r;
@@ -80,7 +80,7 @@ const stock = async (id) =>
 test("PG17.6: XLSX plan persists atomic product, variants, stock and 375 piastres; fresh Desktop/Mobile reader and retry see one identity", async () => {
   assert.match(db.version, /PostgreSQL 17\.6/);
   const p = make(),
-    r = await execute(p, () => {});
+    r = await execute(p, () => {},undefined,'owned');
   assert.equal(r.created, 1);
   assert.equal(r.error, undefined);
   const product = (
@@ -107,7 +107,7 @@ test("PG17.6: XLSX plan persists atomic product, variants, stock and 375 piastre
     ),
     3,
   );
-  const replay = await execute(p, () => {});
+  const replay = await execute(p, () => {},undefined,'owned');
   assert.equal(replay.created, 0);
   assert.equal(replay.recovered, 1);
   assert.deepEqual(await stock(product.id), { qty: "3", piastres: "375" });
@@ -126,7 +126,7 @@ test("PG17.6: failure after product creation rolls back product and ledger; retr
     "create function qa_import_late() returns trigger language plpgsql as $$begin raise exception 'SYNTHETIC_LATE_IMPORT';end$$; create trigger qa_import_late after insert on ledger_lines for each row execute function qa_import_late()",
   );
   try {
-    const r = await execute(make("PG-ROLLBACK"), () => {});
+    const r = await execute(make("PG-ROLLBACK"), () => {},undefined,'owned');
     assert.equal(r.created, 0);
     assert.ok(r.error);
     assert.equal(
@@ -143,9 +143,9 @@ test("PG17.6: failure after product creation rolls back product and ledger; retr
       "drop trigger qa_import_late on ledger_lines;drop function qa_import_late()",
     );
   }
-  assert.equal((await execute(make("PG-ROLLBACK"), () => {})).created, 1);
+  assert.equal((await execute(make("PG-ROLLBACK"), () => {},undefined,'owned')).created, 1);
 });
-test("PG17.6: existing product preservation rejects complete batch before any creation; concurrent same-file imports cannot duplicate stock", async () => {
+test("PG17.6: existing product is skipped while new rows append; concurrent same-file imports cannot duplicate stock", async () => {
   const before = (
     await db.admin.query(
       "select jsonb_agg(to_jsonb(p) order by id) r from products p where store_id=$1",
@@ -157,20 +157,21 @@ test("PG17.6: existing product preservation rejects complete batch before any cr
     ["NEW-BEFORE-CONFLICT", "New", 1, 2, 1],
     ["PG-IMPORT", "Unwanted overwrite", 99, 100, 20],
   ]);
-  const r = await execute(conflict, () => {});
-  assert.equal(r.created, 0);
-  assert.ok(r.error);
+  const r = await execute(conflict, () => {},undefined,'owned');
+  assert.equal(r.created, 1);
+  assert.equal(r.skipped,1);
+  assert.equal(r.error,undefined);
   assert.deepEqual(
     (
       await db.admin.query(
         "select jsonb_agg(to_jsonb(p) order by id) r from products p where store_id=$1",
         [db.store],
       )
-    ).rows[0].r,
+    ).rows[0].r.filter(p=>before.some(original=>original.id===p.id)),
     before,
   );
   const p = make("PG-CONCURRENT");
-  await Promise.all([execute(p, () => {}), execute(p, () => {})]);
+  await Promise.all([execute(p, () => {},undefined,'owned'), execute(p, () => {},undefined,'owned')]);
   const rows = (
     await db.admin.query("select id from products where store_id=$1 and sku='PG-CONCURRENT'", [
       db.store,
@@ -178,5 +179,5 @@ test("PG17.6: existing product preservation rejects complete batch before any cr
   ).rows;
   assert.equal(rows.length, 1);
   assert.deepEqual(await stock(rows[0].id), { qty: "3", piastres: "375" });
-  assert.equal((await execute(p, () => {})).recovered, 1);
+  assert.equal((await execute(p, () => {},undefined,'owned')).recovered, 1);
 });

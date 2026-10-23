@@ -46,7 +46,19 @@ export async function readProductFile(file: File) {
             matrix[row][column] = XLSX.utils.format_cell(cell);
         }
       });
-    return buildImportPlan(matrix);
+    const plan = buildImportPlan(matrix);
+    // XLSX reads cached formula values but never evaluates them. Do not
+    // silently accept a stale cached price/quantity as an owner's declaration.
+    for (const [address, cell] of Object.entries(sheet))
+      if (!address.startsWith("!") && (cell as XLSX.CellObject).f) {
+        const row = XLSX.utils.decode_cell(address).r + 1;
+        plan.errors.push({
+          row,
+          kind: "formula",
+          message: "توجد معادلة Excel؛ احفظ قيمتها كنص أو رقم ثابت ثم أعد رفع الملف.",
+        });
+      }
+    return plan;
   } catch {
     throw Error("تعذّر تحليل الملف. استخدم نموذج المنتجات واحفظه بصيغة XLSX أو XLS أو CSV.");
   }
@@ -56,17 +68,75 @@ export function productTemplate(): Uint8Array {
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet([
     [
-      "الباركود",
       "اسم المنتج",
-      "القسم",
-      "سعر الشراء",
-      "سعر البيع قطاعي",
-      "سعر البيع جملة",
-      "الكمية الحالية",
-      "درجات الألوان (الاسم:الكمية,الاسم:الكمية)",
+      "SKU / كود المنتج",
+      "الباركود",
+      "التصنيف",
+      "سعر البيع القطاعي",
+      "سعر الجملة (اختياري)",
+      "تكلفة الوحدة",
+      "الكمية",
+      "الحد الأدنى للمخزون",
+      "الدرجات / الألوان والمقاسات (الاسم:الكمية)",
     ],
-    ["SKU-001", "منتج تجريبي", "إلكترونيات", 100, 250, 200, 50, "أحمر / M:30, أزرق / L:20"],
+    [
+      "مثال — احذف هذا الصف",
+      "SKU-001",
+      "000123456789",
+      "ملابس",
+      2.55,
+      0,
+      1.25,
+      3,
+      5,
+      "أحمر / M:2, أزرق / L:1",
+    ],
+    ["مثال صنف بلا مخزون — احذفه", "SKU-002", "000123456790", "عام", 3, 0, 2, 0, 5, ""],
   ]);
   XLSX.utils.book_append_sheet(workbook, sheet, "نموذج استيراد");
+  const instructions = XLSX.utils.aoa_to_sheet([
+    ["تعليمات إضافة المنتجات الجديدة فقط"],
+    [
+      "احذف صفوف الأمثلة واكتب منتجاتك. يلزم اسم المنتج وSKU أو باركود ثابت. لا نطابق المنتجات بالاسم.",
+    ],
+    ["احفظ الأكواد كنص للحفاظ على الأصفار. لا تضع معادلات؛ حوّل النتائج إلى قيم ثابتة."],
+    [
+      "كل صف صنف رئيسي واحد. الدرجات/الألوان والمقاسات: أحمر / M:2, أزرق / L:1 ومجموعها يساوي كمية الصف.",
+    ],
+    ["المخطط يدعم اسم الدرجة وكمّيتها، ولا يدعم SKU مستقلًا لكل درجة؛ لا تضف أعمدة غير مدعومة."],
+    ["الأسعار والتكلفة بالجنيه بدقة قرشين عشريين، والكميات أعداد صحيحة غير سالبة."],
+    [
+      "الموجود بالفعل يُتخطى ولا تتغير كميته أو سعره أو تكلفته. تعارض الأكواد أو الأخطاء يوقف الحفظ حتى التصحيح.",
+    ],
+    [
+      "رصيد افتتاحي/مخزون مملوك بالفعل يحتاج اختيارًا وتأكيدًا في المعاينة. الشراء الجديد يُسجل بفاتورة توريد بعد إضافة الصنف بكمية صفر.",
+    ],
+    ["كمية صفر لا تُنشئ أصل مخزون. راجع إجمالي الأصناف والكمية والقيمة المتوقعة قبل التأكيد."],
+    ["القالب القديم والحقول الإنجليزية المدعومة مستمران. حد الملف 2000 صنف و5 MB و100 عمود."],
+  ]);
+  XLSX.utils.book_append_sheet(workbook, instructions, "تعليمات");
+  for (const address of Object.keys(sheet)) if (/^[BC]\d+$/.test(address)) sheet[address].z = "@";
   return XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+}
+
+export function productImportRejections(
+  plan: import("./productImportWorkflow").ImportPlan,
+): Uint8Array {
+  const rows = [
+    ["صف Excel", "اسم المنتج", "SKU", "الباركود", "سبب الرفض"],
+    ...plan.errors.map((e) => {
+      const r = plan.rows.find((x) => x.excelRow === e.row);
+      return [String(e.row), r?.name ?? "", r?.sku ?? "", r?.barcode ?? "", e.message];
+    }),
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  // Explicit text cells: rejected names/codes cannot become Excel formulas.
+  for (const address of Object.keys(sheet))
+    if (!address.startsWith("!")) {
+      sheet[address].t = "s";
+      delete sheet[address].f;
+    }
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, sheet, "تفاصيل الرفض");
+  return XLSX.write(book, { type: "array", bookType: "xlsx" });
 }

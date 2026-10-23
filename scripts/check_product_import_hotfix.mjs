@@ -78,10 +78,11 @@ for (const [label, matrix] of [
   test("validation rejects " + label + " before any write", () =>
     assert.ok(buildImportPlan(matrix).errors.length),
   );
-test("existing SKU/barcode conflicts are visible and never update the catalog", () => {
+test("existing reliable SKU/barcode is explicitly skipped without an update", () => {
   const p = buildImportPlan([headers, good], [{ sku: "another", barcode: "HOTFIX-1" }]);
-  assert.equal(p.duplicates, 1);
-  assert.match(p.errors[0].message, /لن يتم تعديل/);
+  assert.equal(p.existingToSkip, 1);
+  assert.equal(p.errors.length,0);
+  assert.equal(p.rows[0].disposition,'existing');
 });
 test("identity is stable across same-file retries and isolated by tenant", async () => {
   const row = plan().rows[0],
@@ -145,11 +146,12 @@ function importHarness(options = {}) {
       resolvePendingCatalog: async () => {
         recoverCalls++;
       },
-      saveCatalogProduct: async (fields, o) => {
+      resolvePendingImport:async()=>{},
+      importCatalogProduct: async (fields, o) => {
         if (options.failAt === saved.length) throw { code: "42501" };
         saved.push({ fields, o });
         existing.push({ id: o.createId, sku: fields.sku, barcode: fields.barcode });
-        return existing.at(-1);
+        return {product:existing.at(-1),skipped:false};
       },
     },
   });
@@ -160,7 +162,7 @@ function importHarness(options = {}) {
       return recoverCalls;
     },
     run: (p = plan()) =>
-      h.load("src/lib/productImportCommand.ts").executeProductImport(p, () => {}),
+      h.load("src/lib/productImportCommand.ts").executeProductImport(p, () => {},undefined,'owned'),
   };
 }
 test("actual import controller uses authoritative create-only stock command, exact costs; replay acknowledges old IDs without any writes", async () => {
@@ -179,15 +181,16 @@ test("actual import controller uses authoritative create-only stock command, exa
     await f.h.cleanup();
   }
 });
-test("authoritative duplicate preflight prevents ALL writes including rows before the conflict", async () => {
+test("authoritative preflight skips existing identifiers and appends only genuinely new rows", async () => {
   const p = buildImportPlan([headers, ["NEW", "first"], good]),
     f = importHarness({ existing: [{ id: "old", sku: "HOTFIX-1", quantity: 99 }] });
   try {
     const r = await f.run(p);
-    assert.equal(r.created, 0);
-    assert.equal(f.saved.length, 0);
-    assert.equal(r.failedRow, 3);
-    assert.match(r.error, /لن يتغير/);
+    assert.equal(r.created, 1);
+    assert.equal(r.skipped,1);
+    assert.equal(f.saved.length,1);
+    assert.equal(f.saved[0].fields.sku,'NEW');
+    assert.equal(r.error,undefined);
   } finally {
     await f.h.cleanup();
   }
@@ -271,6 +274,9 @@ test("actual React upload/preview/confirmation never submits a parent form; doub
     assert.ok(document.querySelector('[data-pwa-unsaved="true"]'));
     const button = h.getByRole(document.body, "button", { name: /تأكيد وحفظ/ });
     assert.equal(button.type, "button");
+    assert.equal(button.disabled,true);
+    await h.perform(()=>u.selectOptions(h.getByLabelText(document.body,'نوع مخزون الاستيراد'),'owned'));
+    await h.perform(()=>u.click(h.getByRole(document.body,'checkbox')));
     await h.perform(() => {
       button.click();
       button.click();
@@ -417,7 +423,7 @@ test("stale optional chunk cannot reload over an import preview, while clean-pag
   }
 });
 
-test("retry preview recognizes only deterministic same-file products; unrelated existing codes remain blocking", async () => {
+test("retry preview recognizes deterministic same-file products and safely skips other existing identities", async () => {
   const { checkImportDuplicates } = await import("../src/lib/productImportWorkflow.ts");
   const p = plan(),
     id = await importProductId("store-a", p.rows[0]),
@@ -426,8 +432,8 @@ test("retry preview recognizes only deterministic same-file products; unrelated 
   assert.equal(resumed.errors.length, 0);
   assert.equal(resumed.alreadyImported, 1);
   const conflict = checkImportDuplicates(p, [{ id: "unrelated", sku: p.rows[0].sku }], ownIds);
-  assert.equal(conflict.errors.length, 1);
-  assert.equal(conflict.duplicates, 1);
+  assert.equal(conflict.errors.length, 0);
+  assert.equal(conflict.existingToSkip, 1);
 });
 
 test("preview from a different store is refused before recovery or any import write", async () => {

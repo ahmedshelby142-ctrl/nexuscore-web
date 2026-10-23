@@ -11,6 +11,7 @@ import {
   IMPORT_LIMIT,
   checkImportDuplicates,
   importProductId,
+  summarizeImport,
   type ImportPlan,
 } from "@/lib/productImportWorkflow";
 
@@ -29,6 +30,10 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
   const [error, setError] = useState("");
   const [result, setResult] = useState<ImportResult | null>(null);
   const [progress, setProgress] = useState(0);
+  const [stockMode, setStockMode] = useState<"catalog" | "opening" | "owned" | "purchase">(
+    "catalog",
+  );
+  const [stockConfirmed, setStockConfirmed] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const generation = useRef(0);
   const previewStore = useRef<string | undefined>(undefined);
@@ -50,6 +55,8 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
   const readFile = async (file: File) => {
     const current = ++generation.current;
     setStatus("reading");
+    setStockMode("catalog");
+    setStockConfirmed(false);
     setError("");
     setPlan(null);
     setResult(null);
@@ -59,7 +66,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
       const parsed = await readProductFile(file);
       if (current !== generation.current) return;
       let preview = parsed;
-      if (!parsed.errors.length) {
+      if (parsed.rows.length) {
         try {
           const identity = await getSyncIdentity();
           if (!identity) throw { status: 401 };
@@ -95,6 +102,11 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
   const confirm = () =>
     runOnce(async () => {
       if (!plan || plan.errors.length || !plan.rows.length || busy) return;
+      if (
+        summarizeImport(plan).units > 0 &&
+        (!stockConfirmed || !["opening", "owned"].includes(stockMode))
+      )
+        return;
       setStatus("importing");
       setError("");
       setProgress(0);
@@ -103,6 +115,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
           plan,
           (done) => setProgress(done),
           previewStore.current,
+          stockMode === "purchase" ? "catalog" : stockMode,
         );
         setResult(saved);
         setStatus("done");
@@ -130,8 +143,32 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
       setError("تعذّر تحميل النموذج. حاول مرة أخرى.");
     }
   };
+  const rejectedRows = async () => {
+    if (!plan) return;
+    try {
+      const { productImportRejections } = await import("@/lib/productImportFile");
+      const bytes = productImportRejections(plan);
+      const url = URL.createObjectURL(
+        new Blob([new Uint8Array(bytes)], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }),
+      );
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "تفاصيل-رفض-المنتجات.xlsx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      setError("تعذّر تجهيز ملف تفاصيل الرفض. راجع الأخطاء الظاهرة وأعد المحاولة.");
+    }
+  };
   if (role !== "ADMIN") return null;
-  const invalid = new Set(plan?.errors.map((e) => e.row));
+  const invalid = new Set(
+    plan?.errors.filter((e) => plan.rows.some((r) => r.excelRow === e.row)).map((e) => e.row),
+  );
+  const summary = plan ? summarizeImport(plan) : null;
+  const stockReady =
+    !summary?.units || (stockConfirmed && (stockMode === "opening" || stockMode === "owned"));
   return (
     <section
       dir="rtl"
@@ -155,8 +192,9 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
         </Button>
       </div>
       <p className="text-sm text-muted-foreground">
-        إضافة منتجات جديدة فقط؛ لن تتغير المنتجات الموجودة. حتى {IMPORT_LIMIT} منتج و5 MB لكل ملف.
-        الأنواع والألوان والمقاسات: أحمر / M:2, أزرق / L:3.
+        <strong>إضافة المنتجات الجديدة فقط</strong>؛ الموجود بالفعل يُتخطى دون تعديل الكمية أو السعر
+        أو التكلفة أو الأرشفة. حتى {IMPORT_LIMIT} منتج و5 MB لكل ملف. الأنواع والألوان والمقاسات:
+        أحمر / M:2, أزرق / L:3.
       </p>
       {error && (
         <p role="alert" className="text-destructive">
@@ -183,23 +221,66 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
           />
           <Button type="button" variant="outline" onClick={() => void template()}>
             <Download className="size-4" />
-            تحميل نموذج الإكسل الاسترشادي (Template)
+            تحميل نموذج Excel
           </Button>
         </>
       )}
       {status === "reading" && <p role="status">جاري قراءة وفحص {fileName}…</p>}
-      {status === "preview" && plan && (
+      {status === "preview" && plan && summary && (
         <>
           <p>
-            {fileName} · {plan.rows.length} صف ·{" "}
-            {plan.rows.filter((r) => !invalid.has(r.excelRow)).length} صالح مبدئيًا · {invalid.size}{" "}
-            غير صالح · {plan.duplicates} مكرر · {plan.alreadyImported ?? 0} محفوظ من نفس الملف ·{" "}
-            {plan.rows.filter((r) => !invalid.has(r.excelRow)).length - (plan.alreadyImported ?? 0)}{" "}
-            جديد
+            {fileName} · {summary.total} صف · {summary.total - summary.invalid} صالح مبدئيًا ·{" "}
+            {summary.invalid} صف غير صالح · {summary.headerErrors} خطأ في عناوين الأعمدة ·{" "}
+            {summary.newProducts} جديد · {summary.existing} موجود بالفعل — تم التخطي ·{" "}
+            {summary.recovered} محفوظ من نفس الملف · {summary.conflicts} تعارض أكواد
           </p>
           <p className="text-sm">
-            ستُفحص الباركودات مرة أخرى من المتجر قبل الحفظ. التكرار يوقف الدفعة قبل تعديل أي منتج.
+            العدد المتوقع بعد الإضافة:{" "}
+            {plan.currentProductCount === undefined
+              ? "يُحسب بعد التحقق من السحابة"
+              : summary.resultingCount}{" "}
+            صنف (نشط ومؤرشف). النطاق الجديد: {summary.units} قطعة بقيمة{" "}
+            {(summary.valuePiastres / 100).toFixed(2)} ج.م. الموجود لا يضيف مخزونًا أو قيمة. تُراجع
+            الأكواد مرة أخرى عند الحفظ.
           </p>
+          {summary.units > 0 && (
+            <fieldset className="space-y-2 rounded-xl border p-3">
+              <legend>طريقة تسجيل الكميات الجديدة</legend>
+              <label className="block">
+                نوع المخزون
+                <select
+                  aria-label="نوع مخزون الاستيراد"
+                  value={stockMode}
+                  onChange={(e) => {
+                    setStockMode(e.target.value as typeof stockMode);
+                    setStockConfirmed(false);
+                  }}
+                  className="block w-full rounded border bg-background p-2"
+                >
+                  <option value="catalog">حدّد طبيعة المخزون قبل الحفظ</option>
+                  <option value="opening">رصيد افتتاحي عند تأسيس المتجر</option>
+                  <option value="owned">مخزون مملوك بالفعل يُضاف للنظام لأول مرة</option>
+                  <option value="purchase">بضاعة مشتراة حديثًا — تُسجّل بفاتورة توريد</option>
+                </select>
+              </label>
+              {stockMode === "purchase" ? (
+                <p role="alert">
+                  استورد الأصناف بكمية صفر، ثم سجّل الشراء والدفع والمورد من فاتورة توريد؛ لا نسجله
+                  كرأس مال افتتاحي.
+                </p>
+              ) : (
+                <label className="flex gap-2 items-start">
+                  <input
+                    type="checkbox"
+                    checked={stockConfirmed}
+                    onChange={(e) => setStockConfirmed(e.target.checked)}
+                  />
+                  أؤكد أن هذه الكميات مملوكة بالفعل ولم تُسجل سابقًا، وليست شراءً جديدًا يحتاج
+                  فاتورة مورد.
+                </label>
+              )}
+            </fieldset>
+          )}
           {!!plan.errors.length && (
             <div role="alert" className="text-destructive">
               {plan.errors.slice(0, 30).map((e, i) => (
@@ -208,6 +289,10 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
                 </p>
               ))}
               {plan.errors.length > 30 && <p>وأخطاء إضافية؛ صحّح الملف كاملًا ثم أعد رفعه.</p>}
+              <p>لم يبدأ الحفظ. لن تُستورد مجموعة جزئية قبل تصحيح جميع الأخطاء.</p>
+              <Button type="button" variant="outline" onClick={() => void rejectedRows()}>
+                تحميل تفاصيل الصفوف المرفوضة
+              </Button>
             </div>
           )}
           <div className="overflow-auto max-h-96 border rounded-xl">
@@ -222,6 +307,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
                     "سعر الشراء",
                     "سعر البيع",
                     "الأنواع",
+                    "القرار",
                   ].map((s) => (
                     <th key={s} className="p-2">
                       {s}
@@ -239,6 +325,15 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
                     <td>{r.purchase_price}</td>
                     <td>{r.retail_price}</td>
                     <td>{r.variants_raw || "—"}</td>
+                    <td>
+                      {invalid.has(r.excelRow)
+                        ? "يحتاج تصحيحًا"
+                        : r.disposition === "existing"
+                          ? "موجود بالفعل — تم التخطي"
+                          : r.disposition === "recovered"
+                            ? "محفوظ سابقًا — دون تكرار"
+                            : "منتج جديد"}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -250,7 +345,7 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
           <div className="flex gap-2">
             <Button
               type="button"
-              disabled={!!plan.errors.length || !plan.rows.length}
+              disabled={!!plan.errors.length || !plan.rows.length || !stockReady}
               onClick={() => void confirm()}
             >
               تأكيد وحفظ المنتجات الجديدة والتحقق من السابق
@@ -279,7 +374,8 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
           <p className="font-bold">{result.error ? "توقف الاستيراد" : "اكتمل الاستيراد"}</p>
           <p>
             تم إنشاء {result.created} منتج جديد. تأكد حفظ {result.recovered} منتج سابق من نفس الملف
-            دون تكراره. رصيد افتتاحي جديد: {result.units} قطعة.
+            دون تكراره. موجود بالفعل — تم التخطي: {result.skipped ?? 0}. رصيد افتتاحي جديد:{" "}
+            {result.units} قطعة.
           </p>
           {result.error && (
             <p role="alert" className="text-destructive">
@@ -287,8 +383,9 @@ export function BulkImportProduct({ onClose, onImported }: BulkImportProductProp
             </p>
           )}
           <p>
-            المتبقي غير المحفوظ: {(plan?.rows.length ?? 0) - result.created - result.recovered}. لا
-            تتغير المنتجات الموجودة أو الأرصدة السابقة.
+            المتبقي للتحقق:{" "}
+            {(plan?.rows.length ?? 0) - result.created - result.recovered - (result.skipped ?? 0)}.
+            لا تتغير المنتجات الموجودة أو الأرصدة السابقة.
           </p>
           {result.error && (
             <Button type="button" onClick={() => void confirm()}>

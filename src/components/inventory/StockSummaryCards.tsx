@@ -53,7 +53,8 @@ export function stockStatusOf(
   product: StockCardProduct | any,
 ): { label: string; variant: "destructive" | "secondary" | "default" } {
   if (quantity <= 0 || quantity == null) return { label: "نفد", variant: "destructive" };
-  if (quantity > 0 && quantity <= reorderPointOf(product)) return { label: "منخفض", variant: "secondary" };
+  if (quantity > 0 && quantity <= reorderPointOf(product))
+    return { label: "منخفض", variant: "secondary" };
   return { label: "متوفر", variant: "default" };
 }
 
@@ -70,6 +71,8 @@ export function matchesStockFilter(
 
 interface StockSummaryCardsProps {
   products: StockCardProduct[];
+  /** Archived stock is still an asset; list counts remain active-only. */
+  valuationProducts?: StockCardProduct[];
   value: StockFilter;
   onChange: (filter: StockFilter) => void;
   /**
@@ -88,7 +91,14 @@ interface StockSummaryCardsProps {
   read: ReadState;
 }
 
-export function StockSummaryCards({ products, value, onChange, costOf, read }: StockSummaryCardsProps) {
+export function StockSummaryCards({
+  products,
+  valuationProducts = products,
+  value,
+  onChange,
+  costOf,
+  read,
+}: StockSummaryCardsProps) {
   const showValuation = canViewStoreFinance(useAuthStore((s) => s.userRole));
   // The counts below are counts of the product LIST, which arrives by hydrate.
   // Before it lands — or when it fails — they are not zero, they are unknown.
@@ -98,7 +108,7 @@ export function StockSummaryCards({ products, value, onChange, costOf, read }: S
   let lowStock = 0;
   let outOfStock = 0;
   let totalValue = 0;
-  
+
   for (const product of products as any[]) {
     // Sellable, not physical: a بوكس has no shelf of its own, so classing it
     // نافد whenever its components are stocked would contradict the row.
@@ -109,7 +119,7 @@ export function StockSummaryCards({ products, value, onChange, costOf, read }: S
     // 2. Out of Stock
     if (qty === 0 || qty == null) {
       outOfStock += 1;
-    } 
+    }
     // 3. Low Stock (fallback to 5 if minStockLevel undefined)
     else if (qty > 0 && qty <= (product.minStockLevel || 5)) {
       lowStock += 1;
@@ -128,8 +138,12 @@ export function StockSummaryCards({ products, value, onChange, costOf, read }: S
     //
     // `costOf` is the same weighted average the row prints and the same one a
     // sale snapshots as `unit_cost`, so the card, the row and COGS agree.
-    if (showValuation) totalValue += (qty || 0) * costOf(product.id);
   }
+  if (showValuation)
+    for (const product of valuationProducts as any[]) {
+      if (!product.isBundle)
+        totalValue += sellableStock(product, valuationProducts as any[]) * costOf(product.id);
+    }
 
   // Clicking the active filter clears it, so a card is a toggle rather than a
   // trap the user has to hunt for a way out of.
@@ -204,6 +218,11 @@ export function StockSummaryCards({ products, value, onChange, costOf, read }: S
           <div className="flex items-start justify-between">
             <div>
               <p className="text-xs tracking-wider text-muted-foreground">إجمالي قيمة المخزون</p>
+              {valuationProducts.length !== products.length && (
+                <p className="text-xs text-muted-foreground">
+                  تشمل المخزون المؤرشف؛ الأرشفة لا تشطب قيمته.
+                </p>
+              )}
               <p className="font-display text-3xl font-semibold mt-2">
                 {showValuation ? moneyFigure(totalValue, read, listRead) : "للمصرّح لهم ماليًا فقط"}
               </p>

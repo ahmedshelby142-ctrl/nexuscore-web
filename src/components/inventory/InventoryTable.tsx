@@ -140,7 +140,7 @@ export function InventoryTable() {
           busy={stock.loading}
         />
       )}
-      <StockSummaryCards products={products} value={stockFilter} onChange={setStockFilter} costOf={costOf} read={stock} />
+      <StockSummaryCards products={products} valuationProducts={allProducts} value={stockFilter} onChange={setStockFilter} costOf={costOf} read={stock} />
 
       <div className="rounded-2xl border border-border bg-card p-6">
       {/* A one-line prompt, not a list.

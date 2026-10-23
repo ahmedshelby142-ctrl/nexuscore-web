@@ -345,12 +345,22 @@ export const useBusinessStore = create<BusinessState>()(
       // its events keep resolving; `deleted_at` is the tombstone that takes it
       // out of the active lists and syncs that fact to every device.
       archiveProduct: async (id: string) => {
-        await get().updateProduct(id, { deleted_at: Date.now() });
+        const current = get().products.find(p => p.id === id);
+        if (!current) throw new Error("NEXUS_PRODUCT_NOT_FOUND");
+        const { changeProductArchive } = await import("../lib/productArchive");
+        const saved = await changeProductArchive(current, "archive");
+        set(state => ({ products: state.products.map(p =>
+          p.id === id && Number(p.updated_at ?? 0) <= Number(saved.updated_at ?? 0) ? saved : p) }));
       },
 
       // Undo. `null`, never `undefined` — see the field's note in `types`.
       restoreProduct: async (id: string) => {
-        await get().updateProduct(id, { deleted_at: null });
+        const current = get().products.find(p => p.id === id);
+        if (!current) throw new Error("NEXUS_PRODUCT_NOT_FOUND");
+        const { changeProductArchive } = await import("../lib/productArchive");
+        const saved = await changeProductArchive(current, "restore");
+        set(state => ({ products: state.products.map(p =>
+          p.id === id && Number(p.updated_at ?? 0) <= Number(saved.updated_at ?? 0) ? saved : p) }));
       },
 
       // Transaction management actions

@@ -443,3 +443,25 @@ test("preview from a different store is refused before recovery or any import wr
     await f.h.cleanup();
   }
 });
+
+test("actual paged Supabase reader preserves HTTP401 even with SQL42501, distinguishing session expiry from a403 permission denial", async () => {
+  const { pageAll } = await import("../src/lib/pageAll.ts");
+  for (const [status, expected] of [
+    [401, /انتهت جلسة/],
+    [403, /صلاحية/],
+  ]) {
+    let captured;
+    try {
+      await pageAll(async () => ({
+        data: null,
+        error: { message: "permission denied", code: "42501" },
+        status,
+      }));
+    } catch (e) {
+      captured = e;
+    }
+    assert.equal(captured.status, status);
+    assert.equal(captured.code, "42501");
+    assert.match(cloudErrorMessage(captured), expected);
+  }
+});

@@ -25,12 +25,12 @@ export const PAGE = 1000;
  * a page comes back short, which is the only signal that the end was reached.
  */
 export async function pageAll<T>(
-  build: (from: number, to: number) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
+  build: (from: number, to: number) => PromiseLike<{ data: unknown; error: { message: string } | null; status?:number }>,
 ): Promise<T[]> {
   const out: T[] = [];
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await build(from, from + PAGE - 1);
-    if (error) throw Object.assign(new Error(error.message), error);
+    const { data, error, status } = await build(from, from + PAGE - 1);
+    if (error) throw Object.assign(new Error(error.message), error, status == null ? {} : {status});
     const rows = (data ?? []) as T[];
     out.push(...rows);
     if (rows.length < PAGE) return out;

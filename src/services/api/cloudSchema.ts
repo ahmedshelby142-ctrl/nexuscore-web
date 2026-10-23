@@ -61,6 +61,9 @@ export interface TableSchema {
 
 export const CLOUD_SCHEMA: Readonly<Record<string, TableSchema>> = {
   products: {
+    // Archive/restore and historical stock readers still need these records
+    // after a reload; active screens already filter them with activeProducts.
+    keepsArchived: true,
     columns: [
       "id", "name", "sku", "barcode", "category", "description", "image_url",
       "quantity", "unitPrice", "wholesale_price", "minStockLevel",

@@ -15,7 +15,8 @@
  * decision lives here once rather than twice.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { useSubmitGate } from "@/hooks/useSubmitGate";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -45,7 +46,7 @@ export function ProductRemovalDialog({ product, onClose, onRemoved }: ProductRem
   const [mode, setMode] = useState<Mode>("loading");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const submitting = useRef(false);
+  const gate = useSubmitGate();
 
   useEffect(() => {
     if (!product) return;
@@ -83,8 +84,7 @@ export function ProductRemovalDialog({ product, onClose, onRemoved }: ProductRem
   }, [product]);
 
   async function confirm() {
-    if (!product || submitting.current) return;
-    submitting.current = true;
+    if (!product || !gate.enter()) return;
     setSaving(true);
     setError(null);
     try {
@@ -96,7 +96,7 @@ export function ProductRemovalDialog({ product, onClose, onRemoved }: ProductRem
     } catch (e) {
       setError(productSaveError(e));
     } finally {
-      submitting.current = false;
+      gate.exit();
       setSaving(false);
     }
   }

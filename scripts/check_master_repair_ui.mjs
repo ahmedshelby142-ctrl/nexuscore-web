@@ -567,11 +567,12 @@ test('catalog actual product control retains draft on rejected/uncertain command
 });
 // The P0 onboarding contract is now create-only. The real React/controller/PG
 // retry and partial-success coverage lives in check_product_import_hotfix*.mjs.
-test('catalog import rejects a matched barcode before confirmation and preserves the existing product',()=>{
+test('catalog import skips a matched barcode,previews only the new row and preserves the existing product',()=>{
  const products=[{id:'existing',sku:'EX',barcode:'EX',name:'Existing',quantity:9,updated_at:1}];
  const before=structuredClone(products);
  const plan=buildImportPlan([['sku','name','stock_qty','purchase_price'],['EX','Unwanted replacement',12,2],['NEW','New',4,3]],products);
- assert.equal(plan.duplicates,1);assert.equal(plan.errors[0].row,2);assert.match(plan.errors[0].message,/لن يتم تعديل/);
+ assert.equal(plan.duplicates,0);assert.equal(plan.errors.length,0);assert.equal(plan.existingToSkip,1);
+ assert.equal(plan.rows[0].disposition,'existing');assert.equal(plan.rows[0].matchedProductId,'existing');assert.equal(plan.rows[1].disposition,'new');
  assert.deepEqual(products,before);
 });
 
